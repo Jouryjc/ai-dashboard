@@ -1,0 +1,31 @@
+{
+  "name": "ai-dashboard-client",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI 大屏工作台桌面客户端（Electron + Vue 3）",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run build:renderer && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "electron:dev": "node scripts/electron-dev.mjs",
+    "electron:start": "npm run build && electron ."
+  },
+  "dependencies": {
+    "pinia": "^3.0.1",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/node": "^22.10.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "electron": "^37.2.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5",
+    "vue-tsc": "^2.2.10"
+  }
+}

@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+
+<html class="light" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>首页 · 我的大屏 | AI 大屏工作台</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=Public+Sans:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-primary": "#faf8ff",
+                    "on-secondary": "#faf8ff",
+                    "surface-variant": "#e2e1ed",
+                    "secondary-dim": "#4f5266",
+                    "primary": "#535c8c",
+                    "tertiary-fixed-dim": "#d8b9e6",
+                    "surface-container-high": "#e8e7f1",
+                    "on-secondary-container": "#4d5165",
+                    "tertiary": "#6f557d",
+                    "surface-container-lowest": "#ffffff",
+                    "primary-dim": "#47507f",
+                    "error": "#a8364b",
+                    "inverse-on-surface": "#9d9ca2",
+                    "on-tertiary-container": "#573e64",
+                    "surface-bright": "#fbf8fe",
+                    "primary-fixed": "#bdc6fd",
+                    "surface-tint": "#535c8c",
+                    "tertiary-container": "#e7c6f4",
+                    "inverse-surface": "#0d0e12",
+                    "primary-container": "#bdc6fd",
+                    "surface-container-low": "#f4f2fb",
+                    "primary-fixed-dim": "#afb9ee",
+                    "secondary-fixed": "#dfe1f9",
+                    "surface": "#fbf8fe",
+                    "tertiary-dim": "#634970",
+                    "outline-variant": "#b1b1bc",
+                    "on-secondary-fixed-variant": "#575a6f",
+                    "secondary-fixed-dim": "#d1d3eb",
+                    "on-error": "#fff7f7",
+                    "secondary-container": "#dfe1f9",
+                    "surface-container-highest": "#e2e1ed",
+                    "on-primary-fixed": "#212b57",
+                    "tertiary-fixed": "#e7c6f4",
+                    "error-container": "#f97386",
+                    "surface-container": "#eeedf6",
+                    "outline": "#7a7a84",
+                    "on-surface": "#31323b",
+                    "on-background": "#31323b",
+                    "on-primary-fixed-variant": "#3e4876",
+                    "on-tertiary-fixed": "#422b4f",
+                    "on-tertiary": "#fff6fc",
+                    "secondary": "#5b5e72",
+                    "surface-dim": "#dad9e4",
+                    "inverse-primary": "#bdc6fd",
+                    "background": "#fbf8fe",
+                    "on-primary-container": "#353f6d",
+                    "on-surface-variant": "#5e5e68",
+                    "error-dim": "#6b0221",
+                    "on-error-container": "#6e0523",
+                    "on-tertiary-fixed-variant": "#60476e",
+                    "on-secondary-fixed": "#3b3e51"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "fontFamily": {
+                    "headline": ["Inter"],
+                    "display": ["Inter"],
+                    "body": ["Inter"],
+                    "label": ["Public Sans"]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        display: inline-block;
+        line-height: 1;
+      }
+      .card-shadow {
+        box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.05), 0 4px 16px -4px rgba(0, 0, 0, 0.03);
+      }
+      .card-shadow:hover {
+        box-shadow: 0 8px 24px -6px rgba(83, 92, 140, 0.12), 0 12px 32px -8px rgba(0, 0, 0, 0.05);
+      }
+      .status-pulse {
+        animation: pulse-blue 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      }
+      @keyframes pulse-blue {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+    </style>
+</head>
+<body class="bg-surface font-body text-on-surface antialiased overflow-hidden">
+<!-- Top Navigation Bar -->
+<header class="fixed top-0 w-full h-16 flex justify-between items-center px-6 z-50 bg-surface border-b border-outline-variant shadow-sm">
+<div class="flex items-center gap-4">
+<button class="p-2 hover:bg-surface-container-high rounded-full transition-colors active:scale-95">
+<span class="material-symbols-outlined text-on-surface-variant">menu</span>
+</button>
+<h1 class="text-xl font-headline font-bold text-on-surface tracking-tight">AI 大屏工作台</h1>
+<div class="ml-8 relative group">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-outline text-sm">search</span>
+</div>
+<input class="bg-surface-container-low border-none focus:ring-2 focus:ring-primary rounded-full pl-10 pr-4 py-1.5 w-64 text-sm transition-all placeholder:text-outline" placeholder="搜索大屏" type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<button class="p-2 text-on-surface-variant hover:bg-surface-container-high rounded-full transition-colors active:scale-95">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+</button>
+<div class="w-8 h-8 rounded-full overflow-hidden border border-outline-variant cursor-pointer active:scale-90 transition-transform">
+<img class="w-full h-full object-cover" data-alt="A clean, professional headshot of a smiling business professional in their early 30s, against a neutral light grey background. The lighting is soft and even, typical of high-end corporate photography. The individual wears professional attire in muted tones of charcoal and white, matching the sophisticated and reliable AI Big Screen Workbench design aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBKmABMC2mLGJaDy5f6jesnQZc2PuuxaiJyvBVjOj27gLw1ZIx9z30Qd8OZ-7NUcw8xorUMNq-mJhYZoi1H7rQzocsH-JncliuLeNSdx-wDbczinjlljazkUS4AOsVQTAwlTku3isdtRXOtrRSP1CDmIKajlICfFjTAOfhJWLUIEsa3TDB6y1-GRqe0Kw5yJlJjaTtdPKgsROcTZ4h53za3mkGQnw0DiD9zUA--q1mKlIqR-EumbUzRQpnowrpTREf--bouHweJJ_I"/>
+</div>
+</div>
+</header>
+<!-- Side Navigation Bar -->
+<nav class="fixed left-0 top-16 bottom-0 w-64 flex flex-col p-4 z-40 bg-surface-container-low border-r border-outline-variant">
+<div class="mb-6 px-2 flex items-center gap-3">
+<div class="w-10 h-10 bg-primary-container rounded-lg flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-container">dashboard</span>
+</div>
+<div>
+<p class="text-lg font-headline font-semibold text-primary">工作台</p>
+<p class="text-[10px] text-on-surface-variant uppercase tracking-widest font-bold">v3 ● 已保存</p>
+</div>
+</div>
+<div class="flex-1 flex flex-col gap-1">
+<a class="flex items-center gap-3 px-3 py-2.5 bg-secondary-container text-on-secondary-container rounded-lg font-medium transition-all" href="#">
+<span class="material-symbols-outlined" data-icon="home">home</span>
+<span class="text-label-sm">主页</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-all group" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="text-label-sm">工作台</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-all" href="#">
+<span class="material-symbols-outlined" data-icon="folder">folder</span>
+<span class="text-label-sm">项目</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2.5 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-all" href="#">
+<span class="material-symbols-outlined" data-icon="analytics">analytics</span>
+<span class="text-label-sm">分析</span>
+</a>
+</div>
+<div class="mt-auto pt-4 border-t border-outline-variant">
+<a class="flex items-center gap-3 px-3 py-2.5 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-all" href="#">
+<span class="material-symbols-outlined" data-icon="help">help</span>
+<span class="text-label-sm">帮助</span>
+</a>
+</div>
+</nav>
+<!-- Main Content Area -->
+<main class="ml-64 mt-16 p-8 min-h-[calc(100vh-64px)] pb-24 overflow-y-auto">
+<div class="mb-8">
+<h2 class="text-2xl font-bold text-on-surface tracking-tight">首页 · 我的大屏</h2>
+<p class="text-on-surface-variant mt-1">管理并实时监控您的所有数据可视化大屏。</p>
+</div>
+<!-- Dashboard Grid -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+<!-- 1. 新建大屏 Card -->
+<button class="aspect-[1.79/1] flex flex-col items-center justify-center gap-3 border-2 border-dashed border-outline-variant hover:border-primary hover:bg-primary-container/10 rounded-xl transition-all group active:scale-95 bg-surface-container-lowest">
+<div class="w-14 h-14 rounded-full bg-surface-container-high flex items-center justify-center group-hover:bg-primary group-hover:text-on-primary transition-colors">
+<span class="material-symbols-outlined text-3xl">add</span>
+</div>
+<span class="font-medium text-on-surface-variant group-hover:text-primary">新建大屏</span>
+</button>
+<!-- 2. K8s 集群监控 Card -->
+<div class="bg-surface-container-lowest rounded-xl overflow-hidden card-shadow border border-surface-variant transition-all cursor-pointer group">
+<div class="relative aspect-[1.79/1] bg-surface-dim">
+<img class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDXqCQ7wEepWa0DxsOFA1BIVBBXP3C2kXqVW-TtZAQZi0WMI6gyWT495jwrgKxZTx21rklHGtN0oUWQexmqjjnI7j1FjzvM6Cl65JS3TqOo1_3zi8zOKlU8upnXltpnOhCxwwspOPzbK1Mc2fEPZLVjlG1C00wnn_uj9vtGpkk9-J5kwDtpv_w9kaYS1tPGgm8PZTWHEKedBE_zi6klWNxamjKojsDwrf73sLaWaLQbcCL3rCoeVjZe4OMQtCwNby2CLHj4xIsxO8g"/>
+<div class="absolute top-3 left-3 flex items-center gap-1.5 bg-primary/90 text-on-primary px-2.5 py-1 rounded-full text-[11px] font-bold status-pulse">
+<span class="w-1.5 h-1.5 bg-white rounded-full"></span>
+                        生成中
+                    </div>
+<div class="absolute inset-0 bg-primary/0 group-hover:bg-primary/5 transition-all"></div>
+</div>
+<div class="p-4">
+<h3 class="font-bold text-on-surface text-base line-clamp-1">K8s 集群监控</h3>
+<div class="flex items-center justify-between mt-3">
+<span class="text-xs text-on-surface-variant">2 分钟前</span>
+<div class="flex gap-1">
+<span class="material-symbols-outlined text-outline text-lg hover:text-primary transition-colors">edit</span>
+<span class="material-symbols-outlined text-outline text-lg hover:text-error transition-colors">delete</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 3. 销售日报 Card -->
+<div class="bg-surface-container-lowest rounded-xl overflow-hidden card-shadow border border-surface-variant transition-all cursor-pointer group">
+<div class="relative aspect-[1.79/1] bg-surface-dim">
+<img class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA-OuLd8j3rzRdE73fmFZtPYXbGm7BUWuFBX6NG3smxhpgZ6Bt1xSyhI2oXE7h6eN1BRapGj2iUUtJb9hwU25iIyz9OjDMUnBegRoLpQt4-DIAbEZVHirOyf0j0p5t1i1nt1DgCtRHgVYfXbbUJV4nqcr1X6u7V8ZMi20azyd-DojMmQOI2sx-im23BeEWsvSBCPOabYYQjAJxfo1I1NOek_SjWCOZbL0F1LpNJVm76TfiPaErthHx0-0hHJaF7MyAptMtvfkaSDnQ"/>
+<div class="absolute top-3 left-3 flex items-center gap-1.5 bg-green-500 text-white px-2.5 py-1 rounded-full text-[11px] font-bold">
+                        已发布
+                    </div>
+</div>
+<div class="p-4">
+<h3 class="font-bold text-on-surface text-base line-clamp-1">销售日报</h3>
+<div class="flex items-center justify-between mt-3">
+<span class="text-xs text-on-surface-variant">昨天</span>
+<div class="flex gap-1">
+<span class="material-symbols-outlined text-outline text-lg hover:text-primary transition-colors">edit</span>
+<span class="material-symbols-outlined text-outline text-lg hover:text-error transition-colors">delete</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 4. 物流追踪 Card -->
+<div class="bg-surface-container-lowest rounded-xl overflow-hidden card-shadow border border-surface-variant transition-all cursor-pointer group">
+<div class="relative aspect-[1.79/1] bg-surface-dim">
+<img class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCGs6pLYw3heQitnBfP5ZWobFqXTXUBCRJwuI2WE5YtEsiIqRaSIvcQWDGeRlkjzkXxVR0tpUEsqlKECDz2R_ZvMW8nrFJcJCGHxQt9iYc7941PJSrYd2uM8Mmi8G8yMvg6i30NeHOJKAb2ZGsZ7YEW6W3GVmv_6rzbyF_HnGuU7Zr-FZYAsdmmi1g05-nHMR_LqW3V7hEDV7jFN_tVJAe1S0isbrzuZX4-9fclvMahaFt980ZIyEeHNHJR6Yuf56rW90mgV6H6Yus"/>
+<div class="absolute top-3 left-3 flex items-center gap-1.5 bg-orange-500 text-white px-2.5 py-1 rounded-full text-[11px] font-bold">
+<span class="material-symbols-outlined text-[10px]" style="font-variation-settings: 'wght' 700;">warning</span>
+                        需要处理
+                    </div>
+</div>
+<div class="p-4">
+<h3 class="font-bold text-on-surface text-base line-clamp-1">物流追踪</h3>
+<div class="flex items-center justify-between mt-3">
+<span class="text-xs text-on-surface-variant">3 天前</span>
+<div class="flex gap-1">
+<span class="material-symbols-outlined text-outline text-lg hover:text-primary transition-colors">edit</span>
+<span class="material-symbols-outlined text-outline text-lg hover:text-error transition-colors">delete</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 5. 能耗分析 Card -->
+<div class="bg-surface-container-lowest rounded-xl overflow-hidden card-shadow border border-surface-variant transition-all cursor-pointer group">
+<div class="relative aspect-[1.79/1] bg-surface-dim">
+<img class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAohAAwcLeZi8QmWkonR1LEQoS7v-f1qkpHGTWNbbU14sk8fsMrZM5PEBR6bOezVGGOZcZdkl4OubNfbtsohys4IlD68OkkSCY4zfCkKEAWakBPOaVk8sgQs3csIQJOAm7hmk_Qh2TYfdXKVh08xade6x3qQRWYln3le96qm4H1KljWJKzoO2Q3Iz6EC6ucONjG6GdV4VA4CIQtzTqk32L0i3VjWTkucEpQR7QM_crGGVDhmXER_f6zjjE98GqZ8lrf8UV3Vobiv_o"/>
+<div class="absolute top-3 left-3 flex items-center gap-1.5 bg-green-500/10 text-green-600 border border-green-500/20 px-2.5 py-1 rounded-full text-[11px] font-bold">
+                        已完成
+                    </div>
+</div>
+<div class="p-4">
+<h3 class="font-bold text-on-surface text-base line-clamp-1">能耗分析</h3>
+<div class="flex items-center justify-between mt-3">
+<span class="text-xs text-on-surface-variant">4 天前</span>
+<div class="flex gap-1">
+<span class="material-symbols-outlined text-outline text-lg hover:text-primary transition-colors">edit</span>
+<span class="material-symbols-outlined text-outline text-lg hover:text-error transition-colors">delete</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 6. 门店经营看板 Card -->
+<div class="bg-surface-container-lowest rounded-xl overflow-hidden card-shadow border border-surface-variant transition-all cursor-pointer group">
+<div class="relative aspect-[1.79/1] bg-surface-dim">
+<img class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAuj3v0F80zeRX3XX6XCL0tibWZCttMs7k29dxy_0yKVfqWO7UcAIHEndghdV57vklcxc6C3PB46dFySRHFUDxyrZXa1NMwNjEOXqvVXAbjEXl3Ta1bXC8W9vH0qS8qTTmeBYz2_mPvPFlHsc6aHXNQ9C1Tg2J2Ni1y76fIk1uaTwYNpVoaBbqCn_oXBhKSQs0_ipDSvZMen9I0D3EY5L3zHYBUtggrX9cowmO8r8VJhBh5MR4nSpnEo6khtB5X-kO5psaHUVtFKbo"/>
+<div class="absolute top-3 left-3 flex items-center gap-1.5 bg-green-500 text-white px-2.5 py-1 rounded-full text-[11px] font-bold">
+                        已发布
+                    </div>
+</div>
+<div class="p-4">
+<h3 class="font-bold text-on-surface text-base line-clamp-1">门店经营看板</h3>
+<div class="flex items-center justify-between mt-3">
+<span class="text-xs text-on-surface-variant">上周</span>
+<div class="flex gap-1">
+<span class="material-symbols-outlined text-outline text-lg hover:text-primary transition-colors">edit</span>
+<span class="material-symbols-outlined text-outline text-lg hover:text-error transition-colors">delete</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Bottom Tip Bar -->
+<footer class="fixed bottom-0 left-64 right-0 h-12 flex items-center px-6 bg-surface-container border-t border-outline-variant/30 z-50">
+<div class="flex items-center gap-2 text-on-surface-variant/80">
+<span class="material-symbols-outlined text-sm">info</span>
+<span class="text-xs">双击卡片可全屏预览，单击进入工作台继续编辑</span>
+</div>
+<div class="ml-auto flex items-center gap-4">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 rounded-full bg-green-500"></span>
+<span class="text-[10px] text-on-surface-variant uppercase font-medium">系统运行正常</span>
+</div>
+<span class="text-[10px] text-on-surface-variant/50">Copyright © 2024 AI Workbench</span>
+</div>
+</footer>
+<script>
+        // Micro-interactions for cards
+        document.querySelectorAll('.bg-surface-container-lowest').forEach(card => {
+            card.addEventListener('click', () => {
+                console.log('Navigating to workbench...');
+            });
+            card.addEventListener('dblclick', () => {
+                console.log('Entering full screen preview...');
+            });
+        });
+    </script>
+</body></html>

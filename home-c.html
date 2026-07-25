@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>AI 工作台 - K8s 集群监控大屏</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Public+Sans:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "primary-fixed-dim": "#afb9ee",
+                        "on-surface-variant": "#5e5e68",
+                        "secondary": "#5b5e72",
+                        "error": "#a8364b",
+                        "on-error": "#fff7f7",
+                        "on-background": "#31323b",
+                        "on-primary-fixed": "#212b57",
+                        "secondary-fixed": "#dfe1f9",
+                        "secondary-container": "#dfe1f9",
+                        "error-container": "#f97386",
+                        "tertiary-dim": "#634970",
+                        "secondary-dim": "#4f5266",
+                        "on-secondary-fixed-variant": "#575a6f",
+                        "on-tertiary-fixed-variant": "#60476e",
+                        "tertiary": "#6f557d",
+                        "tertiary-container": "#e7c6f4",
+                        "surface-container-high": "#e8e7f1",
+                        "primary": "#535c8c",
+                        "secondary-fixed-dim": "#d1d3eb",
+                        "surface-container": "#eeedf6",
+                        "tertiary-fixed-dim": "#d8b9e6",
+                        "surface-container-lowest": "#ffffff",
+                        "surface-bright": "#fbf8fe",
+                        "surface": "#fbf8fe",
+                        "on-secondary-fixed": "#3b3e51",
+                        "inverse-on-surface": "#9d9ca2",
+                        "on-secondary": "#faf8ff",
+                        "inverse-primary": "#bdc6fd",
+                        "error-dim": "#6b0221",
+                        "surface-container-highest": "#e2e1ed",
+                        "on-error-container": "#6e0523",
+                        "surface-tint": "#535c8c",
+                        "inverse-surface": "#0d0e12",
+                        "on-tertiary-container": "#573e64",
+                        "on-primary-fixed-variant": "#3e4876",
+                        "on-tertiary": "#fff6fc",
+                        "on-tertiary-fixed": "#422b4f",
+                        "surface-variant": "#e2e1ed",
+                        "on-primary": "#faf8ff",
+                        "primary-dim": "#47507f",
+                        "outline-variant": "#b1b1bc",
+                        "surface-container-low": "#f4f2fb",
+                        "surface-dim": "#dad9e4",
+                        "primary-container": "#bdc6fd",
+                        "on-surface": "#31323b",
+                        "outline": "#7a7a84",
+                        "on-secondary-container": "#4d5165",
+                        "on-primary-container": "#353f6d",
+                        "tertiary-fixed": "#e7c6f4",
+                        "primary-fixed": "#bdc6fd",
+                        "background": "#fbf8fe"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Inter"],
+                        "display": ["Inter"],
+                        "body": ["Inter"],
+                        "label": ["Public Sans"]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        .pulse-blue {
+            animation: pulse-blue 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse-blue {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: .5; transform: scale(1.2); }
+        }
+        .shimmer {
+            background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.05) 50%, rgba(255,255,255,0) 100%);
+            background-size: 200% 100%;
+            animation: shimmer 2s infinite;
+        }
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #d1d3eb; border-radius: 10px; }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body overflow-hidden h-screen flex flex-col">
+<!-- TopNavBar (Shared Component Identity) -->
+<header class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-4 h-16 bg-surface dark:bg-inverse-surface border-b border-outline-variant dark:border-outline">
+<div class="flex items-center gap-4">
+<button class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant">arrow_back</span>
+</button>
+<div class="flex flex-col">
+<h1 class="font-headline text-body-medium font-bold text-primary dark:text-primary-fixed leading-tight">K8s 集群监控大屏</h1>
+<p class="text-xs text-on-surface-variant flex items-center gap-1.5">
+                    v3 <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> 已保存
+                </p>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<div class="flex items-center gap-1 mr-4">
+<button class="p-2 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-all active:scale-[0.95]" title="全屏">
+<span class="material-symbols-outlined">fullscreen</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-all active:scale-[0.95]" title="版本历史">
+<span class="material-symbols-outlined">history</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-all active:scale-[0.95]" title="设置">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-all active:scale-[0.95]" title="更多">
+<span class="material-symbols-outlined">more_horiz</span>
+</button>
+</div>
+<img class="w-8 h-8 rounded-full border border-outline-variant" data-alt="A professional business headshot of a software developer, clean studio lighting, neutral background, modern corporate style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCKmC145zbugC9oxBFztZlJGMCe08PgZCCR_AG3GbRBR8xC_CTfzlBOYK8jBRiY7EAV1WQam6hseAh-BHOWCfFi3LW_IH_Wsjipr_wBmsFvJSXmGNwDEQl2xjShWasKUcQaz3tmm0JQTL7kNhQbWfsvUzZp_375E_mBlyR_4kb36yj1mXDVCb2a4L07Wv3VkXgPcQi3NfLxWgLB5nYlHsIZ8uJe-b0tNTFOAQH5y-VL0tZeWXaNQgKQDRsmg3RZTTKpbV1XgYF_56I"/>
+</div>
+</header>
+<main class="flex-1 flex mt-16 overflow-hidden">
+<!-- Left Column: Chat Area (320px) -->
+<aside class="w-[320px] bg-surface-container-low border-r border-outline-variant flex flex-col shrink-0">
+<div class="flex-1 overflow-y-auto p-4 space-y-4">
+<!-- User Message -->
+<div class="flex justify-end">
+<div class="bg-primary text-on-primary rounded-xl rounded-tr-none p-3 max-w-[85%] text-sm shadow-sm">
+                        帮我做一个服务器监控大屏，深色科技风
+                    </div>
+</div>
+<!-- Agent Message -->
+<div class="flex justify-start">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl rounded-tl-none p-3 max-w-[90%] shadow-sm">
+<p class="text-sm text-on-surface">好的，正在为你生成。开始之前想确认几个问题：</p>
+</div>
+</div>
+<!-- Clarification Card -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 shadow-sm space-y-4">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-lg" data-weight="fill">verified</span>
+<h3 class="text-sm font-bold text-on-surface">需要确认 2 个问题</h3>
+</div>
+<!-- Question 1 -->
+<div class="space-y-2">
+<p class="text-xs font-medium text-on-surface-variant">1. 监控哪些指标?</p>
+<div class="space-y-2">
+<button class="w-full text-left p-3 rounded-lg border-2 border-yellow-400 bg-surface-bright shadow-[0_0_12px_rgba(250,204,21,0.2)] group transition-all relative overflow-hidden">
+<div class="flex justify-between items-center relative z-10">
+<span class="text-sm font-bold text-primary">CPU/内存</span>
+<span class="material-symbols-outlined text-yellow-500 text-sm" data-weight="fill">star</span>
+</div>
+<p class="text-[10px] text-on-surface-variant mt-1 relative z-10">推荐理由: 覆盖 80% 监控场景</p>
+<div class="absolute inset-0 bg-yellow-400/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+</button>
+<button class="w-full text-left p-2.5 rounded-lg border border-outline-variant hover:border-primary hover:bg-surface-container transition-all">
+<span class="text-sm text-on-surface">网络</span>
+</button>
+<button class="w-full text-left p-2.5 rounded-lg border border-outline-variant hover:border-primary hover:bg-surface-container transition-all">
+<span class="text-sm text-on-surface">自定义</span>
+</button>
+</div>
+</div>
+<!-- Question 2 -->
+<div class="space-y-2">
+<p class="text-xs font-medium text-on-surface-variant">2. 刷新频率?</p>
+<div class="flex gap-2">
+<button class="flex-1 p-2 rounded-lg border border-outline-variant text-center text-sm hover:border-primary transition-all">5 秒</button>
+<button class="flex-1 p-2 rounded-lg border border-primary bg-primary-container text-on-primary-container font-bold text-center text-sm">30 秒</button>
+</div>
+</div>
+</div>
+<!-- System Message -->
+<div class="flex justify-center">
+<span class="bg-surface-container-high px-3 py-1 rounded-full text-[10px] text-on-surface-variant">
+                        已收到你的补充，将在当前步骤后处理
+                    </span>
+</div>
+</div>
+<!-- Chat Input -->
+<div class="p-4 bg-surface border-t border-outline-variant">
+<div class="relative flex items-end gap-2">
+<div class="flex-1 bg-surface-container rounded-xl p-2 focus-within:ring-2 ring-primary/20 transition-all border border-outline-variant">
+<textarea class="w-full bg-transparent border-none focus:ring-0 text-sm resize-none h-20 placeholder:text-outline" placeholder="描述你的想法..."></textarea>
+<div class="flex justify-between items-center mt-1">
+<div class="flex gap-1">
+<button class="p-1.5 hover:bg-surface-container-highest rounded-lg transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined text-lg">attach_file</span>
+</button>
+<button class="p-1.5 hover:bg-surface-container-highest rounded-lg transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined text-lg">mic</span>
+</button>
+</div>
+<button class="w-8 h-8 bg-primary text-on-primary rounded-lg flex items-center justify-center shadow-md active:scale-95 transition-transform">
+<span class="material-symbols-outlined text-lg">send</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</aside>
+<!-- Middle Column: Screen Preview -->
+<section class="flex-1 bg-[#0f111a] flex flex-col relative overflow-hidden group">
+<!-- Toolbar -->
+<div class="absolute top-4 right-4 z-20 flex items-center gap-2">
+<div class="flex items-center bg-[#1a1d2d]/80 backdrop-blur-md rounded-lg p-1 border border-white/10">
+<button class="px-3 py-1.5 text-xs text-white/80 hover:text-white flex items-center gap-1">
+                        1920 × 1080 <span class="material-symbols-outlined text-[14px]">expand_more</span>
+</button>
+<div class="w-px h-4 bg-white/10 mx-1"></div>
+<button class="p-1.5 text-white/80 hover:text-white flex items-center gap-1" title="刷新">
+<span class="material-symbols-outlined text-sm">refresh</span>
+<span class="text-[10px]">刷新</span>
+</button>
+</div>
+</div>
+<!-- Preview Canvas -->
+<div class="flex-1 flex items-center justify-center p-8">
+<div class="relative w-full aspect-video bg-[#05070a] rounded shadow-2xl border border-white/5 overflow-hidden">
+<!-- The Dashboard Content (Simulated) -->
+<div class="absolute inset-0 p-6 space-y-6 opacity-60 grayscale-[0.5] blur-[1px]">
+<div class="flex justify-between items-center">
+<div class="h-6 w-48 bg-primary/20 rounded"></div>
+<div class="h-6 w-32 bg-primary/10 rounded"></div>
+</div>
+<div class="grid grid-cols-4 gap-4">
+<div class="h-24 bg-surface-container-highest/5 rounded border border-white/5 p-4 flex flex-col justify-between">
+<div class="h-3 w-1/2 bg-white/10 rounded"></div>
+<div class="h-6 w-3/4 bg-blue-500/30 rounded"></div>
+</div>
+<div class="h-24 bg-surface-container-highest/5 rounded border border-white/5 p-4 flex flex-col justify-between">
+<div class="h-3 w-1/2 bg-white/10 rounded"></div>
+<div class="h-6 w-3/4 bg-emerald-500/30 rounded"></div>
+</div>
+<div class="h-24 bg-surface-container-highest/5 rounded border border-white/5 p-4 flex flex-col justify-between">
+<div class="h-3 w-1/2 bg-white/10 rounded"></div>
+<div class="h-6 w-3/4 bg-amber-500/30 rounded"></div>
+</div>
+<div class="h-24 bg-surface-container-highest/5 rounded border border-white/5 p-4 flex flex-col justify-between">
+<div class="h-3 w-1/2 bg-white/10 rounded"></div>
+<div class="h-6 w-3/4 bg-rose-500/30 rounded"></div>
+</div>
+</div>
+<div class="grid grid-cols-3 gap-4 h-48">
+<div class="col-span-2 bg-surface-container-highest/5 rounded border border-white/5 flex items-center justify-center">
+<div class="w-[90%] h-[70%] border-b border-l border-white/10 relative overflow-hidden">
+<div class="absolute bottom-4 left-0 w-full h-1/2 bg-gradient-to-t from-blue-500/10 to-transparent"></div>
+<svg class="absolute bottom-4 left-0 w-full text-blue-500/40 fill-none" viewbox="0 0 100 20"><path d="M0,10 Q25,2 50,12 T100,5" stroke="currentColor" stroke-width="0.5"></path></svg>
+</div>
+</div>
+<div class="bg-surface-container-highest/5 rounded border border-white/5 flex items-center justify-center p-4">
+<div class="w-32 h-32 rounded-full border-[10px] border-white/5 border-t-blue-500/40"></div>
+</div>
+</div>
+</div>
+<!-- Generating Overlay -->
+<div class="absolute inset-0 bg-[#0f111a]/80 backdrop-blur-sm flex flex-col items-center justify-center z-10">
+<div class="relative w-24 h-24 mb-6">
+<div class="absolute inset-0 border-4 border-primary/20 rounded-full"></div>
+<div class="absolute inset-0 border-4 border-t-primary rounded-full animate-spin"></div>
+<div class="absolute inset-2 flex items-center justify-center">
+
+</div>
+</div>
+<div class="space-y-2 text-center">
+<h2 class="text-white text-lg font-bold tracking-wider shimmer bg-clip-text text-transparent">正在生成新版本...</h2>
+<p class="text-white/40 text-xs">正在渲染 3D 地形组件与实时数据接口</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Viewport Scale -->
+<div class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/40 text-[10px] text-white/40 px-2 py-1 rounded border border-white/5">
+                画布比例: 65%
+            </div>
+</section>
+<!-- Right Column: Execution Process Panel (360px) -->
+<aside class="w-[360px] bg-surface-container-low border-l border-outline-variant flex flex-col shrink-0">
+<!-- Top Status -->
+<div class="p-6 space-y-4">
+<div class="flex justify-between items-start">
+<div class="space-y-1">
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-primary pulse-blue"></span>
+<span class="text-sm font-bold text-on-surface">正在自动修复问题</span>
+</div>
+<p class="text-xs text-on-surface-variant font-label">已进行 1 分 42 秒</p>
+</div>
+<span class="bg-primary-container text-on-primary-container text-[10px] px-2 py-0.5 rounded-full font-bold">运行中</span>
+</div>
+<div class="w-full h-1 bg-surface-container-high rounded-full overflow-hidden">
+<div class="h-full bg-primary w-[75%] rounded-full transition-all duration-1000"></div>
+</div>
+</div>
+<div class="h-px bg-outline-variant/30 mx-6"></div>
+<!-- Phase Timeline -->
+<div class="flex-1 overflow-y-auto px-6 py-6">
+<div class="relative space-y-8">
+<!-- Line -->
+<div class="absolute left-3 top-2 bottom-2 w-px bg-outline-variant/50"></div>
+<!-- Item 1: Completed -->
+<div class="relative flex gap-4">
+<div class="z-10 w-6 h-6 rounded-full bg-green-500 flex items-center justify-center text-white ring-4 ring-surface-container-low">
+<span class="material-symbols-outlined text-sm">check</span>
+</div>
+<div class="pt-0.5">
+<p class="text-sm font-medium text-on-surface">理解需求</p>
+</div>
+</div>
+<!-- Item 2: Completed -->
+<div class="relative flex gap-4">
+<div class="z-10 w-6 h-6 rounded-full bg-green-500 flex items-center justify-center text-white ring-4 ring-surface-container-low">
+<span class="material-symbols-outlined text-sm">check</span>
+</div>
+<div class="pt-0.5">
+<p class="text-sm font-medium text-on-surface">查找组件</p>
+</div>
+</div>
+<!-- Item 3: Completed -->
+<div class="relative flex gap-4">
+<div class="z-10 w-6 h-6 rounded-full bg-green-500 flex items-center justify-center text-white ring-4 ring-surface-container-low">
+<span class="material-symbols-outlined text-sm">check</span>
+</div>
+<div class="pt-0.5">
+<p class="text-sm font-medium text-on-surface">编写页面</p>
+</div>
+</div>
+<!-- Item 4: Processing -->
+<div class="relative space-y-4">
+<div class="flex gap-4">
+<div class="z-10 w-6 h-6 rounded-full bg-primary pulse-blue flex items-center justify-center text-white ring-4 ring-surface-container-low">
+<span class="material-symbols-outlined text-sm">auto_fix_high</span>
+</div>
+<div class="pt-0.5 flex-1">
+<div class="flex justify-between items-center">
+<p class="text-sm font-bold text-primary">修复问题 (2/3)</p>
+</div>
+<div class="mt-3 space-y-2">
+<div class="flex items-center gap-2 text-xs text-on-surface-variant">
+<span class="text-outline">├</span>
+<span class="material-symbols-outlined text-green-500 text-[14px]">check_circle</span>
+<span>图表不显示</span>
+</div>
+<div class="flex items-center gap-2 text-xs text-on-surface-variant">
+<span class="text-outline">├</span>
+<span class="material-symbols-outlined text-green-500 text-[14px]">check_circle</span>
+<span>配色偏差</span>
+</div>
+<div class="flex items-center gap-2 text-xs text-primary font-bold">
+<span class="text-outline">└</span>
+<span class="w-1.5 h-1.5 rounded-full bg-primary pulse-blue"></span>
+<span>表格超出边界 (第 2 次尝试中...)</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Item 5: Pending -->
+<div class="relative flex gap-4">
+<div class="z-10 w-6 h-6 rounded-full bg-surface-container-highest border border-outline flex items-center justify-center text-outline ring-4 ring-surface-container-low">
+<span class="w-1.5 h-1.5 rounded-full bg-outline"></span>
+</div>
+<div class="pt-0.5">
+<p class="text-sm font-medium text-on-surface-variant">生成预览</p>
+</div>
+</div>
+</div>
+<div class="mt-8">
+<button class="text-xs text-primary font-medium flex items-center gap-1 hover:underline group">
+<span class="material-symbols-outlined text-sm transform transition-transform group-hover:translate-x-0.5">play_arrow</span>
+                        查看修复细节
+                    </button>
+</div>
+</div>
+<!-- Bottom Card -->
+<div class="p-6">
+<div class="bg-surface-container-highest/50 rounded-xl p-4 border border-outline-variant flex flex-col items-center text-center gap-3">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-on-surface-variant">forum</span>
+<span class="text-sm text-on-surface">遇到问题?</span>
+</div>
+<button class="w-full bg-surface py-2 rounded-lg text-sm font-bold text-on-surface shadow-sm border border-outline-variant hover:bg-surface-container-high transition-colors active:scale-[0.98]">
+                        呼叫人工协助
+                    </button>
+</div>
+</div>
+</aside>
+</main>
+<!-- Contextual Micro-Interactions -->
+<script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const buttons = document.querySelectorAll('button');
+            buttons.forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    let ripple = document.createElement('span');
+                    ripple.classList.add('ripple');
+                    this.appendChild(ripple);
+                    setTimeout(() => ripple.remove(), 600);
+                });
+            });
+        });
+    </script>
+</body></html>

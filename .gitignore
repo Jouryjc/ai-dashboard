@@ -1,0 +1,24 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+dist-electron/
+
+# env files (keep .env.example)
+.env
+.env.local
+
+# runtime data
+server/data/
+server/data-smoke/
+
+# logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

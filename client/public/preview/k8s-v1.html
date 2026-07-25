@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>K8s 集群监控大屏</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; }
+  body {
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    background: radial-gradient(ellipse at 50% -20%, #12204a 0%, #070d1f 55%, #050a18 100%);
+    color: #dbe4ff;
+    display: flex; flex-direction: column;
+  }
+  header {
+    height: 84px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 36px; border-bottom: 1px solid rgba(46,91,255,.35);
+    background: linear-gradient(90deg, rgba(46,91,255,.14), rgba(34,211,238,.05), rgba(46,91,255,.14));
+  }
+  header h1 { font-size: 30px; letter-spacing: 4px; font-weight: 700;
+    background: linear-gradient(90deg,#7ea2ff,#22d3ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  header .meta { font-size: 15px; color: #8ea0c9; display: flex; gap: 28px; }
+  header .meta b { color: #22d3ee; font-weight: 600; }
+  main { flex: 1; display: grid; grid-template-columns: 400px 1fr 460px; gap: 18px; padding: 18px 24px 24px; }
+  .col { display: flex; flex-direction: column; gap: 18px; min-height: 0; }
+  .panel {
+    background: linear-gradient(160deg, rgba(20,32,66,.92), rgba(10,17,38,.92));
+    border: 1px solid rgba(80,120,255,.22); border-radius: 12px;
+    padding: 16px 18px; position: relative; min-height: 0;
+    box-shadow: inset 0 0 24px rgba(46,91,255,.06);
+  }
+  .panel h2 { font-size: 16px; font-weight: 600; color: #9db4e8; letter-spacing: 2px; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px; }
+  .panel h2::before { content: ""; width: 4px; height: 14px; border-radius: 2px;
+    background: linear-gradient(180deg,#2E5BFF,#22d3ee); }
+  .kpis { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .kpi { background: rgba(46,91,255,.08); border: 1px solid rgba(46,91,255,.2); border-radius: 10px; padding: 12px 14px; }
+  .kpi .v { font-size: 26px; font-weight: 700; color: #fff; }
+  .kpi .v small { font-size: 13px; color: #8ea0c9; font-weight: 400; margin-left: 4px; }
+  .kpi .k { font-size: 13px; color: #8ea0c9; margin-top: 2px; }
+  .up { color: #34d399; } .warn { color: #fbbf24; } .down { color: #f87171; }
+  svg text { font-family: inherit; }
+  .alert { display: flex; gap: 10px; align-items: baseline; padding: 8px 4px; border-bottom: 1px dashed rgba(120,150,255,.14); font-size: 14px; }
+  .alert:last-child { border-bottom: none; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; transform: translateY(-1px); }
+  .alert time { margin-left: auto; color: #6c7ea8; font-size: 12px; flex: none; }
+  .ns { display: flex; align-items: center; gap: 10px; font-size: 14px; margin: 9px 0; }
+  .ns .bar { flex: 1; height: 8px; border-radius: 4px; background: rgba(120,150,255,.12); overflow: hidden; }
+  .ns .bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg,#2E5BFF,#22d3ee); }
+  .ns .n { width: 34px; text-align: right; color: #9db4e8; }
+  .pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .legend { display: flex; gap: 18px; font-size: 12px; color: #8ea0c9; margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="dash-title">K8s 集群监控大屏</h1>
+  <div class="meta">
+    <span>集群 <b>prod-east-1</b></span>
+    <span>节点 <b>12</b></span>
+    <span>数据每 5 秒刷新</span>
+    <span id="clock">--:--:--</span>
+  </div>
+</header>
+<main>
+  <!-- 左列 -->
+  <div class="col">
+    <div class="panel" style="flex:none">
+      <h2>集群概览</h2>
+      <div class="kpis">
+        <div class="kpi"><div class="v">12<small>台</small></div><div class="k">节点总数</div></div>
+        <div class="kpi"><div class="v up">11<small>正常</small></div><div class="k">健康节点</div></div>
+        <div class="kpi"><div class="v">186<small>个</small></div><div class="k">运行中 Pod</div></div>
+        <div class="kpi"><div class="v warn">3<small>个</small></div><div class="k">待处理告警</div></div>
+      </div>
+    </div>
+    <div class="panel" style="flex:none">
+      <h2>Pod 状态分布</h2>
+      <svg viewBox="0 0 340 150" width="100%" height="150">
+        <circle cx="75" cy="75" r="52" fill="none" stroke="rgba(120,150,255,.12)" stroke-width="16"/>
+        <circle cx="75" cy="75" r="52" fill="none" stroke="#2E5BFF" stroke-width="16"
+          stroke-dasharray="261 327" stroke-linecap="round" transform="rotate(-90 75 75)"/>
+        <circle cx="75" cy="75" r="52" fill="none" stroke="#22d3ee" stroke-width="16"
+          stroke-dasharray="44 327" stroke-dashoffset="-261" stroke-linecap="round" transform="rotate(-90 75 75)"/>
+        <circle cx="75" cy="75" r="52" fill="none" stroke="#fbbf24" stroke-width="16"
+          stroke-dasharray="14 327" stroke-dashoffset="-305" stroke-linecap="round" transform="rotate(-90 75 75)"/>
+        <text x="75" y="70" text-anchor="middle" fill="#fff" font-size="22" font-weight="700">186</text>
+        <text x="75" y="92" text-anchor="middle" fill="#8ea0c9" font-size="12">总 Pod</text>
+        <g font-size="13" fill="#c6d3f5">
+          <rect x="165" y="42" width="12" height="12" rx="2" fill="#2E5BFF"/><text x="184" y="53">运行中 172</text>
+          <rect x="165" y="72" width="12" height="12" rx="2" fill="#22d3ee"/><text x="184" y="83">启动中 11</text>
+          <rect x="165" y="102" width="12" height="12" rx="2" fill="#fbbf24"/><text x="184" y="113">异常 3</text>
+        </g>
+      </svg>
+    </div>
+    <div class="panel" style="flex:1">
+      <h2>命名空间负载 TOP5</h2>
+      <div class="ns"><span style="width:86px">gateway</span><div class="bar"><i style="width:88%"></i></div><span class="n">88</span></div>
+      <div class="ns"><span style="width:86px">order</span><div class="bar"><i style="width:72%"></i></div><span class="n">72</span></div>
+      <div class="ns"><span style="width:86px">payment</span><div class="bar"><i style="width:61%"></i></div><span class="n">61</span></div>
+      <div class="ns"><span style="width:86px">search</span><div class="bar"><i style="width:45%"></i></div><span class="n">45</span></div>
+      <div class="ns"><span style="width:86px">report</span><div class="bar"><i style="width:28%"></i></div><span class="n">28</span></div>
+    </div>
+  </div>
+
+  <!-- 中列 -->
+  <div class="col">
+    <div class="panel" style="flex:1.35">
+      <h2>CPU 使用率趋势（%）</h2>
+      <svg viewBox="0 0 920 330" width="100%" height="calc(100% - 32px)" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="cpuFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#2E5BFF" stop-opacity=".45"/>
+            <stop offset="1" stop-color="#2E5BFF" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <g stroke="rgba(120,150,255,.14)" stroke-width="1">
+          <line x1="40" y1="40" x2="900" y2="40"/><line x1="40" y1="105" x2="900" y2="105"/>
+          <line x1="40" y1="170" x2="900" y2="170"/><line x1="40" y1="235" x2="900" y2="235"/>
+          <line x1="40" y1="300" x2="900" y2="300"/>
+        </g>
+        <g fill="#6c7ea8" font-size="12" text-anchor="end">
+          <text x="32" y="44">100</text><text x="32" y="109">75</text>
+          <text x="32" y="174">50</text><text x="32" y="239">25</text><text x="32" y="304">0</text>
+        </g>
+        <path d="M40,210 L120,190 L200,205 L280,160 L360,175 L440,130 L520,150 L600,110 L680,140 L760,95 L840,120 L900,100 L900,300 L40,300 Z" fill="url(#cpuFill)"/>
+        <polyline points="40,210 120,190 200,205 280,160 360,175 440,130 520,150 600,110 680,140 760,95 840,120 900,100"
+          fill="none" stroke="#5b83ff" stroke-width="3" stroke-linejoin="round"/>
+        <polyline points="40,250 120,244 200,252 280,230 360,238 440,215 520,224 600,205 680,214 760,196 840,205 900,198"
+          fill="none" stroke="#22d3ee" stroke-width="2.5" stroke-dasharray="6 4" stroke-linejoin="round"/>
+        <circle cx="760" cy="95" r="5" fill="#5b83ff" class="pulse"/>
+        <g fill="#6c7ea8" font-size="12" text-anchor="middle">
+          <text x="40" y="322">00:00</text><text x="200" y="322">04:00</text><text x="360" y="322">08:00</text>
+          <text x="520" y="322">12:00</text><text x="680" y="322">16:00</text><text x="840" y="322">20:00</text>
+        </g>
+      </svg>
+      <div class="legend"><span><i style="background:#5b83ff"></i>CPU 使用率</span><span><i style="background:#22d3ee"></i> request 配额</span></div>
+    </div>
+    <div class="panel" style="flex:1">
+      <h2>内存使用率（%）</h2>
+      <svg viewBox="0 0 920 240" width="100%" height="calc(100% - 32px)" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="memFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#22d3ee" stop-opacity=".4"/>
+            <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <g stroke="rgba(120,150,255,.14)"><line x1="40" y1="40" x2="900" y2="40"/><line x1="40" y1="120" x2="900" y2="120"/><line x1="40" y1="200" x2="900" y2="200"/></g>
+        <path d="M40,150 L115,140 L190,155 L265,120 L340,132 L415,100 L490,116 L565,90 L640,105 L715,80 L790,96 L900,72 L900,200 L40,200 Z" fill="url(#memFill)"/>
+        <polyline points="40,150 115,140 190,155 265,120 340,132 415,100 490,116 565,90 640,105 715,80 790,96 900,72"
+          fill="none" stroke="#22d3ee" stroke-width="3" stroke-linejoin="round"/>
+        <g fill="#6c7ea8" font-size="12" text-anchor="middle">
+          <text x="40" y="226">00:00</text><text x="340" y="226">08:00</text><text x="640" y="226">16:00</text><text x="900" y="226">24:00</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+
+  <!-- 右列 -->
+  <div class="col">
+    <div class="panel" style="flex:1">
+      <h2>网络流量（MB/s）</h2>
+      <svg viewBox="0 0 400 220" width="100%" height="calc(100% - 32px)">
+        <g stroke="rgba(120,150,255,.14)"><line x1="34" y1="40" x2="390" y2="40"/><line x1="34" y1="110" x2="390" y2="110"/><line x1="34" y1="180" x2="390" y2="180"/></g>
+        <g>
+          <rect x="48"  y="90"  width="22" height="90" rx="3" fill="#2E5BFF"/><rect x="74"  y="130" width="22" height="50" rx="3" fill="#22d3ee"/>
+          <rect x="116" y="70"  width="22" height="110" rx="3" fill="#2E5BFF"/><rect x="142" y="118" width="22" height="62" rx="3" fill="#22d3ee"/>
+          <rect x="184" y="104" width="22" height="76" rx="3" fill="#2E5BFF"/><rect x="210" y="140" width="22" height="40" rx="3" fill="#22d3ee"/>
+          <rect x="252" y="58"  width="22" height="122" rx="3" fill="#2E5BFF"/><rect x="278" y="100" width="22" height="80" rx="3" fill="#22d3ee"/>
+          <rect x="320" y="82"  width="22" height="98" rx="3" fill="#2E5BFF"/><rect x="346" y="126" width="22" height="54" rx="3" fill="#22d3ee"/>
+        </g>
+        <g fill="#6c7ea8" font-size="12" text-anchor="middle">
+          <text x="72" y="204">node-01</text><text x="140" y="204">node-02</text>
+          <text x="208" y="204">node-03</text><text x="276" y="204">node-04</text><text x="344" y="204">node-05</text>
+        </g>
+      </svg>
+      <div class="legend"><span><i style="background:#2E5BFF"></i>入方向</span><span><i style="background:#22d3ee"></i>出方向</span></div>
+    </div>
+    <div class="panel" style="flex:none">
+      <h2>磁盘 IO</h2>
+      <div class="kpis">
+        <div class="kpi"><div class="v">342<small>MB/s</small></div><div class="k">读取</div></div>
+        <div class="kpi"><div class="v">187<small>MB/s</small></div><div class="k">写入</div></div>
+      </div>
+    </div>
+    <div class="panel" style="flex:1">
+      <h2>实时告警 <span class="pulse" style="color:#fbbf24;font-size:12px">● 3 条待处理</span></h2>
+      <div class="alert"><i class="dot" style="background:#f87171"></i>node-07 CPU 超过 90%<time>2 分钟前</time></div>
+      <div class="alert"><i class="dot" style="background:#fbbf24"></i>payment 命名空间 Pod 重启 3 次<time>16 分钟前</time></div>
+      <div class="alert"><i class="dot" style="background:#fbbf24"></i>磁盘 /data 使用率达 82%<time>40 分钟前</time></div>
+      <div class="alert"><i class="dot" style="background:#34d399"></i>gateway 扩容完成，已恢复<time>1 小时前</time></div>
+      <div class="alert"><i class="dot" style="background:#34d399"></i>镜像仓库同步成功<time>2 小时前</time></div>
+    </div>
+  </div>
+</main>
+<script>
+  // 支持 ?name= 覆盖标题（同一产物复用给不同大屏）；时钟本地走动
+  var name = new URLSearchParams(location.search).get('name');
+  if (name) { document.getElementById('dash-title').textContent = name; document.title = name; }
+  function tick() {
+    var d = new Date();
+    var p = function (n) { return String(n).padStart(2, '0'); };
+    document.getElementById('clock').textContent = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  tick(); setInterval(tick, 1000);
+</script>
+</body>
+</html>

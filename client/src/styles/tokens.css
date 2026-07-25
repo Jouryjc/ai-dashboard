@@ -1,0 +1,76 @@
+/**
+ * 设计令牌 —— 全客户端唯一的颜色/圆角/阴影/字体来源。
+ * 依据：stitch-reference 高保真稿 + 设计语言要点：
+ *   浅灰白分层背景、纯白卡片细边框轻阴影、主蓝 #2E5BFF、状态四色、ROUND_EIGHT。
+ * 用法：直接用 Tailwind 类，例如 bg-page / bg-card / text-primary / bg-status-generating / rounded-card / shadow-card。
+ * 禁止在组件里写死色值；缺令牌时先在这里加。
+ */
+@import "tailwindcss";
+
+@theme {
+  /* ---- 品牌主色 ---- */
+  --color-primary: #2E5BFF;            /* 主蓝：按钮、链接、选中态 */
+  --color-primary-hover: #1F49E0;      /* 主蓝悬停 */
+  --color-primary-active: #1A3FCC;     /* 主蓝按下 */
+  --color-primary-soft: #EAF0FF;       /* 主蓝浅底（选中背景、徽标底） */
+  --color-primary-border: #C7D6FF;     /* 主蓝浅描边 */
+
+  /* ---- 状态四色（状态徽标只有四种：生成中/已完成/已发布/需要处理） ---- */
+  --color-status-generating: #2E5BFF;  /* 生成中：进行蓝（配呼吸动画 animate-pulse-blue） */
+  --color-status-done: #22C55E;        /* 已完成：成功绿 */
+  --color-status-published: #16A34A;   /* 已发布：深成功绿 */
+  --color-status-attention: #F59E0B;   /* 需要处理：警示橙 */
+  --color-status-attention-soft: #FEF3E2; /* 警示橙浅底（卡点行动区） */
+
+  /* ---- 中性灰（浅灰白分层背景 + 纯白卡片） ---- */
+  --color-page: #F5F6FA;               /* 页面底色（最浅灰） */
+  --color-panel: #F0F1F6;              /* 侧栏/面板分层底色 */
+  --color-card: #FFFFFF;               /* 卡片纯白 */
+  --color-line: #E5E7EB;               /* 细边框 */
+  --color-line-strong: #D3D6DE;        /* 较重的分隔线 */
+  --color-ink: #1F2430;                /* 正文主文字 */
+  --color-ink-secondary: #6B7280;      /* 次要文字 */
+  --color-ink-faint: #9CA3AF;          /* 占位/禁用文字 */
+
+  /* ---- 功能色（少量使用） ---- */
+  --color-danger: #E5484D;             /* 删除等危险操作 */
+
+  /* ---- 圆角（ROUND_EIGHT） ---- */
+  --radius-card: 0.5rem;               /* 卡片/气泡 8px */
+  --radius-control: 0.375rem;          /* 输入框/小按钮 6px */
+
+  /* ---- 阴影（轻阴影） ---- */
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 3px rgb(16 24 40 / 0.08);
+  --shadow-card-hover: 0 4px 12px rgb(16 24 40 / 0.10), 0 2px 4px rgb(16 24 40 / 0.06);
+  --shadow-pop: 0 8px 24px rgb(16 24 40 / 0.14);
+
+  /* ---- 字体：Inter + 中文无衬线 ---- */
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
+
+  /* ---- 动画：进行蓝呼吸（生成中徽标、● 进行中阶段节点） ---- */
+  --animate-pulse-blue: pulse-blue 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  @keyframes pulse-blue {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+  }
+}
+
+/* 非 Tailwind 场景（如内联 SVG、第三方嵌入）可用的同名 CSS 变量 */
+:root {
+  --brand-primary: #2E5BFF;
+  --brand-status-generating: #2E5BFF;
+  --brand-status-done: #22C55E;
+  --brand-status-published: #16A34A;
+  --brand-status-attention: #F59E0B;
+}
+
+html, body, #app {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-page);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}

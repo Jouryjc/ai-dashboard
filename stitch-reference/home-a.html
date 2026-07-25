@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+
+<html class="light" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>AI 大屏工作台 - 首页 · 我的大屏</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Public+Sans:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-secondary-fixed-variant": "#575a6f",
+                        "on-error": "#fff7f7",
+                        "surface-bright": "#fbf8fe",
+                        "surface-variant": "#e2e1ed",
+                        "secondary-fixed-dim": "#d1d3eb",
+                        "on-surface": "#31323b",
+                        "on-primary-container": "#353f6d",
+                        "error-container": "#f97386",
+                        "tertiary-dim": "#634970",
+                        "surface-container-low": "#f4f2fb",
+                        "tertiary-fixed": "#e7c6f4",
+                        "tertiary-container": "#e7c6f4",
+                        "on-surface-variant": "#5e5e68",
+                        "primary-fixed-dim": "#afb9ee",
+                        "surface-container-lowest": "#ffffff",
+                        "secondary-dim": "#4f5266",
+                        "outline": "#7a7a84",
+                        "on-secondary": "#faf8ff",
+                        "primary-container": "#bdc6fd",
+                        "inverse-primary": "#bdc6fd",
+                        "surface-dim": "#dad9e4",
+                        "on-primary-fixed-variant": "#3e4876",
+                        "inverse-on-surface": "#9d9ca2",
+                        "surface-container": "#eeedf6",
+                        "on-tertiary-container": "#573e64",
+                        "secondary-fixed": "#dfe1f9",
+                        "primary-dim": "#47507f",
+                        "on-secondary-container": "#4d5165",
+                        "on-primary": "#faf8ff",
+                        "outline-variant": "#b1b1bc",
+                        "on-tertiary": "#fff6fc",
+                        "on-secondary-fixed": "#3b3e51",
+                        "on-tertiary-fixed-variant": "#60476e",
+                        "inverse-surface": "#0d0e12",
+                        "tertiary-fixed-dim": "#d8b9e6",
+                        "surface-container-high": "#e8e7f1",
+                        "secondary": "#5b5e72",
+                        "primary-fixed": "#bdc6fd",
+                        "on-primary-fixed": "#212b57",
+                        "surface-container-highest": "#e2e1ed",
+                        "surface": "#fbf8fe",
+                        "on-background": "#31323b",
+                        "secondary-container": "#dfe1f9",
+                        "error": "#a8364b",
+                        "tertiary": "#6f557d",
+                        "surface-tint": "#535c8c",
+                        "primary": "#535c8c",
+                        "error-dim": "#6b0221",
+                        "on-tertiary-fixed": "#422b4f",
+                        "on-error-container": "#6e0523",
+                        "background": "#fbf8fe"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Inter"],
+                        "display": ["Inter"],
+                        "body": ["Inter"],
+                        "label": ["Public Sans"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            display: inline-block;
+            vertical-align: middle;
+        }
+        .pulse-blue {
+            animation: pulse-blue 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse-blue {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(8px);
+        }
+    </style>
+</head>
+<body class="bg-surface text-on-surface font-body min-h-screen flex flex-col">
+<!-- TopNavBar -->
+<header class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-4 h-16 bg-surface dark:bg-inverse-surface border-b border-outline-variant dark:border-outline">
+<div class="flex items-center gap-4">
+<button class="p-2 hover:bg-surface-container-high rounded-full transition-colors active:opacity-80">
+<span class="material-symbols-outlined">menu</span>
+</button>
+<span class="text-lg font-headline font-bold text-primary dark:text-primary-fixed">AI 工作台</span>
+</div>
+<div class="flex items-center gap-6">
+<div class="relative hidden md:block">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
+<input class="bg-surface-container-high border-none rounded-full py-2 pl-10 pr-4 w-64 text-sm focus:ring-2 focus:ring-primary focus:bg-surface transition-all outline-none" placeholder="搜索大屏" type="text"/>
+</div>
+<div class="flex items-center gap-2">
+<button class="p-2 hover:bg-surface-container-high rounded-full transition-colors active:opacity-80">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+</button>
+<div class="h-8 w-8 rounded-full overflow-hidden border border-outline-variant">
+<img class="w-full h-full object-cover" data-alt="A professional profile headshot of a female software product manager in a high-tech corporate office setting. The lighting is soft and natural, emphasizing a bright and professional light-mode aesthetic. The background is a clean, minimalist workspace with subtle blue tech accents, matching the enterprise UI design language. She has a friendly, confident expression, appearing as a trusted administrator of a complex digital system." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCInTGICM-h4AjjcP0b0bKHnRxIbAZSuaCS9uSJr_t5WAocfDiHrE-X5YyCTMEQXFI4s_DTK4_eYjlbqKyLxAVjazvBOCWi8QYYbYmWPDueVJKfDuyZsW6JGoTtUxRlckNPG6NGkMZl5EGq0UeADuveHl5aNPA3WfmmXnHyEhaMTSHo3pk35Z6mR1EBG4SrClbwtap5oH_T5aEFIkPOlvELPwzcKf5p8ftk8dzpCrQFN5o5A-b4zJ32Cdls6cCnlWR7SxbjAlA8N1E"/>
+</div>
+</div>
+</div>
+</header>
+<div class="flex flex-1 pt-16 pb-12">
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-16 bottom-0 w-[260px] z-40 flex flex-col p-4 bg-surface-container-low dark:bg-surface-container-lowest border-r border-outline-variant dark:border-outline">
+<div class="mb-8 px-2">
+<h2 class="text-on-surface font-bold text-lg">工作台</h2>
+<p class="text-on-surface-variant text-xs flex items-center gap-1">v3 <span class="w-1.5 h-1.5 bg-green-500 rounded-full"></span>已保存</p>
+</div>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-4 py-3 bg-primary-container text-on-primary-container dark:bg-primary dark:text-on-primary rounded-lg font-bold transition-transform active:scale-[0.98]" href="#">
+<span class="material-symbols-outlined" data-weight="fill">home</span>
+<span class="font-body text-label-large">主页</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant dark:text-surface-variant hover:bg-surface-container-high rounded-lg transition-all active:scale-[0.98]" href="#">
+<span class="material-symbols-outlined">desktop_windows</span>
+<span class="font-body text-label-large">工作台</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant dark:text-surface-variant hover:bg-surface-container-high rounded-lg transition-all active:scale-[0.98]" href="#">
+<span class="material-symbols-outlined">folder_open</span>
+<span class="font-body text-label-large">项目</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant dark:text-surface-variant hover:bg-surface-container-high rounded-lg transition-all active:scale-[0.98]" href="#">
+<span class="material-symbols-outlined">analytics</span>
+<span class="font-body text-label-large">分析</span>
+</a>
+</nav>
+<div class="pt-4 border-t border-outline-variant mt-auto">
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant dark:text-surface-variant hover:bg-surface-container-high rounded-lg transition-all" href="#">
+<span class="material-symbols-outlined">help</span>
+<span class="font-body text-label-large">帮助</span>
+</a>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="ml-[260px] flex-1 p-8 overflow-y-auto">
+<header class="mb-10">
+<h1 class="text-3xl font-headline font-bold text-on-surface mb-2">首页 · 我的大屏</h1>
+<p class="text-on-surface-variant text-lg">管理并实时监控您的所有数据可视化大屏。</p>
+</header>
+<!-- Bento Grid / Cards -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+<!-- Card 1: New -->
+<div class="group relative aspect-[4/3] border-2 border-dashed border-outline-variant rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-primary hover:bg-primary-container/10 transition-all active:scale-95">
+<div class="w-12 h-12 rounded-full bg-surface-container-high flex items-center justify-center text-primary mb-3 group-hover:scale-110 transition-transform">
+<span class="material-symbols-outlined text-3xl">add</span>
+</div>
+<span class="text-on-surface-variant font-medium group-hover:text-primary transition-colors">＋ 新建大屏</span>
+</div>
+<!-- Card 2: K8s -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow group">
+<div class="relative h-44 overflow-hidden">
+<img class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" data-alt="A futuristic and complex network topology visualization on a dark digital interface. Glowing neon hexagonal nodes representing servers are connected by intricate flows of blue and magenta energy lines. The UI elements around the diagram show real-time metrics like CPU and Memory usage with sleek, minimalist line charts. The overall atmosphere is highly technical, high-performance, and sophisticated, reflecting a modern enterprise-grade monitoring dashboard for a cloud-native K8s cluster." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCYElvjtFSofhKq_GhmQ1UafwOBvHw_i5XSgzIvJ4XurogxJ0Lp_y6DmGDzSlPDoxgYpgrB--Uwa5ixkH3pacgC0qCKrxaOpsgG0ylFGIxHlce0Zm4VTL0WUnTwoXPWqxU_HPZw3sDCZwZV21KP_4rBeiKN-mw_U3sAQpClOiZt-Sbdk5-4vUZse8B23pUsS_FO0QDIhdrJbWiqPVtq78gYCTYCmbrS9YCf8_-kmfYYTaoESnALeFiSF3nqwNJ3FakVIryon3ay-aQ"/>
+<div class="absolute top-3 left-3">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-500 text-white text-xs font-bold rounded-full">
+<span class="w-2 h-2 bg-white rounded-full pulse-blue"></span>
+                                生成中
+                            </span>
+</div>
+</div>
+<div class="p-4">
+<div class="flex justify-between items-start mb-1">
+<h3 class="font-bold text-on-surface truncate pr-4">K8s 集群监控</h3>
+<span class="text-xs text-on-surface-variant shrink-0">2 分钟前</span>
+</div>
+<div class="flex items-center justify-between mt-4">
+<div class="flex gap-1">
+<button class="p-1.5 rounded-lg hover:bg-surface-container-high text-on-surface-variant transition-colors" title="编辑">
+<span class="material-symbols-outlined text-xl">edit</span>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-error-container/20 text-error/80 transition-colors" title="删除">
+<span class="material-symbols-outlined text-xl">delete</span>
+</button>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant text-lg">more_vert</span>
+</div>
+</div>
+</div>
+<!-- Card 3: Sales -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow group">
+<div class="relative h-44 overflow-hidden">
+<img class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" data-alt="A clean and bright professional sales dashboard UI with a white background and soft blue accents. The central visualization is a smooth area chart showing revenue trends over time, featuring layered semi-transparent blue waves. Surrounding charts include colorful bar graphs for product categories and a sleek donut chart for sales channels. The overall aesthetic is minimalist, modern, and data-driven, fitting a high-end corporate retail reporting tool. The lighting is bright and even, conveying trust and clarity." src="https://lh3.googleusercontent.com/aida-public/AB6AXuACybsEFWItuFv-WQIeC9sgud7pk6dvrvME6SCiRMLLmx0JiJz-030Jf1-ys9h8u6d1XAI46UWOoEiN-uS4Ppgs2uhhf8gAIZu-z_Eu3O6Z_ONFnZakI5RuyxBP_Deq0l8GDkvBrTECCfjCRYmwMzzOiuVuCt7GqXV0clJjGFtnea_AAqVd5l8uX05QQ8Qo9CTIWfg2r1qM-bIqrkG0sO5ANZaoUwW_rEFNqtf-wksyNcYEbFTWryCbxxW2vQdEhyS-Vdwu69OGYCg"/>
+<div class="absolute top-3 left-3">
+<span class="px-2.5 py-1 bg-green-600 text-white text-xs font-bold rounded-full">已发布</span>
+</div>
+</div>
+<div class="p-4">
+<div class="flex justify-between items-start mb-1">
+<h3 class="font-bold text-on-surface truncate pr-4">销售日报</h3>
+<span class="text-xs text-on-surface-variant shrink-0">昨天</span>
+</div>
+<div class="flex items-center justify-between mt-4">
+<div class="flex gap-1">
+<button class="p-1.5 rounded-lg hover:bg-surface-container-high text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-xl">edit</span>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-error-container/20 text-error/80 transition-colors">
+<span class="material-symbols-outlined text-xl">delete</span>
+</button>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant text-lg">more_vert</span>
+</div>
+</div>
+</div>
+<!-- Card 4: Logistics -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow group">
+<div class="relative h-44 overflow-hidden">
+<img class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" data-alt="A dark-themed global logistics tracking dashboard showing a world map with glowing orange flight and shipping paths connecting major international hubs. The map is minimalist with subtle topographical details. Floating data panels on the side display real-time transit metrics and critical delay alerts highlighted in bold orange and red. The style is industrial, high-tech, and urgent, conveying a 24/7 mission control atmosphere for global supply chain management." src="https://lh3.googleusercontent.com/aida-public/AB6AXuD-lYJuc2tselMDmPYAtOzlu8DR9Xuc4V-7L1dxTBp-T6p9vXJ7sWPAZlGL8x0WcIi3wqOVgic4fiAbMc-rbk9HDZGhA76zEhj-SKx34PK-Ltgr9pnZtX5GctoNyUk9nne47IFa9p1TDhtGw3QjHzZVLXtjQm_0l_deMKQTC1LaJgkByy-sTFo8ypmxLRRkkQhpUlDAXtnDHVyV5cCE7K1b9qCicsjT1iS3pXldkTwSMcwlcNAKdgdld2try_bQ9wp0xEljNbF3a_8"/>
+<div class="absolute top-3 left-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 bg-orange-500 text-white text-xs font-bold rounded-full">
+<span class="material-symbols-outlined text-xs">warning</span>
+                                需要处理
+                            </span>
+</div>
+</div>
+<div class="p-4">
+<div class="flex justify-between items-start mb-1">
+<h3 class="font-bold text-on-surface truncate pr-4">物流追踪</h3>
+<span class="text-xs text-on-surface-variant shrink-0">3 天前</span>
+</div>
+<div class="flex items-center justify-between mt-4">
+<div class="flex gap-1">
+<button class="p-1.5 rounded-lg hover:bg-surface-container-high text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-xl">edit</span>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-error-container/20 text-error/80 transition-colors">
+<span class="material-symbols-outlined text-xl">delete</span>
+</button>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant text-lg">more_vert</span>
+</div>
+</div>
+</div>
+<!-- Card 5: Energy -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow group">
+<div class="relative h-44 overflow-hidden">
+<img class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" data-alt="A clean, modern sustainability and energy consumption dashboard on a light background. Features include gradient green bar charts showing monthly energy usage and a simple line graph for daily consumption patterns. Icons of light bulbs and wind turbines represent renewable sectors. The design uses a calming palette of soft whites and multiple shades of emerald green, creating an eco-friendly and professional aesthetic for corporate environmental reporting. The overall look is airy and spacious." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBI_pEgz0f7RgtY-lk2D8nJqB9FVoRI1xk2VQYiJWUoA3eL1OrLVQWxVCsGCaVM8ILDzR8SGn2EiA7FfRmtM3EijXHmtnKTqxuI7aTA9U5D76tmD6udZNZex_nzIRGlv_hVMe7Iy9dLuwtMVOX8IGZcT3lzy8c5K-nlVHK5Cq45fEk8UlFTVzFqRq3ZOuQwCHpDKz5ft2_U_1RGcHJyLfGmeoTCeYi7IS1c6w1TedDYnBQZdwpQqNprurXy4EbQT5Wl6mPG0-5G2UI"/>
+<div class="absolute top-3 left-3">
+<span class="px-2.5 py-1 bg-green-500/20 text-green-700 text-xs font-bold rounded-full border border-green-500/30">已完成</span>
+</div>
+</div>
+<div class="p-4">
+<div class="flex justify-between items-start mb-1">
+<h3 class="font-bold text-on-surface truncate pr-4">能耗分析</h3>
+<span class="text-xs text-on-surface-variant shrink-0">4 天前</span>
+</div>
+<div class="flex items-center justify-between mt-4">
+<div class="flex gap-1">
+<button class="p-1.5 rounded-lg hover:bg-surface-container-high text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-xl">edit</span>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-error-container/20 text-error/80 transition-colors">
+<span class="material-symbols-outlined text-xl">delete</span>
+</button>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant text-lg">more_vert</span>
+</div>
+</div>
+</div>
+<!-- Card 6: Store -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow group">
+<div class="relative h-44 overflow-hidden">
+<img class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" data-alt="A retail store performance dashboard featuring a vivid pie chart of inventory levels by category using primary colors like blue, red, and yellow. Next to it is a mountain-style line graph for foot traffic trends and a detailed transaction table. The interface is professional with high contrast between data points and the crisp white background. The aesthetic is efficient and focused on business intelligence for operational managers, utilizing clean typography and clear visual hierarchy." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBJ-z6OM9JaAJTZyVoAA9N9mrx7V7yQpfwCbbfW1COH6i28XLNTWiR5hEwy8bgXH7XeJTnYy3-x5QImLEOymM6WvhW25BXTPmrpup8lSzzr7gYLUEBmTgpA5O-K1l-4rv_m2xcogLgRcgYE1K_siPniunZ0_yEsfoAf9_aAqZiceE8C38yfiqZH_JrA43cKbcDdxn-umqOpwQb9UUVUX5JWe9bsjFWDqLJGa1XJ8oD6cLKvoR_NFlfjr0-cKuRTVLDQQwJCkqdkICk"/>
+<div class="absolute top-3 left-3">
+<span class="px-2.5 py-1 bg-green-600 text-white text-xs font-bold rounded-full">已发布</span>
+</div>
+</div>
+<div class="p-4">
+<div class="flex justify-between items-start mb-1">
+<h3 class="font-bold text-on-surface truncate pr-4">门店经营看板</h3>
+<span class="text-xs text-on-surface-variant shrink-0">上周</span>
+</div>
+<div class="flex items-center justify-between mt-4">
+<div class="flex gap-1">
+<button class="p-1.5 rounded-lg hover:bg-surface-container-high text-on-surface-variant transition-colors">
+<span class="material-symbols-outlined text-xl">edit</span>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-error-container/20 text-error/80 transition-colors">
+<span class="material-symbols-outlined text-xl">delete</span>
+</button>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant text-lg">more_vert</span>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+<!-- Bottom Status Bar -->
+<footer class="fixed bottom-0 left-0 w-full z-50 bg-surface-container-high/80 backdrop-blur-md h-12 flex items-center justify-between px-6 border-t border-outline-variant">
+<div class="flex items-center gap-2 text-on-surface-variant text-sm">
+<span class="material-symbols-outlined text-primary text-lg">info</span>
+<span>双击卡片可全屏预览，单击进入工作台继续编辑</span>
+</div>
+<div class="flex items-center gap-6 text-on-surface-variant text-xs font-medium">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 bg-green-500 rounded-full"></span>
+                系统运行正常
+            </div>
+<div class="tracking-wide">
+                © 2024 AI 大屏工作台 · 版权所有
+            </div>
+</div>
+</footer>
+<script>
+        // Micro-interaction: Active state feedback
+        document.querySelectorAll('a, button').forEach(el => {
+            el.addEventListener('mousedown', () => {
+                el.classList.add('scale-[0.96]');
+            });
+            el.addEventListener('mouseup', () => {
+                el.classList.remove('scale-[0.96]');
+            });
+            el.addEventListener('mouseleave', () => {
+                el.classList.remove('scale-[0.96]');
+            });
+        });
+
+        // Double click preview simulation
+        document.querySelectorAll('.shadow-sm').forEach(card => {
+            card.addEventListener('dblclick', () => {
+                const title = card.querySelector('h3').innerText;
+                console.log('Previewing: ' + title);
+                // Functional implementation would go here (e.g. modal)
+            });
+        });
+    </script>
+</body></html>

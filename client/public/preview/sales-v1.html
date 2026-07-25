@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>销售日报大屏</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; }
+  body {
+    font-family: "Inter", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    background: radial-gradient(ellipse at 50% -20%, #101d42 0%, #080e20 55%, #060a18 100%);
+    color: #e2e9ff;
+    display: flex; flex-direction: column;
+  }
+  header {
+    height: 84px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 36px; border-bottom: 1px solid rgba(46,91,255,.35);
+    background: linear-gradient(90deg, rgba(46,91,255,.16), rgba(52,211,153,.05), rgba(46,91,255,.16));
+  }
+  header h1 { font-size: 30px; letter-spacing: 4px; font-weight: 700;
+    background: linear-gradient(90deg,#7ea2ff,#34d399); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  header .meta { font-size: 15px; color: #8ea0c9; display: flex; gap: 28px; }
+  header .meta b { color: #34d399; font-weight: 600; }
+  main { flex: 1; display: flex; flex-direction: column; gap: 18px; padding: 18px 24px 24px; min-height: 0; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; flex: none; }
+  .kpi {
+    background: linear-gradient(160deg, rgba(20,32,66,.92), rgba(10,17,38,.92));
+    border: 1px solid rgba(80,120,255,.22); border-radius: 12px; padding: 18px 22px;
+    box-shadow: inset 0 0 24px rgba(46,91,255,.06);
+  }
+  .kpi .k { font-size: 14px; color: #8ea0c9; }
+  .kpi .v { font-size: 38px; font-weight: 700; color: #fff; margin-top: 6px; }
+  .kpi .v small { font-size: 16px; color: #8ea0c9; font-weight: 400; }
+  .kpi .trend { font-size: 13px; margin-top: 6px; }
+  .up { color: #34d399; } .down { color: #f87171; }
+  .row { flex: 1; display: grid; grid-template-columns: 1.5fr 1fr; gap: 18px; min-height: 0; }
+  .panel {
+    background: linear-gradient(160deg, rgba(20,32,66,.92), rgba(10,17,38,.92));
+    border: 1px solid rgba(80,120,255,.22); border-radius: 12px;
+    padding: 16px 18px; min-height: 0;
+    box-shadow: inset 0 0 24px rgba(46,91,255,.06);
+  }
+  .panel h2 { font-size: 16px; font-weight: 600; color: #9db4e8; letter-spacing: 2px; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px; }
+  .panel h2::before { content: ""; width: 4px; height: 14px; border-radius: 2px;
+    background: linear-gradient(180deg,#2E5BFF,#34d399); }
+  svg text { font-family: inherit; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: #6c7ea8; font-weight: 500; padding: 8px 6px; border-bottom: 1px solid rgba(120,150,255,.18); }
+  td { padding: 9px 6px; border-bottom: 1px dashed rgba(120,150,255,.12); color: #c6d3f5; }
+  tr:last-child td { border-bottom: none; }
+  .rank { display: inline-block; width: 22px; height: 22px; line-height: 22px; text-align: center;
+    border-radius: 6px; background: rgba(46,91,255,.18); color: #9db4e8; font-size: 12px; }
+  .rank.top { background: linear-gradient(135deg,#2E5BFF,#22d3ee); color: #fff; }
+  .bar-cell { display: flex; align-items: center; gap: 8px; }
+  .bar-cell .bar { flex: 1; height: 8px; border-radius: 4px; background: rgba(120,150,255,.12); overflow: hidden; }
+  .bar-cell .bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg,#2E5BFF,#34d399); }
+  .legend { display: flex; gap: 18px; font-size: 12px; color: #8ea0c9; margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+  .pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="dash-title">销售日报大屏</h1>
+  <div class="meta">
+    <span>数据截至 <b id="today">今天</b></span>
+    <span>每 10 分钟更新</span>
+    <span id="clock">--:--:--</span>
+  </div>
+</header>
+<main>
+  <div class="kpis">
+    <div class="kpi">
+      <div class="k">今日销售额</div>
+      <div class="v">¥128.6<small>万</small></div>
+      <div class="trend up">▲ 同比 +12.4% ｜ 环比 +3.1%</div>
+    </div>
+    <div class="kpi">
+      <div class="k">今日订单数</div>
+      <div class="v">8,432<small>单</small></div>
+      <div class="trend up">▲ 同比 +8.7% ｜ 环比 +1.2%</div>
+    </div>
+    <div class="kpi">
+      <div class="k">客单价</div>
+      <div class="v">¥152.5</div>
+      <div class="trend up">▲ 同比 +3.4% ｜ 环比 +1.9%</div>
+    </div>
+    <div class="kpi">
+      <div class="k">支付转化率</div>
+      <div class="v">3.8<small>%</small></div>
+      <div class="trend down">▼ 同比 -0.2% ｜ 环比持平</div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="panel">
+      <h2>近 30 天销售趋势（万元）</h2>
+      <svg viewBox="0 0 1000 470" width="100%" height="calc(100% - 40px)" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="saleFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#34d399" stop-opacity=".4"/>
+            <stop offset="1" stop-color="#34d399" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <g stroke="rgba(120,150,255,.14)">
+          <line x1="50" y1="50" x2="970" y2="50"/><line x1="50" y1="150" x2="970" y2="150"/>
+          <line x1="50" y1="250" x2="970" y2="250"/><line x1="50" y1="350" x2="970" y2="350"/>
+          <line x1="50" y1="430" x2="970" y2="430"/>
+        </g>
+        <g fill="#6c7ea8" font-size="13" text-anchor="end">
+          <text x="42" y="55">160</text><text x="42" y="155">120</text>
+          <text x="42" y="255">80</text><text x="42" y="355">40</text><text x="42" y="434">0</text>
+        </g>
+        <path d="M50,330 L120,310 L190,325 L260,280 L330,295 L400,240 L470,260 L540,215 L610,235 L680,190 L750,210 L820,165 L890,180 L970,140 L970,430 L50,430 Z" fill="url(#saleFill)"/>
+        <polyline points="50,330 120,310 190,325 260,280 330,295 400,240 470,260 540,215 610,235 680,190 750,210 820,165 890,180 970,140"
+          fill="none" stroke="#34d399" stroke-width="3.5" stroke-linejoin="round"/>
+        <polyline points="50,370 120,362 190,368 260,345 330,352 400,320 470,330 540,305 610,315 680,290 750,300 820,275 890,284 970,260"
+          fill="none" stroke="#5b83ff" stroke-width="2.5" stroke-dasharray="7 5" stroke-linejoin="round"/>
+        <circle cx="970" cy="140" r="6" fill="#34d399" class="pulse"/>
+        <g fill="#6c7ea8" font-size="13" text-anchor="middle">
+          <text x="50" y="456">6/26</text><text x="260" y="456">7/2</text><text x="470" y="456">7/8</text>
+          <text x="680" y="456">7/14</text><text x="890" y="456">7/20</text>
+        </g>
+      </svg>
+      <div class="legend"><span><i style="background:#34d399"></i>今年</span><span><i style="background:#5b83ff"></i>去年同期</span></div>
+    </div>
+    <div class="panel">
+      <h2>品类销售占比</h2>
+      <svg viewBox="0 0 400 230" width="100%" height="230">
+        <g>
+          <rect x="20"  y="60"  width="46" height="150" rx="4" fill="#2E5BFF"/>
+          <rect x="90"  y="30"  width="46" height="180" rx="4" fill="#22d3ee"/>
+          <rect x="160" y="90"  width="46" height="120" rx="4" fill="#34d399"/>
+          <rect x="230" y="120" width="46" height="90"  rx="4" fill="#fbbf24"/>
+          <rect x="300" y="150" width="46" height="60"  rx="4" fill="#8ea0c9"/>
+        </g>
+        <g fill="#6c7ea8" font-size="12" text-anchor="middle">
+          <text x="43" y="226">数码</text><text x="113" y="226">家电</text><text x="183" y="226">服饰</text>
+          <text x="253" y="226">食品</text><text x="323" y="226">其他</text>
+        </g>
+        <g fill="#c6d3f5" font-size="13" text-anchor="middle">
+          <text x="43" y="52">32.1万</text><text x="113" y="22">38.6万</text><text x="183" y="82">25.4万</text>
+          <text x="253" y="112">19.8万</text><text x="323" y="142">12.7万</text>
+        </g>
+      </svg>
+      <h2 style="margin-top:10px">实时大单</h2>
+      <table>
+        <tr><td>杭州西湖店</td><td>¥12,800</td><td style="color:#6c7ea8">刚刚</td></tr>
+        <tr><td>上海浦东店</td><td>¥9,460</td><td style="color:#6c7ea8">1 分钟前</td></tr>
+        <tr><td>北京朝阳店</td><td>¥8,120</td><td style="color:#6c7ea8">3 分钟前</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="row" style="flex:none; height: 300px;">
+    <div class="panel">
+      <h2>门店销售排行 TOP6</h2>
+      <table>
+        <tr><th style="width:60px">排名</th><th>门店</th><th>销售额</th><th style="width:40%">完成度</th></tr>
+        <tr><td><span class="rank top">1</span></td><td>杭州西湖旗舰店</td><td>¥18.2万</td>
+          <td class="bar-cell"><div class="bar"><i style="width:96%"></i></div>96%</td></tr>
+        <tr><td><span class="rank top">2</span></td><td>上海浦东店</td><td>¥15.7万</td>
+          <td class="bar-cell"><div class="bar"><i style="width:88%"></i></div>88%</td></tr>
+        <tr><td><span class="rank top">3</span></td><td>北京朝阳店</td><td>¥13.4万</td>
+          <td class="bar-cell"><div class="bar"><i style="width:81%"></i></div>81%</td></tr>
+        <tr><td><span class="rank">4</span></td><td>深圳南山店</td><td>¥11.9万</td>
+          <td class="bar-cell"><div class="bar"><i style="width:74%"></i></div>74%</td></tr>
+        <tr><td><span class="rank">5</span></td><td>成都高新店</td><td>¥9.8万</td>
+          <td class="bar-cell"><div class="bar"><i style="width:66%"></i></div>66%</td></tr>
+        <tr><td><span class="rank">6</span></td><td>武汉光谷店</td><td>¥8.3万</td>
+          <td class="bar-cell"><div class="bar"><i style="width:58%"></i></div>58%</td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>小时订单分布</h2>
+      <svg viewBox="0 0 400 230" width="100%" height="calc(100% - 32px)" preserveAspectRatio="none">
+        <g stroke="rgba(120,150,255,.14)"><line x1="30" y1="40" x2="390" y2="40"/><line x1="30" y1="120" x2="390" y2="120"/><line x1="30" y1="200" x2="390" y2="200"/></g>
+        <g fill="#2E5BFF">
+          <rect x="36"  y="160" width="26" height="40" rx="3"/>
+          <rect x="76"  y="130" width="26" height="70" rx="3"/>
+          <rect x="116" y="90"  width="26" height="110" rx="3"/>
+          <rect x="156" y="60"  width="26" height="140" rx="3"/>
+          <rect x="196" y="45"  width="26" height="155" rx="3"/>
+          <rect x="236" y="80"  width="26" height="120" rx="3"/>
+          <rect x="276" y="110" width="26" height="90"  rx="3"/>
+          <rect x="316" y="140" width="26" height="60"  rx="3"/>
+          <rect x="356" y="170" width="26" height="30"  rx="3"/>
+        </g>
+        <g fill="#6c7ea8" font-size="12" text-anchor="middle">
+          <text x="49" y="218">8时</text><text x="129" y="218">11时</text><text x="209" y="218">14时</text>
+          <text x="289" y="218">17时</text><text x="369" y="218">20时</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+</main>
+<script>
+  var params = new URLSearchParams(location.search);
+  var name = params.get('name');
+  if (name) { document.getElementById('dash-title').textContent = name; document.title = name; }
+  function tick() {
+    var d = new Date();
+    var p = function (n) { return String(n).padStart(2, '0'); };
+    document.getElementById('clock').textContent = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    document.getElementById('today').textContent = (d.getMonth() + 1) + '月' + d.getDate() + '日';
+  }
+  tick(); setInterval(tick, 1000);
+</script>
+</body>
+</html>
