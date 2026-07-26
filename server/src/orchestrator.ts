@@ -37,6 +37,7 @@ import {
   type Region
 } from './replica'
 import type {
+  AgentStep,
   AssistSession,
   Blocker,
   CardOption,
@@ -55,6 +56,7 @@ import type {
   RoleModelConfig,
   RunStatus,
   Stage,
+  StepState,
   Version,
   WorkbenchSnapshot
 } from './wire'
@@ -110,6 +112,8 @@ interface SessionData {
   runStatus: RunStatus
   messages: ChatMessage[]
   stages: Stage[]
+  /** 执行轨迹（各阶段节点下的动作流；观测性设计 §2.3 用户态投影） */
+  steps: AgentStep[]
   issues: Issue[]
   blocker: Blocker | null
   versions: Version[]
@@ -157,6 +161,8 @@ interface Runtime {
   activeRun: ActiveRun | null
   autoTimer: ReturnType<typeof setTimeout> | null
   timers: Set<ReturnType<typeof setTimeout>>
+  /** 新一轮已清空执行轨迹：下一个 step 事件要带 reset=true 让客户端同步清空 */
+  stepsResetPending: boolean
 }
 
 const sessions = new Map<string, Runtime>()
@@ -233,6 +239,46 @@ function setIssue(rt: Runtime, issue: Issue): void {
   else rt.s.issues.push(issue)
   store.emit(rt.s.dashboard.id, 'issue', { dashboardId: rt.s.dashboard.id, issue })
   save(rt)
+}
+
+/* ---------- 执行轨迹（AgentStep，观测性设计 §2.3：文案在写入时固化成大白话，前端只渲染不翻译） ---------- */
+
+function setStep(rt: Runtime, step: AgentStep, reset: boolean): void {
+  if (reset) rt.s.steps = []
+  const i = rt.s.steps.findIndex((x) => x.id === step.id)
+  if (i >= 0) rt.s.steps[i] = step
+  else rt.s.steps.push(step)
+  store.emit(rt.s.dashboard.id, 'step', { dashboardId: rt.s.dashboard.id, step, reset })
+  save(rt)
+}
+
+/** 开始一个动作（新一轮的第一个动作带上 reset，清掉上一轮的轨迹） */
+function startStep(rt: Runtime, stageId: string, title: string): AgentStep {
+  const step: AgentStep = {
+    id: nextId('step'),
+    stageId,
+    title,
+    detail: null,
+    state: 'active',
+    startedAt: Date.now(),
+    finishedAt: null
+  }
+  const reset = rt.stepsResetPending
+  rt.stepsResetPending = false
+  setStep(rt, step, reset)
+  return step
+}
+
+/** 结束一个动作：detail 为结果摘要（大白话）。state 默认 done；failed 只用于导致卡点/卡片的真实失败 */
+function finishStep(rt: Runtime, step: AgentStep, detail: string | null = null, state: StepState = 'done'): void {
+  setStep(rt, { ...step, state, detail, finishedAt: Date.now() }, false)
+}
+
+/** 兜底关闭某阶段仍在进行中的动作（看门狗接管、失败重试等边缘路径不留"永远转圈"） */
+function closeOrphanSteps(rt: Runtime, stageId: string, state: StepState, detail: string | null): void {
+  for (const orphan of rt.s.steps.filter((x) => x.stageId === stageId && x.state === 'active')) {
+    setStep(rt, { ...orphan, state, detail, finishedAt: Date.now() }, false)
+  }
 }
 
 function setBlocker(rt: Runtime, blocker: Blocker | null): void {
@@ -596,6 +642,9 @@ function createStageIds(): { fetch: string | null; code: string; check: string; 
 }
 
 function emitPlan(rt: Runtime, titles: string[]): void {
+  // 新一轮开始：清空上一轮的执行轨迹（下一个动作事件带 reset=true，客户端同步清空）
+  rt.s.steps = []
+  rt.stepsResetPending = true
   titles.forEach((t, i) => {
     setStage(rt, {
       id: `st-${i + 1}`,
@@ -616,12 +665,16 @@ function emitPlan(rt: Runtime, titles: string[]): void {
 function activateStage(rt: Runtime, id: string): void {
   const st = rt.s.stages.find((x) => x.id === id)
   if (!st || !st.title) return
+  // 重进同一阶段（失败重试/看门狗接管后）：上一轮没闭环的动作标记中断，不留"永远转圈"
+  closeOrphanSteps(rt, id, 'failed', '中断了，重新开始')
   setStage(rt, { ...st, state: 'active', startedAt: Date.now(), finishedAt: null, detail: null })
 }
 
 function finishStage(rt: Runtime, id: string): void {
   const st = rt.s.stages.find((x) => x.id === id)
   if (!st || !st.title) return
+  // 兜底：阶段结束时仍有进行中的动作，按完成关闭（正常路径各动作都已单独闭环）
+  closeOrphanSteps(rt, id, 'done', null)
   setStage(rt, { ...st, state: 'done', finishedAt: Date.now(), detail: null })
 }
 
@@ -837,8 +890,9 @@ async function splitCodingFlow(rt: Runtime, run: ActiveRun, stageId: string): Pr
     const ctl = new AbortController()
     run.abort = ctl
     const progress = llmProgress(rt, stageId, label)
+    const step = startStep(rt, stageId, label)
     try {
-      return await gw.chatCompletionStream(
+      const out = await gw.chatCompletionStream(
         cachedSettings,
         {
           role: 'coder',
@@ -853,8 +907,11 @@ async function splitCodingFlow(rt: Runtime, run: ActiveRun, stageId: string): Pr
           onPartial?.(partial)
         }
       )
+      finishStep(rt, step, '完成了')
+      return out
     } catch (err) {
       if (run.watchdogAborted === ctl) return null
+      finishStep(rt, step, '没完成', 'failed')
       throw err
     } finally {
       if (run.abort === ctl) run.abort = null
@@ -1744,6 +1801,7 @@ async function runCreate(rt: Runtime, run: ActiveRun): Promise<void> {
 
   // 阶段 1：理解需求 / 分析参考图片（Planner LLM，20 分钟看门狗）
   let plan: PlanResult
+  const planStep = startStep(rt, 'st-1', hasImage && vision ? '分析你的需求和参考图' : '分析你的需求')
   run.retryLlm = () => void runCreate(rt, run) // 超时卡片的"让 AI 再试一次"也走这里
   const wdPlan = armAgentWatchdog(rt, run, 'st-1', 'other')
   const ctl = new AbortController()
@@ -1752,6 +1810,7 @@ async function runCreate(rt: Runtime, run: ActiveRun): Promise<void> {
     plan = await callPlanner(run.pending.text, run.pending.attachments, vision, llmProgress(rt, 'st-1', '正在分析需求'), ctl.signal)
   } catch (err) {
     if (run.watchdogAborted === ctl) return // 看门狗已接管（超时卡片）
+    finishStep(rt, planStep, '没分析完', 'failed')
     raiseLlmFailureCard(rt, run, err, 'st-1')
     rt.running = false
     return
@@ -1759,6 +1818,7 @@ async function runCreate(rt: Runtime, run: ActiveRun): Promise<void> {
     if (run.abort === ctl) run.abort = null
     disarmAgentWatchdog(rt, run, wdPlan)
   }
+  finishStep(rt, planStep, plan.needClarification ? '还有几个细节要跟你确认' : '需求清楚了')
   // 规划结论里的地图备料依据（无图创作用；6 位行政区划代码，否则为空串）
   run.pending.mapAdcode = plan.mapAdcode
 
@@ -1773,17 +1833,22 @@ async function runCreate(rt: Runtime, run: ActiveRun): Promise<void> {
       const wdInv = armAgentWatchdog(rt, run, 'st-1', 'other')
       const ctlInv = new AbortController()
       run.abort = ctlInv
+      let invStep: AgentStep | null = null
       try {
         const size = await imageSize(refImage)
-        const crops = await cropImageDataUrl(refImage, referenceRegions(size.width, size.height))
+        const regions = referenceRegions(size.width, size.height)
+        invStep = startStep(rt, 'st-1', `精读参考图：裁出 ${regions.length} 块局部放大`)
+        const crops = await cropImageDataUrl(refImage, regions)
         run.pending.inventory = await callReplicaInventory(refImage, crops, run.pending.text, undefined, ctlInv.signal)
         save(rt)
+        finishStep(rt, invStep, `认出了 ${run.pending.inventory.panels.length} 个面板、${run.pending.inventory.kpis.length} 个指标`)
         pushAgent(
           rt,
           `参考图精读完了：${run.pending.inventory.panels.length} 个面板、${run.pending.inventory.kpis.length} 个指标都记下来了，接下来照着做。`
         )
       } catch (err) {
         if (run.watchdogAborted === ctlInv) return // 看门狗已接管（超时卡片）
+        if (invStep) finishStep(rt, invStep, '没读全，按看到的大概样子做')
         run.pending.inventory = null
         save(rt)
         pushAgent(rt, '参考图细节没读全，我按看到的大概样子和你的描述来做。')
@@ -1878,6 +1943,7 @@ async function fetchDataForCreate(rt: Runtime, run: ActiveRun, stageId: string):
 
   // 2) 取数规划（planner 角色，看门狗按 'other' 布防；LLM 失败走现有 LLM 失败卡）
   setStageDetail(rt, stageId, '正在规划要取哪些数据…')
+  const planFetchStep = startStep(rt, stageId, '规划要取哪些数据')
   let calls: DataFetchCall[]
   run.retryLlm = () => void continueCreateToCoding(rt, run) // 失败/超时卡片的"让 AI 再试一次"也走这里
   const wdPlan = armAgentWatchdog(rt, run, stageId, 'other')
@@ -1894,12 +1960,14 @@ async function fetchDataForCreate(rt: Runtime, run: ActiveRun, stageId: string):
     calls = normalizeDataFetchCalls(raw, whitelist)
   } catch (err) {
     if (run.watchdogAborted === ctl) return false // 看门狗已接管（超时卡片）
+    finishStep(rt, planFetchStep, '没规划完', 'failed')
     raiseLlmFailureCard(rt, run, err, stageId)
     return false
   } finally {
     if (run.abort === ctl) run.abort = null
     disarmAgentWatchdog(rt, run, wdPlan)
   }
+  finishStep(rt, planFetchStep, calls.length > 0 ? `要取 ${calls.length} 批数据` : '这版用演示数据就够用')
 
   // 3) 规划结论：不需要真实数据 → 用演示数据（快照记 ''，后续环节不再重取）
   if (calls.length === 0) {
@@ -1916,11 +1984,14 @@ async function fetchDataForCreate(rt: Runtime, run: ActiveRun, stageId: string):
   for (const [i, call] of calls.entries()) {
     const source = sourceById.get(call.sourceId) as McpDataSource
     setStageDetail(rt, stageId, `正在取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}…`)
+    const fetchStep = startStep(rt, stageId, `取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}`)
     try {
       const text = await mcpCallTool(source, call.tool, call.args)
       results.push({ purpose: call.purpose || call.tool, text })
+      finishStep(rt, fetchStep, '拿到了')
     } catch (err) {
       callErrors.push(err instanceof McpError ? err.message : `取「${call.purpose || call.tool}」失败了`)
+      finishStep(rt, fetchStep, '没取到')
     }
   }
 
@@ -1950,6 +2021,7 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
   // 阶段 2：匹配模板（模板库存在且本轮还没匹配过时）
   if (templatesRoot && !run.pending.template) {
     setStageDetail(rt, 'st-2', `正在和模板库比对：${LAYOUTS.length} 种布局、${COMPONENTS.length} 类组件…`)
+    const matchStep = startStep(rt, 'st-2', `和模板库比对：${LAYOUTS.length} 种布局、${COMPONENTS.length} 类组件`)
     let match: MatchResult | null = null
     run.retryLlm = () => void continueCreateToCoding(rt, run) // 超时卡片的"让 AI 再试一次"也走这里
     const cap = await getCapability()
@@ -1985,6 +2057,7 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
         .map((id) => COMPONENTS.find((c) => c.id === id)?.name)
         .filter(Boolean)
         .join('、')
+      finishStep(rt, matchStep, `命中「${layoutName}」${compNames ? `、${compNames}` : ''}`)
       pushAgent(
         rt,
         `模板匹配好了：布局用「${layoutName}」${compNames ? `，组件匹配到 ${compNames}` : ''}，这些都会照着模板库的标准样式来做，还原度更高。` +
@@ -1993,6 +2066,7 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
       finishStage(rt, 'st-2')
     } else {
       // 完全没匹配上：让用户确认是否自定义生成（UX：必选项 + 必推荐）
+      finishStep(rt, matchStep, '没有命中，按你的需求自定义做')
       run.pending.template = { layoutId: null, componentIds: [], useTemplate: false }
       finishStage(rt, 'st-2')
       raiseTemplateConfirmCard(rt, run, match)
@@ -2033,11 +2107,14 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
         : (run.pending.mapAdcode ?? '')
     if (adcode) {
       setStageDetail(rt, ids.code, '正在准备地图素材…')
+      const mapStep = startStep(rt, ids.code, '准备地图素材：下载真实地图，转成页面能直接用的图形')
       try {
         const geojson = await fetchGeoJson(adcode)
         run.pending.mapPaths = geojsonToSvgPaths(geojson, 640, 520, 2)
+        finishStep(rt, mapStep, '地图素材准备好了')
       } catch {
         run.pending.mapPaths = null
+        finishStep(rt, mapStep, '没准备好，按需求描述来画')
         pushAgent(rt, '地图素材没准备好，我按需求描述来画。')
       }
       save(rt)
@@ -2060,6 +2137,7 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
       }
     : null
   let html: string
+  const codeStep = startStep(rt, ids.code, replica ? '照着参考图编写页面' : '编写页面')
   const wdCode = armAgentWatchdog(rt, run, ids.code, 'coding', { check: ids.check, repair: ids.repair, finish: ids.finish })
   const ctl = new AbortController()
   run.abort = ctl
@@ -2070,6 +2148,7 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
     }, ctl.signal)
   } catch (err) {
     if (run.watchdogAborted === ctl) return // 看门狗已接管（自动拆分步骤）
+    finishStep(rt, codeStep, '页面没写完', 'failed')
     raiseLlmFailureCard(rt, run, err, ids.code)
     run.retryLlm = () => void continueCreateToCoding(rt, run)
     rt.running = false
@@ -2078,6 +2157,7 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
     if (run.abort === ctl) run.abort = null
     disarmAgentWatchdog(rt, run, wdCode)
   }
+  finishStep(rt, codeStep, `写完了，共 ${html.length.toLocaleString('zh-CN')} 字`)
   run.html = html
   finishStage(rt, ids.code)
 
@@ -2099,7 +2179,9 @@ async function checkRepairAndFinish(
   // 截图浏览器可用且模型能看图时，用真截图对比验收（有参考图带上参考图）替代文本审查；
   // 截图或审查任何一环失败 → 回落文本审查，行为与原来一致。
   setStageDetail(rt, checkStageId, '先做硬性规则检查：页面完整性、是否引用外部素材…')
+  const hardStep = startStep(rt, checkStageId, '硬性规则检查：页面完整性、有没有引用外部素材')
   let hard = validateHtml(run.html)
+  finishStep(rt, hardStep, hard.length > 0 ? `发现 ${hard.length} 处问题` : '通过')
   const capForShot = await getCapability()
   const visionForShot = capForShot.ok && capForShot.supportsVision
   const replicaEnv = await probeReplicaEnv()
@@ -2113,24 +2195,34 @@ async function checkRepairAndFinish(
   const ctlReview = new AbortController()
   run.abort = ctlReview
   try {
+    let shotPathStep: AgentStep | null = null
     try {
       if (shotEnvOk) {
         setStageDetail(rt, checkStageId, '正在给页面截图，照着要求对比检查…')
+        shotPathStep = startStep(rt, checkStageId, '给页面截图')
         shotDataUrl = await renderShotDataUrl(run.html, 1920, 1080)
+        finishStep(rt, shotPathStep, '截图好了')
+        shotPathStep = startStep(rt, checkStageId, referenceImage ? '拿着截图和参考图对比检查' : '拿着截图逐项检查')
         review = await callShotReview(shotDataUrl, referenceImage, run.pending.text, llmProgress(rt, checkStageId, '正在对比检查'), ctlReview.signal)
         usedShotReview = true
+        finishStep(rt, shotPathStep, review.length > 0 ? `发现 ${review.length} 个问题` : '没发现问题')
+        shotPathStep = null
       }
     } catch (err) {
       if (run.watchdogAborted === ctlReview) return // 看门狗已接管（超时卡片）
+      if (shotPathStep) finishStep(rt, shotPathStep, '没完成，改用文字检查')
       review = []
       shotDataUrl = null
     }
     if (!usedShotReview) {
       // 文本审查兜底（无截图浏览器 / 模型看不了图 / 截图路径失败）
+      const textReviewStep = startStep(rt, checkStageId, '检查页面源码布局')
       try {
         review = await callVisualReview(run.html, run.pending.text, llmProgress(rt, checkStageId, '正在审查布局'), ctlReview.signal)
+        finishStep(rt, textReviewStep, review.length > 0 ? `发现 ${review.length} 个问题` : '没发现问题')
       } catch (err) {
         if (run.watchdogAborted === ctlReview) return // 看门狗已接管（超时卡片）
+        finishStep(rt, textReviewStep, '审查没完成，用硬性检查结果兜底')
         review = []
       }
     }
@@ -2183,6 +2275,7 @@ async function checkRepairAndFinish(
     firstPass = false
     run.pending.failCount += 1
     run.retryLlm = () => void resumeRepair(rt, run, fixStageId, finishStageId)
+    const fixStep = startStep(rt, fixStageId, `修复 ${problems.length} 个问题（第 ${issues[0].attempt} 次）`)
     const wdFix = armAgentWatchdog(rt, run, fixStageId, 'other')
     const ctlFix = new AbortController()
     run.abort = ctlFix
@@ -2190,6 +2283,7 @@ async function checkRepairAndFinish(
       run.html = await callCoderRepair(run.html, problems, llmProgress(rt, fixStageId, '正在修复问题'), ctlFix.signal)
     } catch (err) {
       if (run.watchdogAborted === ctlFix) return // 看门狗已接管（超时卡片）
+      finishStep(rt, fixStep, '修复没完成', 'failed')
       issues.forEach((i) => setIssue(rt, { ...i, status: 'failed' }))
       raiseLlmFailureCard(rt, run, err, fixStageId)
       rt.running = false
@@ -2223,6 +2317,7 @@ async function checkRepairAndFinish(
     const remaining = [...hard]
     for (const r of recheck) if (!remaining.includes(r.title)) remaining.push(r.title)
     if (remaining.length === 0) {
+      finishStep(rt, fixStep, '修好了，复查通过')
       issues.forEach((i) =>
         setIssue(rt, {
           ...i,
@@ -2239,6 +2334,7 @@ async function checkRepairAndFinish(
       return
     }
     problems = remaining
+    finishStep(rt, fixStep, `还剩 ${remaining.length} 个问题没修好`)
     issues.forEach((i, idx) => setIssue(rt, { ...i, status: 'failed', title: problems[Math.min(idx, problems.length - 1)] }))
     if (issues[0].attempt >= 2) {
       // 自动修复预算用完 → 问题处理卡片（推荐按规则表）
@@ -2265,6 +2361,7 @@ async function resumeRepair(rt: Runtime, run: ActiveRun, checkStageId: string, f
   if (issue) {
     const next: Issue = { ...issue, attempt: issue.attempt + 1, status: 'fixing', title: problems[0] }
     setIssue(rt, next)
+    const retryStep = startStep(rt, checkStageId, `再修一次（第 ${next.attempt} 次）：${problems[0]}`)
     run.retryLlm = () => void resumeRepair(rt, run, checkStageId, finishStageId)
     const wdFix = armAgentWatchdog(rt, run, checkStageId, 'other')
     const ctlFix = new AbortController()
@@ -2273,6 +2370,7 @@ async function resumeRepair(rt: Runtime, run: ActiveRun, checkStageId: string, f
       run.html = await callCoderRepair(run.html, problems, llmProgress(rt, checkStageId, '正在修复问题'), ctlFix.signal)
     } catch (err) {
       if (run.watchdogAborted === ctlFix) return // 看门狗已接管（超时卡片）
+      finishStep(rt, retryStep, '修复没完成', 'failed')
       setIssue(rt, { ...next, status: 'failed' })
       raiseLlmFailureCard(rt, run, err, checkStageId)
       rt.running = false
@@ -2283,6 +2381,7 @@ async function resumeRepair(rt: Runtime, run: ActiveRun, checkStageId: string, f
     }
     problems = validateHtml(run.html)
     if (problems.length === 0) {
+      finishStep(rt, retryStep, '修好了，复查通过')
       setIssue(rt, {
         ...next,
         status: 'fixed',
@@ -2294,6 +2393,7 @@ async function resumeRepair(rt: Runtime, run: ActiveRun, checkStageId: string, f
       return
     }
     const failedNow = { ...next, status: 'failed' as const, title: problems[0] }
+    finishStep(rt, retryStep, '还是没修好', 'failed')
     setIssue(rt, failedNow)
     run.retryRepair = () => void resumeRepair(rt, run, checkStageId, finishStageId)
     run.proceed = () => void finishRunCommit(rt, run, finishStageId)
@@ -2310,8 +2410,10 @@ async function finishRunCommit(rt: Runtime, run: ActiveRun, finishStageId: strin
   setStatus(rt, 'generating')
   const st = rt.s.stages.find((x) => x.id === finishStageId)
   if (!st || st.state !== 'done') activateStage(rt, finishStageId)
+  const commitStep = startStep(rt, finishStageId, '生成预览，存成新版本')
   await sleep(600)
   commitVersion(rt, run)
+  finishStep(rt, commitStep, '新版本可以看了')
   finishStage(rt, finishStageId)
   pushAgent(
     rt,
@@ -2421,12 +2523,14 @@ async function runEdit(rt: Runtime, run: ActiveRun): Promise<void> {
 
   // before: ['st-2'] —— 拆分路径直接接力检查时，先把正常路径的「构建」阶段补打勾，不留永久 pending
   const wdEdit = armAgentWatchdog(rt, run, 'st-1', 'coding', { check: 'st-3', repair: null, finish: 'st-3', before: ['st-2'] })
+  const editStep = startStep(rt, 'st-1', '修改页面')
   const ctl = new AbortController()
   run.abort = ctl
   try {
     run.html = await callCoderEdit(currentHtml, run.pending.text || '按用户发的参考图调整', run.pending.dataBlock ?? '', llmProgress(rt, 'st-1', '正在修改页面'), ctl.signal)
   } catch (err) {
     if (run.watchdogAborted === ctl) return // 看门狗已接管（自动拆分步骤）
+    finishStep(rt, editStep, '没改完', 'failed')
     raiseLlmFailureCard(rt, run, err, 'st-1')
     run.retryLlm = () => void runEdit(rt, run)
     rt.running = false
@@ -2435,6 +2539,7 @@ async function runEdit(rt: Runtime, run: ActiveRun): Promise<void> {
     if (run.abort === ctl) run.abort = null
     disarmAgentWatchdog(rt, run, wdEdit)
   }
+  finishStep(rt, editStep, '改完了')
   finishStage(rt, 'st-1')
   activateStage(rt, 'st-2')
   await sleep(700)
@@ -2857,6 +2962,7 @@ function emptySession(dash: Dashboard): SessionData {
     runStatus: 'idle',
     messages: [],
     stages: [],
+    steps: [],
     issues: [],
     blocker: null,
     versions: [],
@@ -2875,7 +2981,8 @@ function makeRuntime(s: SessionData): Runtime {
     s.pendingRun = null
   }
   s.assistSession = null
-  const rt: Runtime = { s, running: false, queue: [], activeRun: null, autoTimer: null, timers: new Set() }
+  s.steps ??= [] // 旧版会话文件没有执行轨迹字段
+  const rt: Runtime = { s, running: false, queue: [], activeRun: null, autoTimer: null, timers: new Set(), stepsResetPending: false }
   sessions.set(s.dashboard.id, rt)
   return rt
 }
@@ -2900,6 +3007,7 @@ export function snapshotOf(rt: Runtime): WorkbenchSnapshot {
     runStatus: rt.s.runStatus,
     messages: [...rt.s.messages],
     stages: [...rt.s.stages],
+    steps: [...rt.s.steps],
     issues: [...rt.s.issues],
     blocker: rt.s.blocker,
     versions: [...rt.s.versions],

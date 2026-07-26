@@ -2,11 +2,12 @@
   阶段时间线（UX §4.2 右栏 / §5.2）：
   ✓ 已完成（绿）/ ● 进行中（蓝 + 呼吸动画 + 已耗时"x 分 xx 秒"）/ ○ 未开始（灰），节点竖线连接。
   增量修改收敛为 3 步、新建 6~8 步由后端/mock 给的 stages 决定，这里照单渲染。
-  各阶段名下的问题用 IssueCard 缩进挂在节点下面。
+  每个阶段节点下渲染该阶段的执行轨迹（AgentStep 动作流："Agent 具体干了哪些事"，
+  文案由服务端/mock 写入时固化成大白话，这里只渲染不翻译），再往下挂 IssueCard。
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { Issue, Stage } from '../../types'
+import type { AgentStep, Issue, Stage } from '../../types'
 import IssueCard from './IssueCard.vue'
 import AppIcon from '../common/AppIcon.vue'
 import { formatElapsed } from './utils'
@@ -14,7 +15,8 @@ import { formatElapsed } from './utils'
 const props = withDefaults(defineProps<{
   stages: Stage[]
   issues?: Issue[]
-}>(), { issues: () => [] })
+  steps?: AgentStep[]
+}>(), { issues: () => [], steps: () => [] })
 
 /* mock 会用空标题槽位抹掉上一轮的尾巴，空标题节点不渲染 */
 const visibleStages = computed(() => props.stages.filter((s) => s.title))
@@ -34,6 +36,10 @@ onBeforeUnmount(() => {
 
 function issuesOf(stageId: string): Issue[] {
   return props.issues.filter((i) => i.stageId === stageId)
+}
+
+function stepsOf(stageId: string): AgentStep[] {
+  return props.steps.filter((s) => s.stageId === stageId)
 }
 
 /** 阶段耗时：进行中算到现在，已完成算到完成时间 */
@@ -93,6 +99,40 @@ function elapsedOf(s: Stage): string {
           <span class="inline-block h-1 w-1 shrink-0 rounded-full bg-status-generating animate-pulse-blue" />
           <span class="truncate">{{ s.detail }}</span>
         </p>
+
+        <!-- 该阶段的执行轨迹（Agent 具体干了哪些事：动作 + 结果摘要） -->
+        <ul v-if="stepsOf(s.id).length" class="mt-1.5 flex flex-col gap-1">
+          <li
+            v-for="step in stepsOf(s.id)"
+            :key="step.id"
+            class="flex items-start gap-1.5 text-xs leading-4"
+          >
+            <AppIcon
+              v-if="step.state === 'done'"
+              name="check-circle"
+              :size="12"
+              class="mt-0.5 shrink-0 text-status-done"
+            />
+            <AppIcon
+              v-else-if="step.state === 'failed'"
+              name="close"
+              :size="12"
+              class="mt-0.5 shrink-0 text-status-attention"
+            />
+            <span
+              v-else
+              class="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-status-generating animate-pulse-blue"
+            />
+            <span
+              class="min-w-0"
+              :class="step.state === 'active'
+                ? 'text-status-generating'
+                : step.state === 'failed'
+                  ? 'text-status-attention'
+                  : 'text-ink-faint'"
+            >{{ step.title }}<template v-if="step.detail"> — {{ step.detail }}</template></span>
+          </li>
+        </ul>
 
         <!-- 该阶段发现的问题（缩进挂在节点下） -->
         <div v-if="issuesOf(s.id).length" class="mt-2 flex flex-col gap-2">

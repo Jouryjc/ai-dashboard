@@ -5,6 +5,7 @@
  * 全部 import type（仅编译期），运行时不依赖 client 代码。
  */
 export type {
+  AgentStep,
   AssistAction,
   AssistSession,
   Blocker,
@@ -32,6 +33,7 @@ export type {
   RunStatus,
   Stage,
   StageState,
+  StepState,
   SystemMessage,
   UserMessage,
   Version

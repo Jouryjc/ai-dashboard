@@ -14,6 +14,7 @@
  * ============================================================================
  */
 import type {
+  AgentStep,
   ClarificationAnswer,
   Dashboard,
   DataSourceProbeResult,
@@ -88,6 +89,8 @@ interface Runtime {
   queue: string[]
   resume: (() => void) | null
   autoTimer: ReturnType<typeof setTimeout> | null
+  /** 新一轮已清空执行轨迹：下一个 step 事件要带 reset=true 让 stores 同步清空 */
+  stepsResetPending: boolean
 }
 
 export function createMockClient(): ClientApi {
@@ -147,7 +150,8 @@ export function createMockClient(): ClientApi {
       timers: new Map(),
       queue: [],
       resume: null,
-      autoTimer: null
+      autoTimer: null,
+      stepsResetPending: false
     }
     const dashId = state.dashboard.id
 
@@ -192,6 +196,34 @@ export function createMockClient(): ClientApi {
         if (i >= 0) state.stages[i] = stage
         else state.stages.push(stage)
         emit('stage', { dashboardId: dashId, stage })
+      },
+      resetSteps() {
+        state.steps = []
+        rt.stepsResetPending = true
+      },
+      startStep(stageId, title) {
+        const step: AgentStep = {
+          id: nextId('step'),
+          stageId,
+          title,
+          detail: null,
+          state: 'active',
+          startedAt: Date.now(),
+          finishedAt: null
+        }
+        const reset = rt.stepsResetPending
+        rt.stepsResetPending = false
+        if (reset) state.steps = []
+        state.steps.push(step)
+        emit('step', { dashboardId: dashId, step, reset })
+        return step
+      },
+      finishStep(step, detail = null, stepState = 'done') {
+        const done: AgentStep = { ...step, state: stepState, detail, finishedAt: Date.now() }
+        const i = state.steps.findIndex((x) => x.id === done.id)
+        if (i >= 0) state.steps[i] = done
+        else state.steps.push(done)
+        emit('step', { dashboardId: dashId, step: done, reset: false })
       },
       setIssue(issue) {
         const i = state.issues.findIndex((x) => x.id === issue.id)
@@ -278,6 +310,7 @@ export function createMockClient(): ClientApi {
         runStatus: 'idle',
         messages: [],
         stages: [],
+        steps: [],
         issues: [],
         blocker: null,
         versions: [],
@@ -297,6 +330,7 @@ export function createMockClient(): ClientApi {
       runStatus: state.runStatus,
       messages: [...state.messages],
       stages: [...state.stages],
+      steps: [...state.steps],
       issues: [...state.issues],
       blocker: state.blocker,
       versions: [...state.versions],

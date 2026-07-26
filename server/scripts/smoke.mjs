@@ -308,6 +308,21 @@ async function main() {
   }
   ok('「获取数据」阶段经历 active → done')
 
+  // 8.5+ 执行轨迹（观测性 §2.3）：每个阶段节点下有具体动作，新一轮首条带 reset，收尾无"永远进行中"
+  const stepEvents = sse.events.filter((e) => e.event === 'step')
+  if (stepEvents.length === 0) fail('执行轨迹 step 事件流出')
+  if (!stepEvents.some((e) => e.data?.reset === true)) fail('新一轮首个 step 事件带 reset=true')
+  const stepTitles = stepEvents.map((e) => e.data?.step?.title ?? '')
+  for (const t of ['分析你的需求', '规划要取哪些数据', '取数 1/', '编写页面', '硬性规则检查']) {
+    if (!stepTitles.some((x) => x.includes(t))) fail(`执行轨迹含「${t}」`, stepTitles.join(' | '))
+  }
+  ok('执行轨迹：动作流覆盖 分析/取数/编写/检查', `${stepEvents.length} 条 step 事件`)
+  const snap1 = (await api('POST', `/dashboards/${dash.id}/enter`)).json
+  if (!Array.isArray(snap1.steps) || snap1.steps.length === 0) fail('快照含执行轨迹 steps')
+  const activeLeft = snap1.steps.filter((s) => s.state === 'active')
+  if (activeLeft.length > 0) fail('收尾后无进行中动作', activeLeft.map((s) => s.title).join(' | '))
+  ok('快照含执行轨迹，收尾后无"永远进行中"动作', `${snap1.steps.length} 条`)
+
   // 8.6 修复路径演练：stub 在 HTML 里埋视觉问题标记 → 视觉检查报问题 → Issue 卡 → 自动修复 → previewReady
   const dash2 = (await api('POST', '/dashboards', { name: '修复演示大屏' })).json
   const sse2 = openSse(dash2.id)

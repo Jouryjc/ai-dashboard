@@ -14,6 +14,7 @@
  * ============================================================================
  */
 import type {
+  AgentStep,
   AssistSession,
   Blocker,
   ChatMessage,
@@ -41,6 +42,8 @@ export interface SessionState {
   runStatus: RunStatus
   messages: ChatMessage[]
   stages: Stage[]
+  /** 执行轨迹（各阶段节点下的动作流） */
+  steps: AgentStep[]
   issues: Issue[]
   blocker: Blocker | null
   /** 版本时间线（新的在前） */
@@ -78,6 +81,10 @@ function systemMsg(text: string, at: number): ChatMessage {
 
 function stage(id: string, title: string, state: Stage['state'], startedAt: number | null, finishedAt: number | null): Stage {
   return { id, title, state, startedAt, finishedAt }
+}
+
+function step(id: string, stageId: string, title: string, detail: string | null, state: AgentStep['state'], startedAt: number, finishedAt: number | null): AgentStep {
+  return { id, stageId, title, detail, state, startedAt, finishedAt }
 }
 
 function version(dashId: string, label: string, summary: string, createdAt: number, screenshotUrl: string, published: boolean, isCurrent: boolean): Version {
@@ -179,6 +186,12 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
       stage('st-5', '修复问题', 'pending', null, null),
       stage('st-6', '生成预览', 'pending', null, null)
     ],
+    steps: [
+      step('step-k8s-1', 'st-1', '分析你的需求', '需求清楚了', 'done', now - 4 * MIN, now - 3 * MIN - 30_000),
+      step('step-k8s-2', 'st-2', '和模板库比对：6 种布局、12 类组件', '命中「指挥中心三栏」、指标卡', 'done', now - 3 * MIN, now - 2 * MIN - 30_000),
+      step('step-k8s-3', 'st-3', '编写页面', '写完了，共 4,213 字', 'done', now - 2 * MIN - 30_000, now - 90_000),
+      step('step-k8s-4', 'st-4', '给页面截图', null, 'active', now - 30_000, null)
+    ],
     issues: [],
     blocker: null,
     versions: [],
@@ -211,6 +224,7 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
       systemMsg('发布申请已通过，v1 已发布', now - DAY - HOUR)
     ],
     stages: [],
+    steps: [],
     issues: [],
     blocker: null,
     versions: [salesV3, salesV2, salesV1],
@@ -242,6 +256,7 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
       agentMsg('好的，正在连接车辆定位数据源…', now - 3 * DAY + 30_000)
     ],
     stages: [],
+    steps: [],
     issues: [],
     blocker: null,
     versions: [logisticsV1],
@@ -272,6 +287,7 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
       agentMsg('加好了，峰平谷三段电价和用电量对比已经放上去了。', now - 5 * HOUR)
     ],
     stages: [],
+    steps: [],
     issues: [],
     blocker: null,
     versions: [energyV2, energyV1],
@@ -302,6 +318,7 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
       agentMsg('做好了！营业额、来客数、门店排行都在上面了。', now - DAY - HOUR)
     ],
     stages: [],
+    steps: [],
     issues: [],
     blocker: null,
     versions: [retailV1],

@@ -126,7 +126,7 @@ async function onRollback(versionId: string): Promise<void> {
 
     <!-- 滚动区：阶段时间线 + Issue 卡片 -->
     <div class="flex-1 overflow-y-auto px-4 py-3">
-      <StageTimeline v-if="session.stages.length" :stages="session.stages" :issues="session.issues" />
+      <StageTimeline v-if="session.stages.length" :stages="session.stages" :issues="session.issues" :steps="session.steps" />
       <p v-else class="mt-8 text-center text-sm leading-6 text-ink-faint">
         还没有开始干活<br />在左侧说说你想要什么大屏吧
       </p>

@@ -20,6 +20,7 @@ import { api } from '../api'
 import { useChatStore } from './chat'
 import {
   RUN_STATUS_LABEL,
+  type AgentStep,
   type AssistSession,
   type Blocker,
   type Issue,
@@ -70,6 +71,8 @@ export const useSessionStore = defineStore('session', () => {
   const runStatus = ref<RunStatus>('idle')
   /** 阶段时间线 */
   const stages = ref<Stage[]>([])
+  /** 执行轨迹（各阶段节点下的实时动作流："Agent 具体干了哪些事"） */
+  const steps = ref<AgentStep[]>([])
   /** 问题列表（Issue Ledger 产品化） */
   const issues = ref<Issue[]>([])
   /** 当前卡点（null = 无卡点） */
@@ -136,6 +139,7 @@ export const useSessionStore = defineStore('session', () => {
     dashboardName.value = snap.dashboard.name
     runStatus.value = snap.runStatus
     stages.value = snap.stages
+    steps.value = snap.steps
     issues.value = snap.issues
     blocker.value = snap.blocker
     versions.value = snap.versions
@@ -161,6 +165,14 @@ export const useSessionStore = defineStore('session', () => {
         const i = issues.value.findIndex((x) => x.id === p.issue.id)
         if (i >= 0) issues.value[i] = p.issue
         else issues.value.push(p.issue)
+      }),
+      // 执行轨迹：新一轮开始（reset）先清空，再按 id 原位更新/追加
+      api.on('step', (p) => {
+        if (!forCurrent(p)) return
+        if (p.reset) steps.value = []
+        const i = steps.value.findIndex((x) => x.id === p.step.id)
+        if (i >= 0) steps.value[i] = p.step
+        else steps.value.push(p.step)
       }),
       api.on('blocker', (p) => {
         if (!forCurrent(p)) return
@@ -213,6 +225,7 @@ export const useSessionStore = defineStore('session', () => {
     dashboardName.value = ''
     runStatus.value = 'idle'
     stages.value = []
+    steps.value = []
     issues.value = []
     blocker.value = null
     versions.value = []
@@ -275,7 +288,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   return {
-    dashboardId, dashboardName, runStatus, stages, issues, blocker,
+    dashboardId, dashboardName, runStatus, stages, steps, issues, blocker,
     versions, previewState, previewUrl, previewBuildingLive, viewingVersionId, resolution,
     assistSession, panelCollapsed,
     statusText, currentStage, stageProgress, hasVersion, canPublish, canRollback, versionLabel,

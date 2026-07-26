@@ -123,6 +123,33 @@ export interface Issue {
   detail: string
 }
 
+/* ==================== 执行轨迹（右栏阶段节点下的实时动作流） ==================== */
+
+/** 一个具体动作的状态：● 进行中 / ✓ 完成 / ✕ 失败 */
+export type StepState = 'active' | 'done' | 'failed'
+
+/**
+ * Agent 做的一件具体事（观测性设计 §2.3 执行轨迹的用户态投影）。
+ * 挂在某个阶段节点下，多个动作按时间排列就是"Agent 具体干了哪些事"。
+ * 文案在产生的一侧（服务端/mock）写入时就固化成大白话，前端只渲染不翻译。
+ */
+export interface AgentStep {
+  /** 动作 ID */
+  id: string
+  /** 所属阶段 ID（挂在哪个阶段节点下） */
+  stageId: string
+  /** 一句话动作，如 "精读参考图：裁出 5 块局部放大" */
+  title: string
+  /** 结果摘要（完成/失败时补充，如 "认出了 3 个面板、2 个指标"）；没有 = null */
+  detail: string | null
+  /** 状态 */
+  state: StepState
+  /** 开始时间（毫秒） */
+  startedAt: number
+  /** 结束时间（毫秒；进行中 = null） */
+  finishedAt: number | null
+}
+
 /* ==================== 选项卡（澄清卡片 / 问题处理卡片共用） ==================== */
 
 /** 风险等级：决定推荐理由与是否允许倒计时自动执行（UX §4.3 / C11） */

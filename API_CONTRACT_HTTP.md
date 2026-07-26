@@ -38,7 +38,8 @@ Base URL 示例：`http://localhost:8787`。所有 JSON。CORS：开发期 `Acce
 
 `GET /api/v1/dashboards/:id/events`
 
-- 帧格式：`id: <seq>` + `event: <type>` + `data: <json>`，`<type>` ∈ `ClientEventMap` 的 11 个键（message / messageUpdated / stage / issue / blocker / previewReady / previewBuilding / versionAdded / runStatus / dashboardUpdated / assist），data 载荷与 `ClientEventMap[type]` 完全一致（含 dashboardId）。
+- 帧格式：`id: <seq>` + `event: <type>` + `data: <json>`，`<type>` ∈ `ClientEventMap` 的 12 个键（message / messageUpdated / stage / step / issue / blocker / previewReady / previewBuilding / versionAdded / runStatus / dashboardUpdated / assist），data 载荷与 `ClientEventMap[type]` 完全一致（含 dashboardId）。
+- `step`（执行轨迹）：阶段节点下的实时动作流——Agent 做的每件具体事（精读参考图/备料/比对模板/取数/编写/截图/对比检查/修复尝试），文案在服务端写入时固化成大白话。`reset=true` 表示新一轮开始，先清空此前全部动作记录再插入本条。快照 `WorkbenchSnapshot.steps` 带全量（时间升序）。
 - `seq` 单大屏内单调递增；事件同时落盘 `server/data/events/<dashboardId>.jsonl`（append-only）。
 - 重连带 `Last-Event-ID: <seq>` 时先补发缺失事件再续流（EventSource 自动携带）。心跳：每 15s 一行 `: ping`。
 

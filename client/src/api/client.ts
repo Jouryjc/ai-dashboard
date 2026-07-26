@@ -9,6 +9,7 @@
  * - 文案一律大白话，由产生数据的一侧（mock/后端）准备好。
  */
 import type {
+  AgentStep,
   AssistSession,
   Blocker,
   ChatMessage,
@@ -33,6 +34,11 @@ export interface ClientEventMap {
   messageUpdated: { dashboardId: string; message: ChatMessage }
   /** 阶段时间线节点状态变化（✓ 已完成 / ● 进行中 / ○ 未开始） */
   stage: { dashboardId: string; stage: Stage }
+  /**
+   * 执行轨迹动作变化（阶段节点下的实时动作流：开始/完成/失败）。
+   * reset=true 表示新一轮开始：先清空此前全部动作记录，再插入这一条。
+   */
+  step: { dashboardId: string; step: AgentStep; reset: boolean }
   /** 问题（Issue）状态变化：第几次尝试、修好/没修好 */
   issue: { dashboardId: string; issue: Issue }
   /** 卡点出现或解除（null = 解除）。问题卡片与右栏行动区共用此事件源 */
@@ -155,6 +161,8 @@ export interface WorkbenchSnapshot {
   messages: ChatMessage[]
   /** 阶段时间线 */
   stages: Stage[]
+  /** 执行轨迹（各阶段节点下的动作流，时间升序） */
+  steps: AgentStep[]
   /** 问题列表 */
   issues: Issue[]
   /** 当前卡点（无卡点 = null） */

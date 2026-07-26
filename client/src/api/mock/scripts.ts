@@ -15,6 +15,7 @@
  * ============================================================================
  */
 import type {
+  AgentStep,
   AssistSession,
   Blocker,
   CardOption,
@@ -48,6 +49,12 @@ export interface Ctx {
   /** 就地修改过的消息重新推给 UI（同 id 替换；不改 state.messages，对象已在里面） */
   updateMessage(m: ChatMessage): void
   setStage(stage: Stage): void
+  /** 新一轮开始：清空上一轮执行轨迹（下一个 step 事件自动带 reset） */
+  resetSteps(): void
+  /** 开始一个动作（阶段节点下的实时动作流） */
+  startStep(stageId: string, title: string): AgentStep
+  /** 结束一个动作：detail 为结果摘要（大白话）；failed 只用于导致卡点的真实失败 */
+  finishStep(step: AgentStep, detail?: string | null, state?: AgentStep['state']): void
   setIssue(issue: Issue): void
   setBlocker(b: Blocker | null): void
   /** 新增版本（自动成为 current，旧的取消 current） */
@@ -199,6 +206,8 @@ const EDIT_TITLES = ['修改', '构建', '检查']
  * 这是契约内的最大努力；彻底方案见返回结果的集成建议）。
  */
 function emitPlan(ctx: Ctx, titles: string[]): void {
+  // 新一轮开始：清空上一轮的执行轨迹（下一个 startStep 事件带 reset，stores 同步清空）
+  ctx.resetSteps()
   titles.forEach((t, i) => {
     ctx.setStage({
       id: `st-${i + 1}`,
@@ -345,8 +354,10 @@ export function handleChooseOption(ctx: Ctx, optionId: string, auto = false): vo
       ctx.setStatus('generating')
       if (issue) {
         ctx.setIssue({ ...issue, attempt: issue.attempt + 1, status: 'fixing' })
+        const retryStep = ctx.startStep(issue.stageId, `再修一次（第 ${issue.attempt + 1} 次）：${issue.title}`)
         ctx.after(2400, () => {
           markFixed(ctx, issue.id)
+          ctx.finishStep(retryStep, '修好了，复查通过')
           resume?.()
         })
       } else {
@@ -569,8 +580,8 @@ export function startCreateFlow(ctx: Ctx, userText: string, hasImage = false): v
     ctx,
     hasImage ? '好的，我先仔细看看你发来的图片…' : '好的，我来帮你做。先理解一下你的需求…'
   )
+  const planStep = ctx.startStep('st-1', hasImage ? '分析你的需求和参考图' : '分析你的需求')
   ctx.after(hasImage ? 2800 : 2000, () => {
-    finishStage(ctx, 'st-1')
     const askClarification = (): void => {
       const card = buildClarification(ctx, userText, hasImage)
       ctx.pushMessage(card)
@@ -596,13 +607,21 @@ export function startCreateFlow(ctx: Ctx, userText: string, hasImage = false): v
       ctx.setResume(() => continueCreateAfterClarification(ctx))
     }
     if (hasImage) {
-      // 先给出"图片分析结论"，再据此确认问题（UX §4.2：过程永远可见）
-      pushAgent(
-        ctx,
-        '图片分析完了：整体是深色科技风，中间是主视觉区，两侧排着指标卡和排行榜。我按这个骨架来做。'
-      )
-      ctx.after(1800, askClarification)
+      // 先精读参考图给出"图片分析结论"，再据此确认问题（UX §4.2：过程永远可见）
+      ctx.finishStep(planStep, '需求清楚了')
+      const invStep = ctx.startStep('st-1', '精读参考图：裁出 5 块局部放大')
+      ctx.after(1800, () => {
+        ctx.finishStep(invStep, '认出了 6 个面板、4 个指标')
+        finishStage(ctx, 'st-1')
+        pushAgent(
+          ctx,
+          '图片分析完了：整体是深色科技风，中间是主视觉区，两侧排着指标卡和排行榜。我按这个骨架来做。'
+        )
+        askClarification()
+      })
     } else {
+      ctx.finishStep(planStep, '还有几个细节要跟你确认')
+      finishStage(ctx, 'st-1')
       askClarification()
     }
   })
@@ -612,15 +631,25 @@ function continueCreateAfterClarification(ctx: Ctx): void {
   ctx.setStatus('generating')
   pushAgent(ctx, '好的，就按你选的来做，马上开始。')
   activateStage(ctx, 'st-2')
+  const matchStep = ctx.startStep('st-2', '和模板库比对：6 种布局、12 类组件')
   ctx.after(2000, () => {
+    ctx.finishStep(matchStep, '命中「指挥中心三栏」、指标卡、排名条')
     finishStage(ctx, 'st-2')
     activateStage(ctx, 'st-3')
+    const codeStep = ctx.startStep('st-3', '编写页面')
     ctx.after(2500, () => {
+      ctx.finishStep(codeStep, '写完了，共 4,213 字')
       finishStage(ctx, 'st-3')
       activateStage(ctx, 'st-4')
-      ctx.after(2000, () => {
-        finishStage(ctx, 'st-4')
-        runFixPhase(ctx, () => finishCreate(ctx))
+      const shotStep = ctx.startStep('st-4', '给页面截图')
+      ctx.after(1000, () => {
+        ctx.finishStep(shotStep, '截图好了')
+        const reviewStep = ctx.startStep('st-4', '拿着截图逐项检查')
+        ctx.after(1000, () => {
+          ctx.finishStep(reviewStep, '发现 3 个问题')
+          finishStage(ctx, 'st-4')
+          runFixPhase(ctx, () => finishCreate(ctx))
+        })
       })
     })
   })
@@ -628,9 +657,15 @@ function continueCreateAfterClarification(ctx: Ctx): void {
 
 /** dash-k8s 预置在"视觉检查"进行中，进入工作台后从这里续跑 */
 export function resumeCreateAtCheck(ctx: Ctx): void {
-  ctx.after(2500, () => {
-    finishStage(ctx, 'st-4')
-    runFixPhase(ctx, () => finishCreate(ctx))
+  ctx.after(1500, () => {
+    const shot = ctx.s.steps.find((x) => x.id === 'step-k8s-4')
+    if (shot && shot.state === 'active') ctx.finishStep(shot, '截图好了')
+    const reviewStep = ctx.startStep('st-4', '拿着截图逐项检查')
+    ctx.after(1000, () => {
+      ctx.finishStep(reviewStep, '发现 3 个问题')
+      finishStage(ctx, 'st-4')
+      runFixPhase(ctx, () => finishCreate(ctx))
+    })
   })
 }
 
@@ -650,14 +685,26 @@ function runFixPhase(ctx: Ctx, next: () => void): void {
       detail: ''
     })
   })
+  const fix1 = ctx.startStep('st-5', '修复 3 个问题（第 1 次）')
+  let fix2: AgentStep | null = null
+  let fix3: AgentStep | null = null
   ctx.after(1800, () => markFixed(ctx, 'issue-chart'))
   ctx.after(3600, () => markFixed(ctx, 'issue-color'))
-  ctx.after(5400, () => bumpAttempt(ctx, 'issue-table', 1, 'failed'))
+  ctx.after(5400, () => {
+    bumpAttempt(ctx, 'issue-table', 1, 'failed')
+    ctx.finishStep(fix1, '修好了 2 个，「表格超出边界」没修好')
+    fix2 = ctx.startStep('st-5', '再修一次（第 2 次）：表格超出边界')
+  })
   ctx.after(7200, () => bumpAttempt(ctx, 'issue-table', 2, 'fixing'))
-  ctx.after(9000, () => bumpAttempt(ctx, 'issue-table', 2, 'failed'))
+  ctx.after(9000, () => {
+    bumpAttempt(ctx, 'issue-table', 2, 'failed')
+    if (fix2) ctx.finishStep(fix2, '还是没修好', 'failed')
+    fix3 = ctx.startStep('st-5', '再修一次（第 3 次）：表格超出边界')
+  })
   ctx.after(10800, () => bumpAttempt(ctx, 'issue-table', 3, 'fixing'))
   ctx.after(12600, () => {
     bumpAttempt(ctx, 'issue-table', 3, 'failed')
+    if (fix3) ctx.finishStep(fix3, '还是没修好', 'failed')
     raiseBlocker(ctx, {
       scenario: 'third_failure',
       title: '自动修复没有成功',
@@ -672,8 +719,10 @@ function runFixPhase(ctx: Ctx, next: () => void): void {
 function finishCreate(ctx: Ctx): void {
   finishStage(ctx, 'st-5')
   activateStage(ctx, 'st-6')
+  const commitStep = ctx.startStep('st-6', '生成预览，存成新版本')
   ctx.after(2200, () => {
     commitVersion(ctx, '初版完成', 1)
+    ctx.finishStep(commitStep, '新版本可以看了')
     finishStage(ctx, 'st-6')
     pushAgent(ctx, '你的大屏做好了！右侧预览可以看看效果，想改哪里直接跟我说。')
     defaultComplete(ctx)
@@ -694,15 +743,19 @@ export function startIncrementalFlow(ctx: Ctx, text: string, variant: EditVarian
       ? `收到，我来调整：「${truncate(text)}」，涉及 1 处修改。`
       : '收到，我按你发来的图片做参考来调整，涉及 1 处修改。'
   )
+  const editStep = ctx.startStep('st-1', '修改页面')
   ctx.after(1800, () => {
+    ctx.finishStep(editStep, '改完了')
     finishStage(ctx, 'st-1')
     activateStage(ctx, 'st-2')
     ctx.after(2000, () => {
       finishStage(ctx, 'st-2')
       activateStage(ctx, 'st-3')
+      const checkStep = ctx.startStep('st-3', '拿着截图逐项检查')
       if (variant === 'retry_once') {
         // 首次失败 → ★重试 + 10 秒倒计时自动执行（C11 演示）
         ctx.after(1500, () => {
+          ctx.finishStep(checkStep, '发现 1 个问题')
           ctx.setIssue({
             id: 'issue-overlap',
             stageId: 'st-3',
@@ -713,8 +766,10 @@ export function startIncrementalFlow(ctx: Ctx, text: string, variant: EditVarian
             afterShotUrl: null,
             detail: ''
           })
+          const fixStep = ctx.startStep('st-3', '修复 1 个问题（第 1 次）：数据标签重叠')
           ctx.after(1800, () => {
             bumpAttempt(ctx, 'issue-overlap', 1, 'failed')
+            ctx.finishStep(fixStep, '还是没修好', 'failed')
             raiseBlocker(ctx, {
               scenario: 'first_failure',
               title: '检查时出了点小问题',
@@ -726,9 +781,17 @@ export function startIncrementalFlow(ctx: Ctx, text: string, variant: EditVarian
         })
       } else if (variant === 'stall') {
         // 停留超时（stall）演示：检查这一步比平时久 → 弹「比预期久了一点，仍在处理」卡点
-        ctx.after(5000, () => raiseStallBlocker(ctx, () => finishIncremental(ctx, text)))
+        ctx.after(5000, () =>
+          raiseStallBlocker(ctx, () => {
+            ctx.finishStep(checkStep, '没发现问题')
+            finishIncremental(ctx, text)
+          })
+        )
       } else {
-        ctx.after(1800, () => finishIncremental(ctx, text))
+        ctx.after(1800, () => {
+          ctx.finishStep(checkStep, '没发现问题')
+          finishIncremental(ctx, text)
+        })
       }
     })
   })
@@ -830,8 +893,10 @@ export function handleFreeTextDuringBlocked(ctx: Ctx, _text: string): void {
   ctx.setStatus('generating')
   if (issue) {
     ctx.setIssue({ ...issue, attempt: issue.attempt + 1, status: 'fixing' })
+    const retryStep = ctx.startStep(issue.stageId, `再修一次（第 ${issue.attempt + 1} 次）：${issue.title}`)
     ctx.after(2400, () => {
       markFixed(ctx, issue.id)
+      ctx.finishStep(retryStep, '修好了，复查通过')
       resume?.()
     })
   } else {

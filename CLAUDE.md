@@ -46,7 +46,7 @@ store 内部调 api（src/api/index.ts 导出的 ClientApi）并订阅 api.on �
 
 `src/api/index.ts` 按 `VITE_API_BASE` 环境变量切换实现：存在 → `api/http/`（HTTP+SSE 适配层），否则 → `api/mock/`（剧本驱动 Mock 引擎）。stores 与 UI 对两种实现零改动。所有 api 方法是"发指令"立即返回，结果通过事件推回（SSE，支持 `Last-Event-ID` 补发）。
 
-四个 store：`dashboards`（首页列表）、`session`（工作台预览/执行面板/顶栏）、`chat`（对话区）、`settings`。关键联动：问题处理卡片（chat.activeProblem.options）与右栏卡点行动区（session.blocker.options）渲染同一组 option id，都调 `chat.chooseOption()`。
+四个 store：`dashboards`（首页列表）、`session`（工作台预览/执行面板/顶栏）、`chat`（对话区）、`settings`。关键联动：问题处理卡片（chat.activeProblem.options）与右栏卡点行动区（session.blocker.options）渲染同一组 option id，都调 `chat.chooseOption()`。执行面板 = 阶段时间线（Stage）+ 执行轨迹（AgentStep 动作流，`step` 事件，新一轮首条带 `reset=true` 清空旧轨迹）+ Issue 卡；动作文案在服务端/mock 写入时固化大白话，前端只渲染不翻译（观测性设计见 `AI_DASHBOARD_OBSERVABILITY.md`）。
 
 ### 服务端结构
 
