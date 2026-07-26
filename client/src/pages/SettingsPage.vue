@@ -2,13 +2,14 @@
 /**
  * 设置中心 —— 模态整页（不新开窗口，UX §6）。
  * 布局：顶部条（← 返回 + 标题）+ 左侧导航（模型/数据源/通知/账户与关于）+ 右侧内容。
- * 一期重点：模型设置（ModelSettingsPanel）；数据源/通知做「即将上线」占位；
+ * 一期重点：模型设置（ModelSettingsPanel）+ 数据源（DataSourcePanel）；通知做「即将上线」占位；
  * 账户与关于页含应用信息 + 快捷键一览（UX §8）。
  * 保存成功后在页面底部弹 toast「设置已保存」。
  */
 import { onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import ModelSettingsPanel from '../components/settings/ModelSettingsPanel.vue'
+import DataSourcePanel from '../components/settings/DataSourcePanel.vue'
 import PlaceholderPanel from '../components/settings/PlaceholderPanel.vue'
 import ShortcutTable from '../components/settings/ShortcutTable.vue'
 import AppIcon from '../components/common/AppIcon.vue'
@@ -93,12 +94,7 @@ onBeforeUnmount(() => {
         <div class="mx-auto max-w-3xl space-y-6">
           <ModelSettingsPanel v-if="active === 'model'" @saved="onSaved" />
 
-          <PlaceholderPanel
-            v-else-if="active === 'datasource'"
-            icon="database"
-            title="数据源"
-            description="以后可以在这里接入公司的数据库和表格，让大屏直接展示真实业务数据。"
-          />
+          <DataSourcePanel v-else-if="active === 'datasource'" @saved="onSaved" />
 
           <PlaceholderPanel
             v-else-if="active === 'notification'"

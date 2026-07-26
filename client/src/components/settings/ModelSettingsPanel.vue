@@ -6,15 +6,41 @@
  * 「高级 ▸」折叠区：按角色指定模型（规划 / 编码 / 视觉）。
  * 数据源：useSettingsStore（表单直接 v-model s.settings.*）
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useSettingsStore } from '../../stores/settings'
 import AppIcon from '../common/AppIcon.vue'
 
 const emit = defineEmits<{ saved: [] }>()
 
 const store = useSettingsStore()
-onMounted(() => {
-  void store.load()
+
+/* ---------- 高级：按角色单独配置（规划 / 编码 / 视觉） ---------- */
+type RoleKey = 'planner' | 'coder' | 'vision'
+const ROLE_KEYS: RoleKey[] = ['planner', 'coder', 'vision']
+const ROLE_LABELS: Record<RoleKey, string> = {
+  planner: '规划模型',
+  coder: '编码模型',
+  vision: '视觉模型'
+}
+/** 该角色是否「单独配置」（false = 跟随主模型，角色三项配置保持全空） */
+const roleCustom = reactive<Record<RoleKey, boolean>>({ planner: false, coder: false, vision: false })
+/** 各角色的 Key 明文开关 */
+const showRoleKey = reactive<Record<RoleKey, boolean>>({ planner: false, coder: false, vision: false })
+
+/** 切回「跟随主模型」时清空该角色的独立配置 */
+function onRoleModeChange(role: RoleKey): void {
+  if (!roleCustom[role]) {
+    store.settings[role] = { model: '', apiBase: '', apiKey: '' }
+  }
+}
+
+onMounted(async () => {
+  await store.load()
+  // 已保存过独立配置的角色，展开为「单独配置」
+  for (const role of ROLE_KEYS) {
+    const c = store.settings[role]
+    roleCustom[role] = Boolean(c?.model || c?.apiBase || c?.apiKey)
+  }
 })
 
 /* ---------- 预设选项（界面层展示用，不写进类型契约） ---------- */
@@ -218,7 +244,7 @@ async function onSave(): Promise<void> {
       </div>
     </div>
 
-    <!-- 高级 ▸（按角色指定模型） -->
+    <!-- 高级 ▸（按角色单独配置） -->
     <div class="mt-6 border-t border-line pt-4">
       <button
         type="button"
@@ -230,41 +256,63 @@ async function onSave(): Promise<void> {
           :size="14"
           :class="['inline-block transition-transform', showAdvanced ? 'rotate-90' : '']"
         />
-        高级（按角色指定模型：规划 / 编码 / 视觉）
+        高级（按角色单独配置：规划 / 编码 / 视觉）
       </button>
       <p v-if="showAdvanced" class="mt-2 text-xs text-ink-faint">
-        不懂就不用管，默认都跟随上面的主模型。
+        不懂就不用管，默认都跟随上面的主模型。选「单独配置」后，可以只换模型，也可以连地址和 Key 一起换；留空的项目仍跟随上面。
       </p>
       <div
         v-if="showAdvanced"
         class="mt-3 grid max-w-xl grid-cols-[6.5rem_1fr] items-center gap-x-4 gap-y-3"
       >
-        <label class="text-sm text-ink-secondary">规划模型</label>
-        <select
-          v-model="store.settings.plannerModel"
-          class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none"
-        >
-          <option value="">跟随主模型</option>
-          <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
-        </select>
+        <template v-for="role in ROLE_KEYS" :key="role">
+          <label class="text-sm text-ink-secondary">{{ ROLE_LABELS[role] }}</label>
+          <select
+            v-model="roleCustom[role]"
+            class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none"
+            @change="onRoleModeChange(role)"
+          >
+            <option :value="false">跟随主模型</option>
+            <option :value="true">单独配置</option>
+          </select>
 
-        <label class="text-sm text-ink-secondary">编码模型</label>
-        <select
-          v-model="store.settings.coderModel"
-          class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none"
-        >
-          <option value="">跟随主模型</option>
-          <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
-        </select>
+          <template v-if="roleCustom[role]">
+            <label class="pl-3 text-xs text-ink-faint">模型</label>
+            <input
+              v-model="store.settings[role].model"
+              type="text"
+              list="model-preset-options"
+              placeholder="从列表选，或直接输入模型名"
+              class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-primary focus:outline-none"
+            />
 
-        <label class="text-sm text-ink-secondary">视觉模型</label>
-        <select
-          v-model="store.settings.visionModel"
-          class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none"
-        >
-          <option value="">跟随主模型</option>
-          <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
-        </select>
+            <label class="pl-3 text-xs text-ink-faint">API 地址</label>
+            <input
+              v-model="store.settings[role].apiBase"
+              type="text"
+              placeholder="留空则跟随上面的 API 地址"
+              class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-primary focus:outline-none"
+            />
+
+            <label class="pl-3 text-xs text-ink-faint">API Key</label>
+            <div class="flex items-center gap-2">
+              <input
+                v-model="store.settings[role].apiKey"
+                :type="showRoleKey[role] ? 'text' : 'password'"
+                placeholder="留空则跟随上面的 API Key"
+                class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-primary focus:outline-none"
+              />
+              <button
+                type="button"
+                class="flex shrink-0 items-center gap-1 rounded-control border border-line px-3 py-2 text-sm text-ink-secondary hover:bg-panel"
+                @click="showRoleKey[role] = !showRoleKey[role]"
+              >
+                <AppIcon :name="showRoleKey[role] ? 'visibility-off' : 'visibility'" :size="14" />
+                {{ showRoleKey[role] ? '隐藏' : '显示' }}
+              </button>
+            </div>
+          </template>
+        </template>
       </div>
     </div>
   </section>

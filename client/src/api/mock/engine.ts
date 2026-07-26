@@ -16,6 +16,8 @@
 import type {
   ClarificationAnswer,
   Dashboard,
+  DataSourceProbeResult,
+  McpDataSource,
   ModelSettings,
   PreviewResolution,
   ProbeResult,
@@ -59,10 +61,23 @@ const DEFAULT_SETTINGS: ModelSettings = {
   apiBase: 'https://llm.internal.example.com',
   apiKey: 'sk-demo-0000000000000000',
   model: 'qwen2.5-72b-instruct',
-  plannerModel: '',
-  coderModel: '',
-  visionModel: ''
+  planner: { model: '', apiBase: '', apiKey: '' },
+  coder: { model: '', apiBase: '', apiKey: '' },
+  vision: { model: '', apiBase: '', apiKey: '' }
 }
+
+/** 默认数据源（演示用示例，probe 剧本见 probeDataSource） */
+const DEFAULT_DATA_SOURCES: McpDataSource[] = [
+  {
+    id: 'ds-sales',
+    name: '销售数据库',
+    url: 'https://data.example.com/mcp',
+    authType: 'none',
+    token: '',
+    headerName: '',
+    enabled: true
+  }
+]
 
 /** 每个大屏的运行时（状态 + 定时器 + 队列） */
 interface Runtime {
@@ -79,6 +94,7 @@ export function createMockClient(): ClientApi {
   const emitter = new MockEmitter()
   const sessions = new Map<string, Runtime>()
   let settings: ModelSettings = { ...DEFAULT_SETTINGS }
+  let dataSources: McpDataSource[] = DEFAULT_DATA_SOURCES.map((s) => ({ ...s }))
 
   /* ---------- 断线模拟（UX §7.3）：断线期间事件进缓冲，重连后按序补齐 ---------- */
   let disconnected = false
@@ -428,10 +444,21 @@ export function createMockClient(): ClientApi {
 
     // ---- 设置 ----
     async getSettings(): Promise<ModelSettings> {
-      return { ...settings }
+      // 角色配置是嵌套对象，深拷贝避免表单 v-model 直接改到引擎里的存档
+      return {
+        ...settings,
+        planner: { ...settings.planner },
+        coder: { ...settings.coder },
+        vision: { ...settings.vision }
+      }
     },
     async saveSettings(s: ModelSettings): Promise<void> {
-      settings = { ...s }
+      settings = {
+        ...s,
+        planner: { ...s.planner },
+        coder: { ...s.coder },
+        vision: { ...s.vision }
+      }
     },
     async testConnection(s?: ModelSettings): Promise<ProbeResult> {
       const target = s ?? settings
@@ -460,6 +487,42 @@ export function createMockClient(): ClientApi {
         ok: true,
         supportsVision: true,
         message: '连接成功，支持图片理解，所有功能可用',
+        detail: null
+      }
+    },
+
+    // ---- 数据源 ----
+    async getDataSources(): Promise<McpDataSource[]> {
+      // 浅拷贝逐条复制，避免表单 v-model 直接改到引擎里的存档
+      return dataSources.map((s) => ({ ...s }))
+    },
+    async saveDataSources(list: McpDataSource[]): Promise<void> {
+      dataSources = list.map((s) => ({ ...s }))
+    },
+    async probeDataSource(source: McpDataSource): Promise<DataSourceProbeResult> {
+      // 模拟网络往返
+      await new Promise((r) => setTimeout(r, 600))
+      if (!source.url.trim() || source.url.includes('bad')) {
+        return {
+          ok: false,
+          tools: [],
+          message: '连不上：地址似乎不对',
+          detail: `请求 ${source.url || '(空地址)'} 连接失败：等待 10 秒无响应（连接超时）。常见原因：地址拼错、电脑不在公司内网或未连 VPN。`
+        }
+      }
+      if (source.authType !== 'none' && !source.token.trim()) {
+        return {
+          ok: false,
+          tools: [],
+          message: '连不上：认证信息还没填',
+          detail: '这个数据源要求认证，但令牌（或请求头的值）是空的，被拒绝了。'
+        }
+      }
+      const tools = ['查指标', '查明细']
+      return {
+        ok: true,
+        tools,
+        message: `连接成功，发现 ${tools.length} 个可用工具`,
         detail: null
       }
     },

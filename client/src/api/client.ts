@@ -14,7 +14,9 @@ import type {
   ChatMessage,
   ClarificationAnswer,
   Dashboard,
+  DataSourceProbeResult,
   Issue,
+  McpDataSource,
   ModelSettings,
   PreviewResolution,
   ProbeResult,
@@ -126,6 +128,14 @@ export interface ClientApi {
   saveSettings(settings: ModelSettings): Promise<void>
   /** 测试连接（/probe，返回大白话结论） */
   testConnection(settings?: ModelSettings): Promise<ProbeResult>
+
+  /* ---------- 数据源（MCP，同步 REST 风格，与设置同款例外：不进 SSE 事件流） ---------- */
+  /** 读取全部数据源 */
+  getDataSources(): Promise<McpDataSource[]>
+  /** 全量覆盖式保存数据源列表（与模型设置同风格，整列表 PUT） */
+  saveDataSources(list: McpDataSource[]): Promise<void>
+  /** 测试数据源连接（真实探测；永不抛错，失败体现在 ok=false） */
+  probeDataSource(source: McpDataSource): Promise<DataSourceProbeResult>
 
   /* ---------- 事件订阅 ---------- */
   /**

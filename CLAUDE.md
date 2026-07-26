@@ -51,7 +51,7 @@ store 内部调 api（src/api/index.ts 导出的 ClientApi）并订阅 api.on �
 ### 服务端结构
 
 - `src/gateway.ts` — 模型网关：OpenAI 兼容 chat/completions、超时/重试、probe 真实探测（chat + 1px vision 探针）、JSON/HTML 容错提取、provider 错误码大白话映射
-- `src/orchestrator.ts` — Run 五态状态机（idle/generating/awaiting_clarification/blocked/assisting）、Planner/Coder 流程、确定性校验 + LLM 结构化审查 + 修复循环（≤2 次）、排队合并、发布/回退/人工协助、20 分钟单步看门狗（`AGENT_STEP_MAX_MS` 可调，编码超时自动拆分骨架+逐面板生成）
+- `src/orchestrator.ts` — Run 五态状态机（idle/generating/awaiting_clarification/blocked/assisting）、Planner/Coder 流程、创建统一走 skill 双模式（有图=复刻：读图精读→备料→带图生成；无图=创作：按内置设计规范生成）、确定性校验 + 截图校验闭环（无头浏览器截图 + vision 对比审查，环境缺失降级文本审查）+ 修复循环（≤2 次）、排队合并、发布/回退/人工协助、20 分钟单步看门狗（`AGENT_STEP_MAX_MS` 可调，编码超时自动拆分骨架+逐面板生成）
 - `src/routes.ts` + `src/index.ts` — REST + SSE（15s 心跳）、CORS、静态托管预览产物
 - `src/store.ts` — JSON 持久化 + 事件 jsonl（append-only，seq 单大屏递增，重启恢复）+ SSE 广播
 
@@ -68,5 +68,6 @@ store 内部调 api（src/api/index.ts 导出的 ClientApi）并订阅 api.on �
 
 - 重启后 generating/assisting 落回 idle（blocked/awaiting 靠 pendingRun 最大努力续跑）
 - API Key 明文落 `server/data/settings.json`（单用户演示形态，勿用于生产）
-- 协助修复为确定性清洗兜底；Issue 截图对比用封面占位；stall 卡点未实现
+- 协助修复为确定性清洗兜底；stall 卡点未实现
+- 截图校验闭环已落地：无头浏览器截图 + vision 对比审查（缺浏览器或模型不支持看图时降级为纯文本审查），Issue 修复前后截图为真图（静态路径 `/shots/...`）
 - 二期待定决策：C5 指哪改哪、C7 语音输入

@@ -4,6 +4,7 @@
  * server/data/
  *   dashboards.json                     大屏卡片列表
  *   settings.json                       模型设置（单用户演示，Key 明文落本地文件）
+ *   data-sources.json                   MCP 数据源列表（单用户演示，令牌/请求头值明文落本地文件）
  *   sessions/<dashId>.json              工作台会话快照（消息/阶段/版本/卡点…）
  *   events/<dashId>.jsonl               事件溯源，append-only，seq 单大屏递增
  *   previews/<dashId>/<verId>/index.html  构建产物（自包含 HTML）
@@ -14,7 +15,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import type { ClientEventMap, ModelSettings } from './wire'
+import type { ClientEventMap, McpDataSource, ModelSettings } from './wire'
 
 export interface StoredEvent {
   seq: number
@@ -32,13 +33,15 @@ const DATA_DIR = process.env.DATA_DIR
 
 const DASHBOARDS_FILE = path.join(DATA_DIR, 'dashboards.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
+const DATA_SOURCES_FILE = path.join(DATA_DIR, 'data-sources.json')
 
 export const dirs = {
   root: DATA_DIR,
   sessions: path.join(DATA_DIR, 'sessions'),
   events: path.join(DATA_DIR, 'events'),
   previews: path.join(DATA_DIR, 'previews'),
-  covers: path.join(DATA_DIR, 'covers')
+  covers: path.join(DATA_DIR, 'covers'),
+  shots: path.join(DATA_DIR, 'shots')
 }
 
 /* ------------------------------ 基础读写 ------------------------------ */
@@ -181,6 +184,16 @@ export class Store {
     writeJson(SETTINGS_FILE, s)
   }
 
+  /* ---------- MCP 数据源（凭证明文落本地，单用户演示形态） ---------- */
+
+  loadDataSources(): McpDataSource[] | null {
+    return readJson<McpDataSource[]>(DATA_SOURCES_FILE)
+  }
+
+  saveDataSources(list: McpDataSource[]): void {
+    writeJson(DATA_SOURCES_FILE, list)
+  }
+
   /* ---------- 预览产物 ---------- */
 
   previewDir(dashId: string, versionId: string): string {
@@ -220,6 +233,7 @@ export class Store {
       }
     }
     fs.rmSync(path.join(dirs.previews, dashId), { recursive: true, force: true })
+    fs.rmSync(path.join(dirs.shots, dashId), { recursive: true, force: true })
   }
 
   /* ---------- 封面：客户端上传的截图 ---------- */
@@ -227,6 +241,18 @@ export class Store {
   writeCover(dashId: string, buf: Buffer): void {
     fs.mkdirSync(dirs.covers, { recursive: true })
     fs.writeFileSync(path.join(dirs.covers, `${dashId}.png`), buf)
+  }
+
+  /* ---------- 截图：复刻流程的修复前/后对比图 ---------- */
+
+  /** 把 PNG data URL 落盘到 shots/<dashId>/<name>.png，返回相对 URL（/shots/<dashId>/<name>.png） */
+  writeShot(dashId: string, name: string, dataUrl: string): string {
+    const m = /^data:image\/png;base64,([\s\S]+)$/.exec(dataUrl)
+    const buf = Buffer.from(m ? m[1] : dataUrl, 'base64')
+    const dir = path.join(dirs.shots, dashId)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, `${name}.png`), buf)
+    return `/shots/${dashId}/${name}.png`
   }
 
   /* ---------- 封面：从 client/public/covers 拷贝（只读 client，不改动） ---------- */

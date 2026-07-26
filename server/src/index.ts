@@ -28,9 +28,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // dataURL 图片附件可能较大
 app.use(express.json({ limit: '30mb' }))
 
-/* 静态：构建产物预览 + 封面 */
+/* 静态：构建产物预览 + 封面 + 修复前后对比截图 */
 app.use('/preview', express.static(dirs.previews, { index: 'index.html' }))
 app.use('/covers', express.static(dirs.covers))
+app.use('/shots', express.static(dirs.shots))
 // 模板库（布局/组件 demo 图），启动时从 client/templates 同步
 app.use('/templates', express.static(path.join(dirs.root, 'templates')))
 

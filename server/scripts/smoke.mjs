@@ -3,13 +3,16 @@
  * smoke.mjs —— 端到端冒烟（可重复执行）：npm run smoke
  *
  * 步骤：
- *   1. 启动 stub LLM（9100）+ 服务端（8787，独立数据目录 data-smoke，先清空）
+ *   1. 启动 stub LLM（9100）+ stub MCP（正常 + --down 各一）+ 服务端（8787，独立数据目录 data-smoke，先清空）
  *   2. PUT settings 指向 stub → POST probe 返回 ok 且支持看图
+ *   2.5 PUT data-sources 指向 stub MCP → GET 回读一致 → probe 发现 get_metrics（错令牌 → ok=false）
  *   3. POST 建大屏 → 发消息（带参考图）→ 订阅 SSE 看 message/stage/blocker 流出
- *   4. 回答澄清 → 等 previewReady → GET 预览 HTML 200 且无外部引用
+ *   4. 回答澄清 → 「获取数据」阶段 active→done → 等 previewReady → GET 预览 HTML 200、无外部引用、含 88.8%
  *   5. 再发一条不带图的修改消息 → 等 v2 previewReady
  *   6. rollback → 新节点；publish → 5 秒后已发布
- *   7. Last-Event-ID 补发抽查
+ *   7. 断源链路：数据源换 --down stub → 「数据源连不上」卡点卡 → 再试仍摆卡 → 改用演示数据照常出预览
+ *   8. 重启服务端（DATA_DIR 保留）→ 数据源配置恢复 + 数据快照落盘 + 编辑复用快照不重取数
+ *   9. Last-Event-ID 补发抽查
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -140,26 +143,34 @@ async function main() {
   BASE = `http://127.0.0.1:${serverPort}`
 
   startProc('stub', process.execPath, [path.join(SERVER_DIR, 'scripts/stub-llm.mjs'), String(STUB_PORT)])
+  const MCP_PORT = await freePort()
+  const MCP_DOWN_PORT = await freePort()
+  startProc('stub-mcp', process.execPath, [path.join(SERVER_DIR, 'scripts/stub-mcp.mjs'), String(MCP_PORT), '--token=mcp-smoke-token'])
+  startProc('stub-mcp-down', process.execPath, [path.join(SERVER_DIR, 'scripts/stub-mcp.mjs'), String(MCP_DOWN_PORT), '--down'])
   const tsxBin = path.join(SERVER_DIR, 'node_modules', '.bin', 'tsx')
-  startProc('server', tsxBin, [path.join(SERVER_DIR, 'src/index.ts')], {
+  const serverEnv = {
     PORT: String(serverPort),
     DATA_DIR,
     // 冒烟里把 20 分钟看门狗压到 3 秒，用于演练"超时 → 拆分步骤"
-    AGENT_STEP_MAX_MS: '3000'
-  })
+    AGENT_STEP_MAX_MS: '3000',
+    // MCP 调用 15 秒超时压到 2 秒（与看门狗同款压缩），断源链路不用干等
+    MCP_CALL_TIMEOUT_MS: '2000'
+  }
+  let serverProc = startProc('server', tsxBin, [path.join(SERVER_DIR, 'src/index.ts')], serverEnv)
 
   await waitFor(async () => (await fetch(`${BASE}/healthz`).catch(() => null))?.ok, 30_000, '服务端启动')
-  ok(`stub(${STUB_PORT}) + 服务端(${serverPort}) 已启动`)
+  ok(`stub(${STUB_PORT}) + stub-mcp(${MCP_PORT}) + 服务端(${serverPort}) 已启动`)
 
   // 1. settings → probe
+  const emptyRole = { model: '', apiBase: '', apiKey: '' }
   const put = await api('PUT', '/settings', {
     provider: '冒烟测试',
     apiBase: `http://127.0.0.1:${STUB_PORT}/v1`,
     apiKey: 'sk-smoke',
     model: 'stub-1',
-    plannerModel: '',
-    coderModel: '',
-    visionModel: ''
+    planner: { ...emptyRole },
+    coder: { ...emptyRole },
+    vision: { ...emptyRole }
   })
   if (put.status !== 204) fail('PUT /settings', `HTTP ${put.status}`)
   const probe = await api('POST', '/model-gateway/probe', {
@@ -168,6 +179,36 @@ async function main() {
   if (!probe.json?.ok) fail('probe 连通', JSON.stringify(probe.json))
   if (!probe.json?.supportsVision) fail('probe vision', probe.json?.message)
   ok('POST /model-gateway/probe', probe.json.message)
+
+  // 1.5 MCP 数据源：PUT 全量列表（自动补 id）→ GET 回读一致 → probe 发现 get_metrics；错令牌 → ok=false 大白话
+  const goodSource = {
+    name: '经营指标库',
+    url: `http://127.0.0.1:${MCP_PORT}`,
+    authType: 'bearer',
+    token: 'mcp-smoke-token',
+    headerName: '',
+    enabled: true
+  }
+  const putDs = await api('PUT', '/data-sources', [goodSource])
+  if (putDs.status !== 200 || !Array.isArray(putDs.json) || putDs.json.length !== 1) {
+    fail('PUT /data-sources', `HTTP ${putDs.status}: ${JSON.stringify(putDs.json)}`)
+  }
+  const dsSaved = putDs.json[0]
+  if (!dsSaved.id) fail('PUT 自动补 id', JSON.stringify(dsSaved))
+  const dsBack = (await api('GET', '/data-sources')).json?.[0]
+  if (!dsBack || dsBack.id !== dsSaved.id || dsBack.url !== goodSource.url || dsBack.token !== goodSource.token || dsBack.enabled !== true) {
+    fail('GET /data-sources 回读一致', JSON.stringify(dsBack))
+  }
+  ok('PUT /data-sources → GET 回读一致（自动补 id）', dsSaved.id)
+  const dsProbe = await api('POST', '/data-sources/probe', { source: dsBack })
+  if (!dsProbe.json?.ok) fail('数据源 probe 连通', JSON.stringify(dsProbe.json))
+  if (!dsProbe.json.tools.includes('get_metrics')) fail('probe 发现 get_metrics 工具', JSON.stringify(dsProbe.json.tools))
+  ok('POST /data-sources/probe', `${dsProbe.json.message}（${dsProbe.json.tools.join('、')}）`)
+  const badProbe = await api('POST', '/data-sources/probe', { source: { ...dsBack, token: 'wrong-token' } })
+  if (badProbe.json?.ok !== false || !/令牌/.test(badProbe.json?.message ?? '')) {
+    fail('错令牌 probe → ok=false 大白话', JSON.stringify(badProbe.json))
+  }
+  ok('错令牌 probe → ok=false（大白话报错）', badProbe.json.message)
 
   // 2. 建大屏 + SSE
   const created = await api('POST', '/dashboards', { name: '冒烟测试大屏' })
@@ -230,6 +271,8 @@ async function main() {
   if (!/<html[\s>]/i.test(html)) fail('预览是完整 HTML')
   if (/(?:src|href)\s*=\s*["']\s*https?:\/\//i.test(html)) fail('预览无外部资源引用')
   ok('GET 预览 HTML 200，自包含，无外部引用', `${html.length} 字节`)
+  if (!html.includes('88.8%')) fail('MCP 真实数据烤进预览 HTML（含 88.8%）')
+  ok('MCP 真实数据烤进预览 HTML', '含 88.8%（目标完成率）')
 
   // 6. 再发一条不带图的修改消息 → v2
   await api('POST', `/dashboards/${dash.id}/messages`, { text: '把 CPU 的图放大一点' })
@@ -253,12 +296,17 @@ async function main() {
   const pub = await sse.waitFor('dashboardUpdated', (e) => e.data?.dashboard?.status === 'published', 30_000, '发布审批通过')
   ok('publish → 审批通过', `徽标变为「已发布」(${pub.data.dashboard.name})`)
 
-  // 8.5 阶段时间线：新建流程必须是 6 步，含「视觉检查」「修复问题」
+  // 8.5 阶段时间线：新建流程必须是 7 步（含「获取数据」），含「视觉检查」「修复问题」
   const titles = [...new Set(sse.events.filter((e) => e.event === 'stage').map((e) => e.data?.stage?.title).filter(Boolean))]
-  for (const t of ['匹配模板', '视觉检查', '修复问题']) {
+  for (const t of ['匹配模板', '获取数据', '视觉检查', '修复问题']) {
     if (!titles.includes(t)) fail(`阶段时间线含「${t}」`, `实际阶段：${titles.join(' → ')}`)
   }
-  ok('阶段时间线含「视觉检查」「修复问题」', titles.join(' → '))
+  ok('阶段时间线含「获取数据」「视觉检查」「修复问题」', titles.join(' → '))
+  const fetchStages = sse.events.filter((e) => e.event === 'stage' && e.data?.stage?.title === '获取数据')
+  if (!fetchStages.some((e) => e.data.stage.state === 'active') || !fetchStages.some((e) => e.data.stage.state === 'done')) {
+    fail('「获取数据」阶段经历 active → done', fetchStages.map((e) => e.data.stage.state).join(','))
+  }
+  ok('「获取数据」阶段经历 active → done')
 
   // 8.6 修复路径演练：stub 在 HTML 里埋视觉问题标记 → 视觉检查报问题 → Issue 卡 → 自动修复 → previewReady
   const dash2 = (await api('POST', '/dashboards', { name: '修复演示大屏' })).json
@@ -366,7 +414,87 @@ async function main() {
   if (export404.status !== 404) fail('导出不存在的版本 → 404', `HTTP ${export404.status}`)
   ok('导出不存在的版本 → 404')
 
-  // 9. Last-Event-ID 补发抽查
+  // 8.11 断源链路：数据源换成挂掉的 stub → 「数据源连不上」卡点卡 → 再试一次仍摆卡 → 改用演示数据照常出预览
+  const downSource = { ...goodSource, url: `http://127.0.0.1:${MCP_DOWN_PORT}` }
+  const putDown = await api('PUT', '/data-sources', [downSource])
+  if (putDown.status !== 200) fail('PUT 断源配置', `HTTP ${putDown.status}`)
+  const dash5 = (await api('POST', '/dashboards', { name: '断源演示大屏' })).json
+  const sse5 = openSse(dash5.id)
+  await api('POST', `/dashboards/${dash5.id}/messages`, { text: '做一个经营指标大屏' })
+  const clar5 = await sse5.waitFor('message', (e) => e.data?.message?.kind === 'clarification', 60_000, '大屏5 澄清卡片')
+  await api('POST', `/dashboards/${dash5.id}/messages/${clar5.data.message.id}/answers`, {
+    answers: clar5.data.message.questions.map((q) => ({
+      questionId: q.id,
+      optionId: q.options.find((o) => o.recommended).id,
+      customText: ''
+    }))
+  })
+  const downCard = await sse5.waitFor(
+    'message',
+    (e) => e.data?.message?.kind === 'problem' && e.data?.message?.options?.some((o) => o.id === 'opt-demo-data'),
+    90_000,
+    '数据源连不上卡点卡'
+  )
+  if (downCard.data.message.title !== '数据源连不上') fail('卡点卡标题「数据源连不上」', downCard.data.message.title)
+  const downOpts = downCard.data.message.options
+  const downRec = downOpts.filter((o) => o.recommended)
+  if (downOpts.length !== 3 || downRec.length !== 1 || downRec[0].id !== 'opt-demo-data') {
+    fail('★推荐恰为「改用演示数据继续」且共三选项', JSON.stringify(downOpts))
+  }
+  for (const id of ['opt-demo-data', 'opt-retry-datasource', 'opt-assist']) {
+    if (!downOpts.some((o) => o.id === id)) fail(`卡点卡含选项 ${id}`)
+  }
+  ok('断源 →「数据源连不上」卡点卡（★改用演示数据/再试一次/呼叫人工）')
+  await api('POST', `/dashboards/${dash5.id}/options/opt-retry-datasource`)
+  await sse5.waitFor(
+    'message',
+    (e) =>
+      e.data?.message?.kind === 'problem' &&
+      e.data?.message?.id !== downCard.data.message.id &&
+      e.data?.message?.options?.some((o) => o.id === 'opt-demo-data'),
+    90_000,
+    '再试一次后再次摆卡'
+  )
+  ok('选「再试一次取数」→ 仍连不上 → 再次摆卡')
+  await api('POST', `/dashboards/${dash5.id}/options/opt-demo-data`)
+  const ready5 = await sse5.waitFor('previewReady', null, 90_000, '大屏5 previewReady')
+  const html5 = await (await fetch(`${BASE}${ready5.data.url}`)).text()
+  if (html5.includes('88.8%')) fail('演示数据路径不烤真实数据')
+  ok('选「改用演示数据继续」→ 预览照常 ready（演示数据）', ready5.data.url)
+  sse5.close()
+
+  // 9. 重启服务端（DATA_DIR 保留）：数据源配置恢复 + 数据快照落盘（含 88.8%、网址已剥除）+ 编辑复用快照不重取数
+  const oldServer = serverProc
+  await new Promise((resolve) => {
+    oldServer.once('exit', resolve)
+    oldServer.kill('SIGKILL')
+  })
+  serverProc = startProc('server-restart', tsxBin, [path.join(SERVER_DIR, 'src/index.ts')], serverEnv)
+  await waitFor(async () => (await fetch(`${BASE}/healthz`).catch(() => null))?.ok, 30_000, '服务端重启')
+  const dsAfterRestart = (await api('GET', '/data-sources')).json
+  if (
+    !Array.isArray(dsAfterRestart) ||
+    dsAfterRestart.length !== 1 ||
+    dsAfterRestart[0].url !== downSource.url ||
+    dsAfterRestart[0].token !== downSource.token
+  ) {
+    fail('重启后数据源配置恢复', JSON.stringify(dsAfterRestart))
+  }
+  ok('重启服务端 → data-sources.json 配置恢复', dsAfterRestart[0].url)
+  const sess1 = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'sessions', `${dash.id}.json`), 'utf8'))
+  if (!sess1.lastDataBlock?.includes('88.8%')) fail('数据快照落盘且含真实数据', String(sess1.lastDataBlock).slice(0, 120))
+  if (/https?:\/\//.test(sess1.lastDataBlock)) fail('数据快照注入前已剥除网址', sess1.lastDataBlock.slice(0, 200))
+  ok('数据快照落盘：含 88.8% 且网址已剥除', `${sess1.lastDataBlock.length} 字符`)
+  // 编辑流复用快照：数据源此刻仍指向挂掉的 stub，若重新取数必然摆卡；能出预览且含 88.8% 即证明沿用快照
+  const sseR = openSse(dash.id)
+  await api('POST', `/dashboards/${dash.id}/messages`, { text: '把标题改短一点' })
+  const readyR = await sseR.waitFor('previewReady', null, 90_000, '重启后编辑 previewReady')
+  const htmlR = await (await fetch(`${BASE}${readyR.data.url}`)).text()
+  if (!htmlR.includes('88.8%')) fail('编辑流沿用数据快照（不重取数）')
+  ok('重启后编辑复用数据快照（不重取数）→ previewReady', readyR.data.url)
+  sseR.close()
+
+  // 10. Last-Event-ID 补发抽查
   const replay = openSse(dash.id, { 'Last-Event-ID': '1' })
   const first = await replay.waitFor('message', null, 10_000, 'Last-Event-ID 补发')
   if (!(first.id > 1)) fail('补发事件 seq > Last-Event-ID', `实际 seq=${first.id}`)

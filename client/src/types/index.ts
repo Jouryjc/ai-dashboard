@@ -298,6 +298,16 @@ export interface AssistSession {
 
 /* ==================== 设置中心 ==================== */
 
+/** 高级：单个角色（规划/编码/视觉）的独立配置；字段留空 = 跟随上面的主设置 */
+export interface RoleModelConfig {
+  /** 模型名（空 = 跟随主模型） */
+  model: string
+  /** API 地址（空 = 跟随主地址） */
+  apiBase: string
+  /** API Key（空 = 跟随主 Key） */
+  apiKey: string
+}
+
 /** 模型设置（小白只需填 4 个字段：服务商/地址/Key/模型） */
 export interface ModelSettings {
   /** 服务商预设名，如 "公司内置" */
@@ -308,12 +318,12 @@ export interface ModelSettings {
   apiKey: string
   /** 模型名，如 "qwen2.5-72b-instruct" */
   model: string
-  /** 高级：规划角色指定模型（空串 = 跟随主模型） */
-  plannerModel: string
-  /** 高级：编码角色指定模型 */
-  coderModel: string
-  /** 高级：视觉角色指定模型 */
-  visionModel: string
+  /** 高级：规划角色独立配置（三项全空 = 完全跟随主设置） */
+  planner: RoleModelConfig
+  /** 高级：编码角色独立配置 */
+  coder: RoleModelConfig
+  /** 高级：视觉角色独立配置 */
+  vision: RoleModelConfig
 }
 
 /** 「测试连接」结果（/probe，反馈用大白话，UX §6） */
@@ -323,6 +333,45 @@ export interface ProbeResult {
   /** 是否支持图片理解（多模态）；不支持时 📎 置灰 */
   supportsVision: boolean
   /** 大白话结论，如 "连接成功，支持图片理解，所有功能可用" */
+  message: string
+  /** 错误细节（收在「查看详情」里，不直接给小白看） */
+  detail: string | null
+}
+
+/** MCP 数据源的认证方式 */
+export type McpAuthType =
+  /** 不用认证 */
+  | 'none'
+  /** Bearer Token（请求自动带上 Authorization: Bearer <令牌>） */
+  | 'bearer'
+  /** 自定义请求头（用户自己填请求头名和值，如 X-Api-Key） */
+  | 'header'
+
+/** 一个 MCP 数据源（生成大屏时从它取真实数据，数据在生成期烤进 HTML） */
+export interface McpDataSource {
+  /** 唯一 ID */
+  id: string
+  /** 大白话名称，如 "生产数据库" */
+  name: string
+  /** 服务地址 */
+  url: string
+  /** 认证方式 */
+  authType: McpAuthType
+  /** 令牌或请求头的值：bearer 时为令牌，header 时为请求头的值，none 时为空串 */
+  token: string
+  /** 自定义请求头名（仅 authType='header' 时用，如 "X-Api-Key"） */
+  headerName: string
+  /** 是否启用（关掉后生成大屏时不从这个源取数） */
+  enabled: boolean
+}
+
+/** 「测试数据源连接」结果（反馈用大白话，同 ProbeResult 风格） */
+export interface DataSourceProbeResult {
+  /** 是否连得上 */
+  ok: boolean
+  /** 连上后发现的工具名列表（生成大屏时能用哪些取数工具） */
+  tools: string[]
+  /** 大白话结论，如 "连接成功，发现 3 个可用工具" */
   message: string
   /** 错误细节（收在「查看详情」里，不直接给小白看） */
   detail: string | null

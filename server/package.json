@@ -11,7 +11,9 @@
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "playwright": "^1.62.0",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

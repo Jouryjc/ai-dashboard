@@ -16,6 +16,8 @@
 import type {
   ClarificationAnswer,
   Dashboard,
+  DataSourceProbeResult,
+  McpDataSource,
   ModelSettings,
   PreviewResolution,
   ProbeResult,
@@ -304,6 +306,27 @@ export function createHttpClient(baseUrl: string): ClientApi {
           supportsVision: false,
           message: '连不上：服务没响应',
           detail: `请求工作台服务失败：${reason}。请确认后端服务已启动、地址可访问。`
+        }
+      }
+    },
+
+    // ---- 数据源 ----
+    async getDataSources(): Promise<McpDataSource[]> {
+      return request<McpDataSource[]>('GET', '/api/v1/data-sources')
+    },
+    async saveDataSources(list: McpDataSource[]): Promise<void> {
+      await request<void>('PUT', '/api/v1/data-sources', list)
+    },
+    async probeDataSource(source: McpDataSource): Promise<DataSourceProbeResult> {
+      // 契约承诺 probe 永不抛错；这里的兜底只防"连服务端本身都不通"
+      try {
+        return await request<DataSourceProbeResult>('POST', '/api/v1/data-sources/probe', { source })
+      } catch {
+        return {
+          ok: false,
+          tools: [],
+          message: '连不上：服务没响应',
+          detail: null
         }
       }
     },

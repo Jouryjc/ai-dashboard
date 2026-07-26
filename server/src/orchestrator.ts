@@ -23,8 +23,19 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { dirs, store } from './store'
 import * as gw from './gateway'
+import { listTools as mcpListTools, callTool as mcpCallTool, invalidateToolsCache, McpError } from './mcp'
 import { COMPONENTS, LAYOUTS, catalogText, keywordHint, syncTemplates, templateImageDataUrl } from './templates'
 import { prompt } from './prompts'
+import {
+  probeReplicaEnv,
+  imageSize,
+  cropImageDataUrl,
+  renderShotDataUrl,
+  fetchGeoJson,
+  geojsonToSvgPaths,
+  type MapPaths,
+  type Region
+} from './replica'
 import type {
   AssistSession,
   Blocker,
@@ -34,10 +45,14 @@ import type {
   ClarificationMessage,
   ClarificationQuestion,
   Dashboard,
+  DataSourceProbeResult,
   Issue,
+  McpAuthType,
+  McpDataSource,
   ModelSettings,
   PreviewResolution,
   ProblemMessage,
+  RoleModelConfig,
   RunStatus,
   Stage,
   Version,
@@ -63,6 +78,22 @@ interface PendingRun {
   issueId: string | null
   /** 模板匹配决策（null = 还没做过匹配） */
   template?: TemplateDecision | null
+  /**
+   * 生成期取数快照（注入 Coder prompt 的真实数据文本块，落盘后重启续跑直接恢复）。
+   * undefined = 还没取过（进入「获取数据」阶段要真正取一次）；'' = 取过了但决定用演示数据；
+   * 非空 = 取到的真实数据块。编辑/修复/拆分编码一律复用这份快照，不重新取数。
+   */
+  dataBlock?: string
+  /**
+   * 参考图精读出的内容清单（复刻模式；随 pendingRun 落盘，重启续跑直接恢复）。
+   * undefined = 还没精读过（带图 + 模型能看图时精读一次）；null = 精读失败，按现有流程继续；
+   * 非空 = 清单已就绪，Coder 走复刻 prompt。
+   */
+  inventory?: ReplicaInventory | null
+  /** 地图 SVG 路径（GeoJSON 已投影抽稀好，Coder 直接内联用）；null = 备料失败或不需要地图 */
+  mapPaths?: MapPaths | null
+  /** 规划结论里的省级行政区划代码（无图创作的地图备料依据；'' = 不需要地图） */
+  mapAdcode?: string
 }
 
 /** 模板匹配环节的结论 */
@@ -88,6 +119,8 @@ interface SessionData {
   assistSession: AssistSession | null
   previewResolution: PreviewResolution
   pendingRun: PendingRun | null
+  /** 最近一次生成期取数的快照（'' = 上次决定用演示数据）；编辑流复用它，不重新取数 */
+  lastDataBlock?: string
 }
 
 /** 运行中任务的内存态（不落盘） */
@@ -266,7 +299,7 @@ interface ProblemContext {
  * 推荐规则表（UX §4.3，逐条对齐 mock scripts.ts 的 buildProblemOptions）：
  *   首次失败        → ★ 让 AI 再试一次（"同类问题自动修复成功率 90%+"，10 秒倒计时自动执行）
  *   同问题失败 3 次 → ★ 呼叫人工协助（"继续自动尝试成功率低，人工最快"）
- *   数据源不可用    → ★ 重新选择数据源（"不解决数据源，重试无意义"）
+ *   数据源不可用    → ★ 改用演示数据继续（"先把页面做出来，数据源恢复了再换真数据"），另给 再试一次 / 呼叫人工
  *   高风险          → ★ 呼叫人工 / 转交审批（"高风险不允许自动绕过"，永不自动执行）
  */
 export function buildProblemOptions(scenario: ProblemScenario, info: ProblemContext, now: number): CardOption[] {
@@ -324,12 +357,21 @@ export function buildProblemOptions(scenario: ProblemScenario, info: ProblemCont
     case 'datasource_down':
       return compact([
         {
-          id: 'opt-reselect-datasource',
-          title: '重新选择数据源',
-          consequence: '换用备用数据源后继续，大约 1 分钟',
+          id: 'opt-demo-data',
+          title: '改用演示数据继续',
+          consequence: '先用看着合理的演示数据把大屏做出来，数据源恢复了随时可以换成真数据',
           recommended: true,
-          recommendReason: '不解决数据源，重试无意义',
-          riskLevel: 'medium',
+          recommendReason: '不卡在数据源上，先把页面做出来最快',
+          riskLevel: 'low',
+          autoExecuteAt: null
+        },
+        {
+          id: 'opt-retry-datasource',
+          title: '再试一次取数',
+          consequence: '重新连一次数据源，通常几秒到一分钟',
+          recommended: false,
+          recommendReason: null,
+          riskLevel: 'low',
           autoExecuteAt: null
         },
         { ...assist, consequence: '支持人员帮你检查数据源配置' }
@@ -385,14 +427,43 @@ function buildLlmFailureOptions(now: number): CardOption[] {
 
 /* ============================== 设置与能力画像 ============================== */
 
+const EMPTY_ROLE: RoleModelConfig = { model: '', apiBase: '', apiKey: '' }
+
 const DEFAULT_SETTINGS: ModelSettings = {
   provider: '公司内置',
   apiBase: '',
   apiKey: '',
   model: '',
-  plannerModel: '',
-  coderModel: '',
-  visionModel: ''
+  planner: { ...EMPTY_ROLE },
+  coder: { ...EMPTY_ROLE },
+  vision: { ...EMPTY_ROLE }
+}
+
+/**
+ * 兼容旧版设置文件：plannerModel/coderModel/visionModel 字符串字段 → 角色配置对象。
+ * 旧文件里角色只能换模型名，迁移为 { model: 旧值, apiBase: '', apiKey: '' }（地址/Key 跟随主设置）。
+ */
+function normalizeSettings(raw: ModelSettings): ModelSettings {
+  const legacy = raw as unknown as Record<string, unknown>
+  const role = (cfg: unknown, legacyModel: unknown): RoleModelConfig => {
+    const c = (cfg && typeof cfg === 'object' ? cfg : {}) as Partial<RoleModelConfig>
+    return {
+      model:
+        typeof c.model === 'string' && c.model
+          ? c.model
+          : typeof legacyModel === 'string'
+            ? legacyModel
+            : '',
+      apiBase: typeof c.apiBase === 'string' ? c.apiBase : '',
+      apiKey: typeof c.apiKey === 'string' ? c.apiKey : ''
+    }
+  }
+  return {
+    ...raw,
+    planner: role(raw.planner, legacy.plannerModel),
+    coder: role(raw.coder, legacy.coderModel),
+    vision: role(raw.vision, legacy.visionModel)
+  }
 }
 
 let cachedSettings: ModelSettings = { ...DEFAULT_SETTINGS }
@@ -406,7 +477,8 @@ export function getSettings(): ModelSettings {
 }
 
 export function saveSettings(s: ModelSettings): void {
-  cachedSettings = { ...s }
+  // 兼容旧客户端可能还发 plannerModel 字符串字段的情况
+  cachedSettings = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
   store.saveSettings(cachedSettings)
   capabilityCache = null
 }
@@ -431,11 +503,97 @@ async function getCapability(): Promise<{ ok: boolean; supportsVision: boolean }
   return capabilityPending
 }
 
+/* ============================== MCP 数据源 ============================== */
+
+let cachedDataSources: McpDataSource[] = []
+
+/** 兜底规整：非数组→空数组；元素字段逐个兜底；id 缺失自动生成 */
+function normalizeDataSources(raw: unknown): McpDataSource[] {
+  if (!Array.isArray(raw)) return []
+  const out: McpDataSource[] = []
+  for (const item of raw) {
+    const s = (item && typeof item === 'object' ? item : {}) as Partial<McpDataSource>
+    const authType: McpAuthType = s.authType === 'bearer' || s.authType === 'header' ? s.authType : 'none'
+    out.push({
+      id: typeof s.id === 'string' && s.id ? s.id : nextId('ds'),
+      name: typeof s.name === 'string' ? s.name : '',
+      url: typeof s.url === 'string' ? s.url : '',
+      authType,
+      token: typeof s.token === 'string' ? s.token : '',
+      headerName: typeof s.headerName === 'string' ? s.headerName : '',
+      enabled: s.enabled !== false
+    })
+  }
+  return out
+}
+
+export function getDataSources(): McpDataSource[] {
+  return cachedDataSources.map((s) => ({ ...s }))
+}
+
+/** 全量保存（与模型设置同风格：PUT 整份列表），保存时失效 listTools 缓存 */
+export function saveDataSources(list: unknown): McpDataSource[] {
+  cachedDataSources = normalizeDataSources(list)
+  store.saveDataSources(cachedDataSources)
+  invalidateToolsCache()
+  return getDataSources()
+}
+
+/** 「测试数据源连接」：真实调 tools/list 探测，永不抛错（错误体现在 ok=false） */
+export async function probeDataSource(source: unknown): Promise<DataSourceProbeResult> {
+  const [s] = normalizeDataSources([source])
+  if (!s.url) {
+    return { ok: false, tools: [], message: '先填一下数据源地址再测试', detail: null }
+  }
+  try {
+    const tools = await mcpListTools(s)
+    // 探测成功后失效缓存：下次取数拿到的是最新工具列表
+    invalidateToolsCache(s)
+    const names = tools.map((t) => t.name)
+    return {
+      ok: true,
+      tools: names,
+      message: names.length > 0 ? `连接成功，发现 ${names.length} 个可用工具` : '连接成功，但数据源没有提供可用工具',
+      detail: null
+    }
+  } catch (err) {
+    const message = err instanceof McpError ? err.message : '连不上数据源：出了点意外情况'
+    const detail =
+      err instanceof McpError
+        ? err.detail
+        : err instanceof Error
+          ? `${err.name}: ${err.message}`
+          : String(err)
+    return { ok: false, tools: [], message, detail }
+  }
+}
+
 /* ============================== 阶段时间线 ============================== */
 
-const CREATE_TITLES = ['理解需求', '匹配模板', '编写页面', '视觉检查', '修复问题', '生成预览']
-const CREATE_TITLES_WITH_IMAGE = ['分析参考图片', '匹配模板', '编写页面', '视觉检查', '修复问题', '生成预览']
+const CREATE_TITLES = ['理解需求', '匹配模板', '获取数据', '编写页面', '视觉检查', '修复问题', '生成预览']
+const CREATE_TITLES_NO_DATA = ['理解需求', '匹配模板', '编写页面', '视觉检查', '修复问题', '生成预览']
+const CREATE_TITLES_WITH_IMAGE = ['分析参考图片', '匹配模板', '获取数据', '编写页面', '视觉检查', '修复问题', '生成预览']
+const CREATE_TITLES_WITH_IMAGE_NO_DATA = ['分析参考图片', '匹配模板', '编写页面', '视觉检查', '修复问题', '生成预览']
 const EDIT_TITLES = ['修改', '构建', '检查']
+
+/** 是否配置了启用的数据源（决定新建流程要不要多一段「获取数据」） */
+function hasEnabledDataSources(): boolean {
+  return cachedDataSources.some((s) => s.enabled && !!s.url)
+}
+
+/** 新建流程的阶段标题：有启用数据源 7 段，否则沿用旧 6 段（emitPlan 会抹掉多余槽位） */
+function createTitles(hasImage: boolean): string[] {
+  const hasDs = hasEnabledDataSources()
+  if (hasImage) return hasDs ? CREATE_TITLES_WITH_IMAGE : CREATE_TITLES_WITH_IMAGE_NO_DATA
+  return hasDs ? CREATE_TITLES : CREATE_TITLES_NO_DATA
+}
+
+/** 新建流程各阶段 id：有数据源时多一段「获取数据」，后续阶段顺延 */
+function createStageIds(): { fetch: string | null; code: string; check: string; repair: string; finish: string } {
+  return hasEnabledDataSources()
+    ? { fetch: 'st-3', code: 'st-4', check: 'st-5', repair: 'st-6', finish: 'st-7' }
+    : { fetch: null, code: 'st-3', check: 'st-4', repair: 'st-5', finish: 'st-6' }
+}
 
 function emitPlan(rt: Runtime, titles: string[]): void {
   titles.forEach((t, i) => {
@@ -652,7 +810,8 @@ async function splitCodingFlow(rt: Runtime, run: ActiveRun, stageId: string): Pr
   setBlocker(rt, null)
   activateStage(rt, stageId)
   const livePreview = rt.s.versions.length === 0 ? makeLivePreview(rt) : null
-  const ids = run.checkIds ?? { check: 'st-4', repair: 'st-5', finish: 'st-6' }
+  const fallbackIds = createStageIds()
+  const ids = run.checkIds ?? { check: fallbackIds.check, repair: fallbackIds.repair, finish: fallbackIds.finish }
   /** 接力检查前，把正常路径会走、拆分路径跳过的阶段补打勾（如编辑流的「构建」st-2） */
   const finishBeforeStages = (): void => {
     for (const id of ids.before ?? []) {
@@ -661,10 +820,12 @@ async function splitCodingFlow(rt: Runtime, run: ActiveRun, stageId: string): Pr
     }
   }
 
+  // 拆分编码复用生成时落盘的数据快照（run.pending.dataBlock），不重新取数
+  const dataPart = run.pending.dataBlock ? `\n\n${run.pending.dataBlock}` : ''
   const requirement =
     run.pending.kind === 'create'
-      ? `请做这样一个大屏：${run.pending.text}${run.pending.answersSummary ? `\n用户确认的偏好：${run.pending.answersSummary}` : ''}`
-      : editRequirement(rt, run)
+      ? `请做这样一个大屏：${run.pending.text}${run.pending.answersSummary ? `\n用户确认的偏好：${run.pending.answersSummary}` : ''}${dataPart}`
+      : editRequirement(rt, run) + dataPart
 
   /**
    * 每个子步骤一次独立 LLM 调用（带看门狗和中止器）。
@@ -775,6 +936,8 @@ interface PlanResult {
   needClarification: boolean
   intro: string
   questions: ClarificationQuestion[]
+  /** 省级行政区划代码（需求涉及地图且能判断到省时；'' = 不需要地图备料） */
+  mapAdcode: string
 }
 
 /** 规划输出规范化：≤3 题、每题 2~3 选项、恰一个 ★推荐（不符合就确定性修正） */
@@ -825,11 +988,13 @@ function normalizePlan(raw: unknown): PlanResult {
       answer: null
     })
   }
+  const mapAdcodeRaw = typeof obj.mapAdcode === 'string' ? obj.mapAdcode.trim() : ''
   return {
     analysis,
     needClarification: obj.needClarification === true && questions.length > 0,
     intro,
-    questions
+    questions,
+    mapAdcode: /^\d{6}$/.test(mapAdcodeRaw) ? mapAdcodeRaw : ''
   }
 }
 
@@ -865,6 +1030,127 @@ async function callPlanner(
   return normalizePlan(gw.extractJson(reply))
 }
 
+/* ============================== LLM：参考图精读（复刻模式） ============================== */
+
+/** 参考图精读出的内容清单（replica.inventory prompt 的 JSON 契约，规范化后形态） */
+interface ReplicaInventory {
+  title: string
+  layout: string
+  panels: Array<{ name: string; position: string; content: string }>
+  kpis: string[]
+  colors: string
+  hasMap: boolean
+  mapAdcode: string
+  mapCities: string[]
+  notes: string
+}
+
+/** 精读结果规范化：字段逐个兜底；mapAdcode 只认 6 位数字行政区划代码，否则清空（备料环节按空跳过） */
+function normalizeReplicaInventory(raw: unknown): ReplicaInventory {
+  const o = (raw ?? {}) as Record<string, unknown>
+  const panels = (Array.isArray(o.panels) ? o.panels : [])
+    .slice(0, 12)
+    .map((p) => {
+      const x = (p ?? {}) as Record<string, unknown>
+      return {
+        name: String(x.name ?? '').trim(),
+        position: String(x.position ?? '').trim(),
+        content: String(x.content ?? '').trim()
+      }
+    })
+    .filter((p) => p.name || p.content)
+  const kpis = (Array.isArray(o.kpis) ? o.kpis : [])
+    .map((k) => String(k).trim())
+    .filter(Boolean)
+    .slice(0, 12)
+  const mapCities = (Array.isArray(o.mapCities) ? o.mapCities : [])
+    .map((c) => String(c).trim())
+    .filter(Boolean)
+    .slice(0, 40)
+  let mapAdcode = String(o.mapAdcode ?? '').trim()
+  if (!/^\d{6}$/.test(mapAdcode)) mapAdcode = ''
+  return {
+    title: String(o.title ?? '').trim(),
+    layout: String(o.layout ?? '').trim(),
+    panels,
+    kpis,
+    colors: String(o.colors ?? '').trim(),
+    hasMap: o.hasMap === true,
+    mapAdcode,
+    mapCities,
+    notes: String(o.notes ?? '').trim()
+  }
+}
+
+/**
+ * 参考图局部裁剪区域：顶条 / 左栏 / 中部 / 右栏 / 底部 共 5 块。
+ * 全部按比例换算并夹紧到图片范围内，任何尺寸（含非 16:9 截图）都不会越界。
+ */
+function referenceRegions(width: number, height: number): Region[] {
+  const topH = Math.max(1, Math.round(height * 0.14))
+  const bottomH = Math.max(1, Math.round(height * 0.2))
+  const colW = Math.max(1, Math.round(width / 3))
+  const midH = Math.max(1, height - topH - bottomH)
+  const mk = (left: number, top: number, w: number, h: number): Region => {
+    const l = Math.min(Math.max(0, Math.round(left)), width - 1)
+    const t = Math.min(Math.max(0, Math.round(top)), height - 1)
+    return { left: l, top: t, width: Math.max(1, Math.min(Math.round(w), width - l)), height: Math.max(1, Math.min(Math.round(h), height - t)) }
+  }
+  return [
+    mk(0, 0, width, topH),
+    mk(0, topH, colW, midH),
+    mk(colW, topH, width - colW * 2, midH),
+    mk(width - colW, topH, colW, midH),
+    mk(0, height - bottomH, width, bottomH)
+  ]
+}
+
+/**
+ * 精读参考图（vision 角色）：原图 + 局部放大裁剪图一起给模型，输出内容清单 JSON。
+ * JSON 容错提取沿用网关的 extractJson 手法；失败抛错由调用方兜底（inventory=null 继续，不阻塞）。
+ */
+async function callReplicaInventory(
+  referenceImage: string,
+  crops: string[],
+  requirement: string,
+  onProgress?: (chars: number, partial: string) => void,
+  signal?: AbortSignal
+): Promise<ReplicaInventory> {
+  const content: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
+    {
+      type: 'text',
+      text: prompt('replica.inventory.user', { requirement: requirement || '（用户只发了图片，没有文字）' })
+    },
+    { type: 'image_url', image_url: { url: referenceImage } }
+  ]
+  for (const url of crops) content.push({ type: 'image_url', image_url: { url } })
+  const reply = await gw.chatCompletionStream(
+    cachedSettings,
+    {
+      role: 'vision',
+      messages: [
+        { role: 'system', content: prompt('replica.inventory.system') },
+        { role: 'user', content }
+      ],
+      signal
+    },
+    onProgress ?? (() => {})
+  )
+  return normalizeReplicaInventory(gw.extractJson(reply))
+}
+
+/** 注入复刻 Coder prompt 的地图说明：用法一句大白话 + 路径 JSON（截断 60KB 防爆 prompt） */
+function mapNoteText(mapPaths: MapPaths): string {
+  return prompt('coder.map-note', { mapPathsJson: truncateBytes(JSON.stringify(mapPaths), 60 * 1024) })
+}
+
+/** 复刻上下文：有清单才走复刻 prompt；referenceImage 仅当模型能看图时带上 */
+interface ReplicaContext {
+  inventory: ReplicaInventory
+  referenceImage: string | null
+  mapPaths: MapPaths | null
+}
+
 /* ============================== LLM：Coder ============================== */
 
 async function callCoderCreate(
@@ -872,16 +1158,48 @@ async function callCoderCreate(
   answersSummary: string,
   template: TemplateDecision | null | undefined,
   vision: boolean,
+  dataBlock: string,
+  replica: ReplicaContext | null,
+  mapPaths: MapPaths | null,
   onProgress?: (chars: number, partial: string) => void,
   signal?: AbortSignal
 ): Promise<string> {
+  // 复刻分支：有精读清单 → 用复刻 prompt，清单数值照抄 + 参考图一起给（模型能看图才带图）
+  if (replica) {
+    const userText = prompt('coder.replica.user', {
+      requirement: text || '（用户只发了图片，没有文字）',
+      answers: answersSummary ? prompt('coder.create.answers-block', { answersSummary }) : '',
+      inventory: JSON.stringify(replica.inventory, null, 2),
+      dataBlock,
+      mapNote: replica.mapPaths ? mapNoteText(replica.mapPaths) : ''
+    })
+    const content: LlmUserContent = replica.referenceImage
+      ? [
+          { type: 'text', text: userText },
+          { type: 'image_url' as const, image_url: { url: replica.referenceImage } }
+        ]
+      : userText
+    const reply = await gw.chatCompletionStream(cachedSettings, {
+      role: 'coder',
+      messages: [
+        // 复刻 = 通用大屏开发规范（重写版 coder.system）+ 复刻增量要求，两段串成一份 system
+        { role: 'system', content: `${prompt('coder.system')}\n\n${prompt('coder.replica.system')}` },
+        { role: 'user', content }
+      ],
+      signal
+    }, onProgress ?? (() => {}))
+    return gw.extractHtml(reply)
+  }
   const tpl = template ? templateContext(template, vision) : { text: '', images: [] }
-  const userText = prompt('coder.create.user', {
+  let userText = prompt('coder.create.user', {
     text,
     answersBlock: answersSummary ? prompt('coder.create.answers-block', { answersSummary }) : '',
     templateContext: tpl.text,
+    dataBlock,
     imageNote: tpl.images.length > 0 ? prompt('coder.create.image-note') : ''
   })
+  // 无图创作也可能有地图备料（规划结论给了行政区划代码）：把投影好的路径拼进 user
+  if (mapPaths) userText += `\n\n${mapNoteText(mapPaths)}`
   const content: LlmUserContent =
     tpl.images.length > 0
       ? [{ type: 'text', text: userText }, ...tpl.images.map((url) => ({ type: 'image_url' as const, image_url: { url } }))]
@@ -897,14 +1215,14 @@ async function callCoderCreate(
   return gw.extractHtml(reply)
 }
 
-async function callCoderEdit(currentHtml: string, instruction: string, onProgress?: (chars: number, partial: string) => void, signal?: AbortSignal): Promise<string> {
+async function callCoderEdit(currentHtml: string, instruction: string, dataBlock: string, onProgress?: (chars: number, partial: string) => void, signal?: AbortSignal): Promise<string> {
   const reply = await gw.chatCompletionStream(cachedSettings, {
     role: 'coder',
     messages: [
       { role: 'system', content: prompt('coder.system') },
       {
         role: 'user',
-        content: prompt('coder.edit.user', { currentHtml, instruction })
+        content: prompt('coder.edit.user', { currentHtml, instruction, dataBlock })
       }
     ],
     signal
@@ -1013,6 +1331,97 @@ function templateContext(dec: TemplateDecision, vision: boolean): { text: string
   return { text, images }
 }
 
+/* ============================== LLM：取数规划（MCP 数据源） ============================== */
+
+/** 取数规划里的一条调用（白名单过滤后的合法形态） */
+interface DataFetchCall {
+  sourceId: string
+  tool: string
+  args: Record<string, unknown>
+  purpose: string
+}
+
+/** 数据块截断上限（默认 8KB，环境变量可调）：防止取回的数据把 Coder prompt 撑爆 */
+const DATA_BLOCK_MAX_BYTES = Number(process.env.DATA_BLOCK_MAX_BYTES) || 8 * 1024
+
+/** 注入 prompt 前剥掉 http(s):// 开头的网址（防止模型照抄进 HTML 后被 validateHtml 当外部资源引用拦截） */
+function stripUrls(text: string): string {
+  return text.replace(/https?:\/\/[^\s"'<>)\]]+/gi, '（网址已省略）')
+}
+
+/** 按字节截断 UTF-8 文本（Buffer 截断可能切出半个字，toString 会收成替换符，可接受） */
+function truncateBytes(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, 'utf8')
+  if (buf.length <= maxBytes) return text
+  return `${buf.subarray(0, maxBytes).toString('utf8')}\n…（数据太长，已截断）`
+}
+
+/** 取数规划确定性规范化：白名单过滤（sourceId/tool 必须在已配置且启用的清单内，非法丢弃），calls 上限 3 */
+function normalizeDataFetchCalls(raw: unknown, whitelist: Map<string, Set<string>>): DataFetchCall[] {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const arr = Array.isArray(obj.calls) ? obj.calls : []
+  const out: DataFetchCall[] = []
+  for (const item of arr) {
+    if (out.length >= 3) break
+    const c = (item ?? {}) as Record<string, unknown>
+    if (typeof c.sourceId !== 'string' || typeof c.tool !== 'string') continue
+    const tools = whitelist.get(c.sourceId)
+    if (!tools || !tools.has(c.tool)) continue
+    out.push({
+      sourceId: c.sourceId,
+      tool: c.tool,
+      args: c.args && typeof c.args === 'object' && !Array.isArray(c.args) ? (c.args as Record<string, unknown>) : {},
+      purpose: typeof c.purpose === 'string' ? c.purpose.trim() : ''
+    })
+  }
+  return out
+}
+
+/** 取数规划 LLM 调用：与 callTemplateMatch 同构（planner 角色 + extractJson，规范化交给调用方） */
+async function callDataFetchPlan(
+  text: string,
+  answersSummary: string,
+  toolsCatalog: string,
+  onProgress?: (chars: number, partial: string) => void,
+  signal?: AbortSignal
+): Promise<unknown> {
+  const reply = await gw.chatCompletionStream(
+    cachedSettings,
+    {
+      role: 'planner',
+      messages: [
+        { role: 'system', content: prompt('datasource.plan.system') },
+        {
+          role: 'user',
+          content: prompt('datasource.plan.user', {
+            text: text || '（用户只发了图片，没有文字）',
+            answersBlock: answersSummary ? prompt('coder.create.answers-block', { answersSummary }) : '',
+            toolsCatalog
+          })
+        }
+      ],
+      signal
+    },
+    onProgress ?? (() => {})
+  )
+  return gw.extractJson(reply)
+}
+
+/** 拼注入 Coder prompt 的数据块：「以下是真实数据」标记 + JSON 文本（已剥 URL、已按 8KB 截断） */
+function buildDataBlock(results: Array<{ purpose: string; text: string }>): string {
+  const items = results.map((r) => {
+    let data: unknown = r.text
+    try {
+      data = JSON.parse(r.text)
+    } catch {
+      /* 不是 JSON 就按原文嵌入 */
+    }
+    return { 用途: r.purpose, 数据: data }
+  })
+  const body = truncateBytes(stripUrls(JSON.stringify(items, null, 2)), DATA_BLOCK_MAX_BYTES)
+  return `以下是真实数据（从已配置的数据源取回，编写页面时必须使用其中的数值，不要自己编造；数据里不会出现网址）：\n${body}`
+}
+
 /* ============================== LLM：视觉检查（结构化布局审查，设计 §4.1 非多模态路径） ============================== */
 
 interface ReviewIssue {
@@ -1037,8 +1446,43 @@ async function callVisualReview(html: string, requirement: string, onProgress?: 
     .filter((i) => i.title.length > 0)
 }
 
-/* ============================== 确定性校验（硬约束的落地） ============================== */
+/**
+ * 截图验收（vision 角色）：成品页面截图 + 参考图（有就带）一起给模型，输出问题清单 JSON。
+ * 与 callVisualReview 同输出形态，供检查阶段二选一（截图浏览器可用时用本函数替代文本审查）。
+ */
+async function callShotReview(
+  screenshot: string,
+  referenceImage: string | null,
+  requirement: string,
+  onProgress?: (chars: number, partial: string) => void,
+  signal?: AbortSignal
+): Promise<ReviewIssue[]> {
+  const content: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
+    { type: 'text', text: prompt('review.shot.user', { requirement: requirement || '（用户只发了图片，没有文字）' }) },
+    { type: 'image_url', image_url: { url: screenshot } }
+  ]
+  if (referenceImage) content.push({ type: 'image_url', image_url: { url: referenceImage } })
+  const reply = await gw.chatCompletionStream(
+    cachedSettings,
+    {
+      role: 'vision',
+      messages: [
+        { role: 'system', content: prompt('review.shot.system') },
+        { role: 'user', content }
+      ],
+      signal
+    },
+    onProgress ?? (() => {})
+  )
+  const parsed = gw.extractJson(reply) as { issues?: Array<{ title?: unknown; detail?: unknown }> }
+  if (!Array.isArray(parsed.issues)) return []
+  return parsed.issues
+    .slice(0, 3)
+    .map((i) => ({ title: String(i.title ?? '').trim(), detail: String(i.detail ?? '').trim() }))
+    .filter((i) => i.title.length > 0)
+}
 
+/* ============================== 确定性校验（硬约束的落地） ============================== */
 function validateHtml(html: string): string[] {
   const problems: string[] = []
   if (!/<html[\s>]/i.test(html)) problems.push('不是完整的网页（缺少 html 标签）')
@@ -1053,6 +1497,15 @@ function sanitizeHtml(html: string): string {
   return html
     .replace(/(<(?:script|link|img|iframe|source)[^>]*?\s)(?:src|href)\s*=\s*["']\s*https?:\/\/[^"']*["']/gi, '$1data-removed-external=""')
     .replace(/url\(\s*["']?\s*https?:\/\/[^)"']*["']?\s*\)/gi, 'url(about:blank)')
+}
+
+/** 修复前/后对比截图落盘（shots/<dashId>/<issueId>-before|after.png），失败返回 null 由调用方回落封面占位 */
+function persistShot(rt: Runtime, issueId: string, kind: 'before' | 'after', dataUrl: string): string | null {
+  try {
+    return store.writeShot(rt.s.dashboard.id, `${issueId}-${kind}`, dataUrl)
+  } catch {
+    return null
+  }
 }
 
 /* ============================== 卡点与问题卡片 ============================== */
@@ -1212,6 +1665,40 @@ function finishStageQuiet(rt: Runtime, id: string): void {
   if (st && st.state === 'active') setStage(rt, { ...st, state: 'pending', startedAt: null, finishedAt: null })
 }
 
+/**
+ * 取数全部失败 → 数据源卡点卡（datasource_down 场景：★改用演示数据继续 / 再试一次取数 / 呼叫人工）。
+ * 分支闭包约定：「改用演示数据」走 run.proceed（调用前把 dataBlock 置 ''）；「再试一次」走 run.retryLlm
+ * （dataBlock 保持 undefined，重进 continueCreateToCoding 会重新取数）。两者都回到 continueCreateToCoding。
+ */
+function raiseDatasourceDownCard(rt: Runtime, run: ActiveRun, stageId: string | null, errSummary: string): void {
+  const title = '数据源连不上'
+  const description = `取真实数据的时候碰了壁（${truncate(errSummary, 60)}）。可以先用演示数据把大屏做出来，也可以再连一次试试。`
+  const options = buildProblemOptions(
+    'datasource_down',
+    { hasVersion: rt.s.versions.length > 0, lastVersionLabel: rt.s.versions[0]?.label ?? null },
+    Date.now()
+  )
+  const msg: ProblemMessage = {
+    kind: 'problem',
+    id: nextId('m'),
+    createdAt: Date.now(),
+    title,
+    description,
+    options,
+    chosenOptionId: null,
+    relatedIssueId: null
+  }
+  pushMessage(rt, msg)
+  setBlocker(rt, { id: nextId('blk'), type: 'external', title, description, options, relatedMessageId: msg.id })
+  setStatus(rt, 'blocked')
+  updateDashboard(rt, { status: 'needs_attention' })
+  run.pending.awaiting = 'problem'
+  run.proceed = () => void continueCreateToCoding(rt, run)
+  run.retryLlm = () => void continueCreateToCoding(rt, run)
+  if (stageId) finishStageQuiet(rt, stageId)
+  save(rt)
+}
+
 /* ============================== 主流程：新建 ============================== */
 
 function newPending(kind: 'create' | 'edit', text: string, attachments: string[]): PendingRun {
@@ -1232,7 +1719,7 @@ async function runCreate(rt: Runtime, run: ActiveRun): Promise<void> {
   const hasImage = run.pending.attachments.length > 0
   rt.running = true
   rt.s.pendingRun = run.pending
-  emitPlan(rt, hasImage ? CREATE_TITLES_WITH_IMAGE : CREATE_TITLES)
+  emitPlan(rt, createTitles(hasImage))
   setStatus(rt, 'generating')
   updateDashboard(rt, { status: 'generating' })
 
@@ -1272,6 +1759,45 @@ async function runCreate(rt: Runtime, run: ActiveRun): Promise<void> {
     if (run.abort === ctl) run.abort = null
     disarmAgentWatchdog(rt, run, wdPlan)
   }
+  // 规划结论里的地图备料依据（无图创作用；6 位行政区划代码，否则为空串）
+  run.pending.mapAdcode = plan.mapAdcode
+
+  // 参考图精读（带图 + 模型能看图 + 图片裁剪可用时，赶在模板匹配之前）：
+  // 裁局部放大图 → 视觉角色读图出内容清单。失败不阻塞：inventory=null，按现有流程继续。
+  if (hasImage && vision && run.pending.inventory === undefined) {
+    const refImage = run.pending.attachments.find((a) => a.startsWith('data:')) ?? null
+    const replicaEnv = await probeReplicaEnv()
+    if (refImage && replicaEnv.sharpOk) {
+      setStageDetail(rt, 'st-1', '正在精读参考图细节…')
+      run.retryLlm = () => void runCreate(rt, run) // 超时卡片的"让 AI 再试一次"也走这里
+      const wdInv = armAgentWatchdog(rt, run, 'st-1', 'other')
+      const ctlInv = new AbortController()
+      run.abort = ctlInv
+      try {
+        const size = await imageSize(refImage)
+        const crops = await cropImageDataUrl(refImage, referenceRegions(size.width, size.height))
+        run.pending.inventory = await callReplicaInventory(refImage, crops, run.pending.text, undefined, ctlInv.signal)
+        save(rt)
+        pushAgent(
+          rt,
+          `参考图精读完了：${run.pending.inventory.panels.length} 个面板、${run.pending.inventory.kpis.length} 个指标都记下来了，接下来照着做。`
+        )
+      } catch (err) {
+        if (run.watchdogAborted === ctlInv) return // 看门狗已接管（超时卡片）
+        run.pending.inventory = null
+        save(rt)
+        pushAgent(rt, '参考图细节没读全，我按看到的大概样子和你的描述来做。')
+      } finally {
+        if (run.abort === ctlInv) run.abort = null
+        disarmAgentWatchdog(rt, run, wdInv)
+      }
+    } else {
+      // 图片裁剪工具不可用（或附件不是图片数据）：不精读，按现有流程继续
+      run.pending.inventory = null
+      save(rt)
+    }
+  }
+
   finishStage(rt, 'st-1')
   pushAgent(rt, hasImage && vision ? `图片分析完了：${plan.analysis}` : `我理解了：${plan.analysis}`)
 
@@ -1315,10 +1841,110 @@ async function runCreate(rt: Runtime, run: ActiveRun): Promise<void> {
   await continueCreateToCoding(rt, run)
 }
 
-/** 澄清之后（或无需澄清）：匹配模板 → 编写页面 → 视觉检查 → 修复问题 → 生成预览 */
+/**
+ * 「获取数据」阶段：工具目录（listTools 带缓存）→ 取数规划 LLM → 逐个 callTool。
+ * 返回 true = 继续编码（dataBlock 快照已写入 run.pending 并落盘）；false = 已发卡片等用户选择。
+ * LLM 规划失败走现有 LLM 失败卡；一个源都连不上 / callTool 全部失败走 datasource_down 卡点卡。
+ */
+async function fetchDataForCreate(rt: Runtime, run: ActiveRun, stageId: string): Promise<boolean> {
+  const sources = cachedDataSources.filter((s) => s.enabled && s.url)
+
+  // 1) 组装工具目录（工具名 + 参数 schema + 大白话用途）；连不上的源记下来，不进白名单
+  const catalogLines: string[] = []
+  const whitelist = new Map<string, Set<string>>()
+  const sourceById = new Map<string, McpDataSource>()
+  const listErrors: string[] = []
+  for (const s of sources) {
+    sourceById.set(s.id, s)
+    try {
+      const tools = await mcpListTools(s)
+      whitelist.set(s.id, new Set(tools.map((t) => t.name)))
+      catalogLines.push(`数据源「${s.name || s.url}」（sourceId：${s.id}），可用工具：`)
+      for (const t of tools) {
+        const schemaText = t.inputSchema ? truncate(JSON.stringify(t.inputSchema), 300) : ''
+        catalogLines.push(`- ${t.name}${t.description ? `：${t.description}` : ''}${schemaText ? `（参数：${schemaText}）` : ''}`)
+      }
+    } catch (err) {
+      listErrors.push(err instanceof McpError ? `「${s.name || s.url}」${err.message}` : `「${s.name || s.url}」连不上`)
+    }
+  }
+  if (whitelist.size === 0) {
+    raiseDatasourceDownCard(rt, run, stageId, listErrors.join('；') || '配置的数据源都连不上')
+    return false
+  }
+  if (listErrors.length > 0) {
+    pushAgent(rt, `有数据源暂时连不上（${listErrors.join('；')}），我先看看剩下的能不能满足需求。`)
+  }
+
+  // 2) 取数规划（planner 角色，看门狗按 'other' 布防；LLM 失败走现有 LLM 失败卡）
+  setStageDetail(rt, stageId, '正在规划要取哪些数据…')
+  let calls: DataFetchCall[]
+  run.retryLlm = () => void continueCreateToCoding(rt, run) // 失败/超时卡片的"让 AI 再试一次"也走这里
+  const wdPlan = armAgentWatchdog(rt, run, stageId, 'other')
+  const ctl = new AbortController()
+  run.abort = ctl
+  try {
+    const raw = await callDataFetchPlan(
+      run.pending.text,
+      run.pending.answersSummary,
+      catalogLines.join('\n'),
+      llmProgress(rt, stageId, '正在规划取数'),
+      ctl.signal
+    )
+    calls = normalizeDataFetchCalls(raw, whitelist)
+  } catch (err) {
+    if (run.watchdogAborted === ctl) return false // 看门狗已接管（超时卡片）
+    raiseLlmFailureCard(rt, run, err, stageId)
+    return false
+  } finally {
+    if (run.abort === ctl) run.abort = null
+    disarmAgentWatchdog(rt, run, wdPlan)
+  }
+
+  // 3) 规划结论：不需要真实数据 → 用演示数据（快照记 ''，后续环节不再重取）
+  if (calls.length === 0) {
+    pushAgent(rt, '看了下需求，这版用演示数据就够用，不额外连数据源取数了。')
+    run.pending.dataBlock = ''
+    rt.s.lastDataBlock = ''
+    save(rt)
+    return true
+  }
+
+  // 4) 逐个执行取数调用（单个失败不致命，记下来继续；callTool 自带 15 秒超时 + 重试 1 次）
+  const results: Array<{ purpose: string; text: string }> = []
+  const callErrors: string[] = []
+  for (const [i, call] of calls.entries()) {
+    const source = sourceById.get(call.sourceId) as McpDataSource
+    setStageDetail(rt, stageId, `正在取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}…`)
+    try {
+      const text = await mcpCallTool(source, call.tool, call.args)
+      results.push({ purpose: call.purpose || call.tool, text })
+    } catch (err) {
+      callErrors.push(err instanceof McpError ? err.message : `取「${call.purpose || call.tool}」失败了`)
+    }
+  }
+
+  // 5) 全部失败 → 数据源卡点卡等用户选
+  if (results.length === 0) {
+    raiseDatasourceDownCard(rt, run, stageId, callErrors.join('；') || '数据源没有返回数据')
+    return false
+  }
+
+  // 6) 拼数据块（剥 URL + 8KB 截断 + 「以下是真实数据」标记），存快照并落盘
+  if (callErrors.length > 0) pushAgent(rt, `有部分数据没取到（${callErrors.join('；')}），先用取到的这些。`)
+  const block = buildDataBlock(results)
+  run.pending.dataBlock = block
+  rt.s.lastDataBlock = block
+  save(rt)
+  pushAgent(rt, `真实数据取到了（${results.map((r) => `「${truncate(r.purpose, 12)}」`).join('、')}），编写页面时直接用这些真数据。`)
+  return true
+}
+
+/** 澄清之后（或无需澄清）：匹配模板 → 获取数据（有启用数据源时）→ 编写页面 → 视觉检查 → 修复问题 → 生成预览 */
 async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void> {
   rt.running = true
   setStatus(rt, 'generating')
+  const ids = createStageIds()
   activateStage(rt, 'st-2')
 
   // 阶段 2：匹配模板（模板库存在且本轮还没匹配过时）
@@ -1380,24 +2006,71 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
     finishStage(rt, 'st-2')
   }
 
-  activateStage(rt, 'st-3')
+  // 阶段 3（有启用数据源时）：获取数据。已有快照（重试/续跑/用户选过演示数据）直接复用，不重新取数
+  if (ids.fetch) {
+    activateStage(rt, ids.fetch)
+    if (run.pending.dataBlock === undefined) {
+      const fetched = await fetchDataForCreate(rt, run, ids.fetch)
+      if (!fetched) {
+        rt.running = false
+        return
+      }
+    } else {
+      setStageDetail(rt, ids.fetch, '沿用上次取数的结果…')
+      await sleep(400)
+    }
+    finishStage(rt, ids.fetch)
+  }
+
+  activateStage(rt, ids.code)
+
+  // 备料：地图 SVG 路径（有图无图都可能触发——精读清单或规划结论给了行政区划代码时才去取）。
+  // 取图/投影任何一步失败都不阻塞：pushAgent 一句大白话，Coder 按需求描述来画。
+  if (run.pending.mapPaths === undefined) {
+    const adcode =
+      run.pending.inventory?.hasMap && run.pending.inventory.mapAdcode
+        ? run.pending.inventory.mapAdcode
+        : (run.pending.mapAdcode ?? '')
+    if (adcode) {
+      setStageDetail(rt, ids.code, '正在准备地图素材…')
+      try {
+        const geojson = await fetchGeoJson(adcode)
+        run.pending.mapPaths = geojsonToSvgPaths(geojson, 640, 520, 2)
+      } catch {
+        run.pending.mapPaths = null
+        pushAgent(rt, '地图素材没准备好，我按需求描述来画。')
+      }
+      save(rt)
+    } else {
+      run.pending.mapPaths = null
+    }
+  }
+
   // 首次创建（没有任何旧版本）时：边生成边把部分 HTML 推到预览区，页面逐步长出来
   const livePreview = rt.s.versions.length === 0 ? makeLivePreview(rt) : null
-  const progress = llmProgress(rt, 'st-3', '正在编写页面')
+  const progress = llmProgress(rt, ids.code, '正在编写页面')
   const capForVision = await getCapability()
   const visionOk = capForVision.ok && capForVision.supportsVision
+  // 有精读清单 → Coder 走复刻 prompt（参考图仅在模型能看图时带上）
+  const replica: ReplicaContext | null = run.pending.inventory
+    ? {
+        inventory: run.pending.inventory,
+        referenceImage: visionOk ? (run.pending.attachments.find((a) => a.startsWith('data:')) ?? null) : null,
+        mapPaths: run.pending.mapPaths ?? null
+      }
+    : null
   let html: string
-  const wdCode = armAgentWatchdog(rt, run, 'st-3', 'coding', { check: 'st-4', repair: 'st-5', finish: 'st-6' })
+  const wdCode = armAgentWatchdog(rt, run, ids.code, 'coding', { check: ids.check, repair: ids.repair, finish: ids.finish })
   const ctl = new AbortController()
   run.abort = ctl
   try {
-    html = await callCoderCreate(run.pending.text, run.pending.answersSummary, run.pending.template, visionOk, (chars, partial) => {
+    html = await callCoderCreate(run.pending.text, run.pending.answersSummary, run.pending.template, visionOk, run.pending.dataBlock ?? '', replica, run.pending.mapPaths ?? null, (chars, partial) => {
       progress(chars)
       livePreview?.(partial)
     }, ctl.signal)
   } catch (err) {
     if (run.watchdogAborted === ctl) return // 看门狗已接管（自动拆分步骤）
-    raiseLlmFailureCard(rt, run, err, 'st-3')
+    raiseLlmFailureCard(rt, run, err, ids.code)
     run.retryLlm = () => void continueCreateToCoding(rt, run)
     rt.running = false
     return
@@ -1406,9 +2079,9 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
     disarmAgentWatchdog(rt, run, wdCode)
   }
   run.html = html
-  finishStage(rt, 'st-3')
+  finishStage(rt, ids.code)
 
-  await checkRepairAndFinish(rt, run, 'st-4', 'st-5', 'st-6')
+  await checkRepairAndFinish(rt, run, ids.check, ids.repair, ids.finish)
 }
 
 /** 视觉检查 + 修复循环 + 收尾提交（新建：检查 st-4 → 修复 st-5 → 生成预览 st-6；修改：检查 st-3 内合并，repairStageId 传 null） */
@@ -1422,24 +2095,52 @@ async function checkRepairAndFinish(
   activateStage(rt, checkStageId)
   const fixStageId = repairStageId ?? checkStageId
 
-  // 视觉检查 = 确定性硬校验 + LLM 结构化布局审查（审查失败不阻塞，硬校验兜底；LLM 调用布防看门狗，卡死出超时卡片）
+  // 视觉检查 = 确定性硬校验 + LLM 审查（审查失败不阻塞，硬校验兜底；LLM 调用布防看门狗，卡死出超时卡片）。
+  // 截图浏览器可用且模型能看图时，用真截图对比验收（有参考图带上参考图）替代文本审查；
+  // 截图或审查任何一环失败 → 回落文本审查，行为与原来一致。
   setStageDetail(rt, checkStageId, '先做硬性规则检查：页面完整性、是否引用外部素材…')
   let hard = validateHtml(run.html)
+  const capForShot = await getCapability()
+  const visionForShot = capForShot.ok && capForShot.supportsVision
+  const replicaEnv = await probeReplicaEnv()
+  const shotEnvOk = replicaEnv.ok && visionForShot
+  const referenceImage = visionForShot ? (run.pending.attachments.find((a) => a.startsWith('data:')) ?? null) : null
   let review: ReviewIssue[] = []
+  let usedShotReview = false
+  let shotDataUrl: string | null = null // 修复前真截图（截图验收路径专用，落盘为 Issue.beforeShotUrl）
   run.retryLlm = () => void checkRepairAndFinish(rt, run, checkStageId, repairStageId, finishStageId)
   const wdReview = armAgentWatchdog(rt, run, checkStageId, 'other')
   const ctlReview = new AbortController()
   run.abort = ctlReview
   try {
-    review = await callVisualReview(run.html, run.pending.text, llmProgress(rt, checkStageId, '正在审查布局'), ctlReview.signal)
-  } catch (err) {
-    if (run.watchdogAborted === ctlReview) return // 看门狗已接管（超时卡片）
-    review = []
+    try {
+      if (shotEnvOk) {
+        setStageDetail(rt, checkStageId, '正在给页面截图，照着要求对比检查…')
+        shotDataUrl = await renderShotDataUrl(run.html, 1920, 1080)
+        review = await callShotReview(shotDataUrl, referenceImage, run.pending.text, llmProgress(rt, checkStageId, '正在对比检查'), ctlReview.signal)
+        usedShotReview = true
+      }
+    } catch (err) {
+      if (run.watchdogAborted === ctlReview) return // 看门狗已接管（超时卡片）
+      review = []
+      shotDataUrl = null
+    }
+    if (!usedShotReview) {
+      // 文本审查兜底（无截图浏览器 / 模型看不了图 / 截图路径失败）
+      try {
+        review = await callVisualReview(run.html, run.pending.text, llmProgress(rt, checkStageId, '正在审查布局'), ctlReview.signal)
+      } catch (err) {
+        if (run.watchdogAborted === ctlReview) return // 看门狗已接管（超时卡片）
+        review = []
+      }
+    }
   } finally {
     if (run.abort === ctlReview) run.abort = null
     disarmAgentWatchdog(rt, run, wdReview)
   }
-  let problems = [...hard, ...review.map((r) => r.title)]
+  // 硬校验 + 审查问题合并去重
+  let problems = [...hard]
+  for (const r of review) if (!problems.includes(r.title)) problems.push(r.title)
   const details = new Map(review.map((r) => [r.title, r.detail]))
   finishStage(rt, checkStageId)
 
@@ -1452,16 +2153,22 @@ async function checkRepairAndFinish(
 
   // 有问题 → 修复问题阶段：每个问题一张 Issue 卡（最多 3 张），≤2 次自动修复
   if (repairStageId) activateStage(rt, repairStageId)
-  const issues: Issue[] = problems.slice(0, 3).map((p, i) => ({
-    id: i === 0 ? (run.pending.issueId ?? nextId('issue')) : nextId('issue'),
-    stageId: fixStageId,
-    title: p,
-    attempt: 1,
-    status: 'fixing' as const,
-    beforeShotUrl: rt.s.dashboard.coverUrl || null,
-    afterShotUrl: null,
-    detail: details.get(p) ?? ''
-  }))
+  const issues: Issue[] = problems.slice(0, 3).map((p, i) => {
+    const id = i === 0 ? (run.pending.issueId ?? nextId('issue')) : nextId('issue')
+    return {
+      id,
+      stageId: fixStageId,
+      title: p,
+      attempt: 1,
+      status: 'fixing' as const,
+      // 截图验收路径：修复前真截图落盘；文本审查兜底路径维持封面占位
+      beforeShotUrl: shotDataUrl
+        ? (persistShot(rt, id, 'before', shotDataUrl) ?? (rt.s.dashboard.coverUrl || null))
+        : rt.s.dashboard.coverUrl || null,
+      afterShotUrl: null,
+      detail: details.get(p) ?? ''
+    }
+  })
   run.pending.issueId = issues[0].id
   pushAgent(rt, `检查发现 ${issues.length} 个小问题，正在挨个自动修复…`)
   issues.forEach((i) => setIssue(rt, { ...i }))
@@ -1493,12 +2200,37 @@ async function checkRepairAndFinish(
     }
     // 修复后复跑硬校验（结构化审查的结论无法程序复核，硬校验通过即视为修好）
     hard = validateHtml(run.html)
-    if (hard.length === 0) {
+    // 截图验收路径：修完重新截图复审一轮（截图/复审失败不阻塞，回落到只看硬校验）
+    let afterShot: string | null = null
+    let recheck: ReviewIssue[] = []
+    if (usedShotReview) {
+      const wdRe = armAgentWatchdog(rt, run, fixStageId, 'other')
+      const ctlRe = new AbortController()
+      run.abort = ctlRe
+      try {
+        setStageDetail(rt, fixStageId, '正在重新截图，复查修复效果…')
+        afterShot = await renderShotDataUrl(run.html, 1920, 1080)
+        recheck = await callShotReview(afterShot, referenceImage, run.pending.text, llmProgress(rt, fixStageId, '正在复查修复效果'), ctlRe.signal)
+      } catch (err) {
+        if (run.watchdogAborted === ctlRe) return // 看门狗已接管（超时卡片）
+        recheck = []
+        afterShot = null
+      } finally {
+        if (run.abort === ctlRe) run.abort = null
+        disarmAgentWatchdog(rt, run, wdRe)
+      }
+    }
+    const remaining = [...hard]
+    for (const r of recheck) if (!remaining.includes(r.title)) remaining.push(r.title)
+    if (remaining.length === 0) {
       issues.forEach((i) =>
         setIssue(rt, {
           ...i,
           status: 'fixed',
-          afterShotUrl: rt.s.dashboard.coverUrl || null,
+          // 截图验收路径：修复后真截图落盘；文本审查兜底路径维持封面占位
+          afterShotUrl: afterShot
+            ? (persistShot(rt, i.id, 'after', afterShot) ?? (rt.s.dashboard.coverUrl || null))
+            : rt.s.dashboard.coverUrl || null,
           detail: 'AI 已重新生成并通过检查。'
         })
       )
@@ -1506,7 +2238,7 @@ async function checkRepairAndFinish(
       await finishRunCommit(rt, run, finishStageId)
       return
     }
-    problems = hard
+    problems = remaining
     issues.forEach((i, idx) => setIssue(rt, { ...i, status: 'failed', title: problems[Math.min(idx, problems.length - 1)] }))
     if (issues[0].attempt >= 2) {
       // 自动修复预算用完 → 问题处理卡片（推荐按规则表）
@@ -1650,6 +2382,8 @@ function startEditFlow(rt: Runtime, text: string, attachments: string[]): void {
     retryLlm: null,
     proceed: null
   }
+  // 编辑复用生成时落盘的数据快照（没有就是 undefined，Coder prompt 渲染为空串），不重新取数
+  run.pending.dataBlock = rt.s.lastDataBlock
   rt.activeRun = run
   void runEdit(rt, run)
 }
@@ -1690,7 +2424,7 @@ async function runEdit(rt: Runtime, run: ActiveRun): Promise<void> {
   const ctl = new AbortController()
   run.abort = ctl
   try {
-    run.html = await callCoderEdit(currentHtml, run.pending.text || '按用户发的参考图调整', llmProgress(rt, 'st-1', '正在修改页面'), ctl.signal)
+    run.html = await callCoderEdit(currentHtml, run.pending.text || '按用户发的参考图调整', run.pending.dataBlock ?? '', llmProgress(rt, 'st-1', '正在修改页面'), ctl.signal)
   } catch (err) {
     if (run.watchdogAborted === ctl) return // 看门狗已接管（自动拆分步骤）
     raiseLlmFailureCard(rt, run, err, 'st-1')
@@ -1894,7 +2628,7 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
     }
     case 'opt-split-redo': {
       if (run) {
-        const stageId = run.watchdogStageId ?? (run.pending.kind === 'create' ? 'st-3' : 'st-1')
+        const stageId = run.watchdogStageId ?? (run.pending.kind === 'create' ? createStageIds().code : 'st-1')
         void splitCodingFlow(rt, run, stageId)
       } else {
         setStatus(rt, 'idle')
@@ -1902,10 +2636,35 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
       }
       break
     }
-    case 'opt-reselect-datasource': {
-      pushAgent(rt, '好的，已切换到备用数据源（公司车辆平台），继续生成…')
-      rt.activeRun = null
-      startEditFlow(rt, '接入备用数据源，保证车辆实时位置能正常显示', [])
+    case 'opt-demo-data': {
+      // 数据源卡点「改用演示数据继续」：快照置空（Coder 用演示数据），走 proceed 继续编码
+      if (run) {
+        run.pending.dataBlock = ''
+        rt.s.lastDataBlock = ''
+        run.pending.awaiting = null
+        save(rt)
+        if (run.proceed) run.proceed()
+        else if (run.pending.kind === 'create') void continueCreateToCoding(rt, run)
+        else void runEdit(rt, run)
+      } else {
+        setStatus(rt, 'idle')
+        drainQueue(rt)
+      }
+      break
+    }
+    case 'opt-retry-datasource': {
+      // 数据源卡点「再试一次取数」：清掉快照标记，重进流程会重新取数
+      if (run) {
+        run.pending.dataBlock = undefined
+        run.pending.awaiting = null
+        save(rt)
+        if (run.retryLlm) run.retryLlm()
+        else if (run.pending.kind === 'create') void continueCreateToCoding(rt, run)
+        else void runEdit(rt, run)
+      } else {
+        setStatus(rt, 'idle')
+        drainQueue(rt)
+      }
       break
     }
     default:
@@ -1942,16 +2701,23 @@ export function cancelAutoExec(dashId: string): void {
   if (rt) clearAutoExec(rt)
 }
 
-/** 重启后内存态丢失：按落盘的 pendingRun 重建可续跑的 ActiveRun（最大努力） */
+/** 重启后内存态丢失：按落盘的 pendingRun 重建可续跑的 ActiveRun（最大努力；dataBlock 快照随 pendingRun 恢复） */
 function rebuildActiveRun(rt: Runtime): ActiveRun | null {
   const pending = rt.s.pendingRun
   if (!pending) return null
   const run: ActiveRun = { pending, html: '', retryRepair: null, retryLlm: null, proceed: null }
   const current = rt.s.versions.find((v) => v.isCurrent) ?? rt.s.versions[0]
   run.html = current ? (store.readPreview(rt.s.dashboard.id, current.id) ?? '') : ''
+  const ids = createStageIds()
   if (pending.awaiting === 'problem') {
-    run.retryRepair = () => void resumeRepair(rt, run, pending.kind === 'create' ? 'st-4' : 'st-3', pending.kind === 'create' ? 'st-5' : 'st-3')
-    run.proceed = () => void finishRunCommit(rt, run, pending.kind === 'create' ? 'st-5' : 'st-3')
+    run.retryRepair = () => void resumeRepair(rt, run, pending.kind === 'create' ? ids.check : 'st-3', pending.kind === 'create' ? ids.repair : 'st-3')
+    // 首次创建在编码产出之前被卡点(如数据源连不上)时没有任何可提交的产物:
+    // proceed 不能直接 commit 空 HTML,要重进流程继续走编码
+    run.proceed = run.html
+      ? () => void finishRunCommit(rt, run, pending.kind === 'create' ? ids.repair : 'st-3')
+      : pending.kind === 'create'
+        ? () => void continueCreateToCoding(rt, run)
+        : () => void runEdit(rt, run)
   } else if (pending.awaiting === 'llm') {
     run.retryLlm =
       pending.kind === 'create' ? () => void runCreate(rt, run) : () => void runEdit(rt, run)
@@ -2044,7 +2810,7 @@ export function startAssistFlow(rtOrId: Runtime | string, note?: string): void {
           })
           after(rt, 1800, () => {
             pushAssistAction(rt, '问题已解决，把控制权交还给你')
-            const proceed = run.proceed ?? (() => void finishRunCommit(rt, run, run.pending.kind === 'create' ? 'st-5' : 'st-3'))
+            const proceed = run.proceed ?? (() => void finishRunCommit(rt, run, run.pending.kind === 'create' ? createStageIds().repair : 'st-3'))
             run.pending.awaiting = null
             proceed()
             after(rt, 3000, () => endAssistQuiet(rt, `协助结束：小李帮你修好了「${failed.title}」。`))
@@ -2339,9 +3105,11 @@ function seedIfEmpty(): void {
 export function boot(): void {
   // 同步模板库（client/templates → data/templates；源缺失时模板匹配自动降级）
   templatesRoot = syncTemplates(dirs.root)
-  // 载入设置
+  // 载入设置（normalizeSettings 兼容旧版 plannerModel 字符串字段）
   const s = store.loadSettings()
-  if (s) cachedSettings = { ...DEFAULT_SETTINGS, ...s }
+  if (s) cachedSettings = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
+  // 载入 MCP 数据源列表
+  cachedDataSources = normalizeDataSources(store.loadDataSources() ?? [])
   // 种入示例大屏（仅首次）
   seedIfEmpty()
   // 恢复会话

@@ -9,7 +9,12 @@
  *   - max_tokens=1 的最小请求（probe）→ 正常返回
  *   - 带 image_url 的请求 + planner 提示词 → 返回"图片分析"规划 JSON
  *   - system 含「大屏规划师」→ 返回规划 JSON（分析结论 + 2 个澄清问题，恰一个 ★推荐）
- *   - system 含「大屏开发」→ 返回一段合法的自包含大屏 HTML（>2KB，无外部引用）
+ *   - system 含「取数规划师」→ 从工具目录抓第一个数据源 + 第一个工具，规划一条调用（目录空则空 calls）
+ *   - system 含「大屏开发」→ 返回一段合法的自包含大屏 HTML（>2KB，无外部引用）；
+ *     user 文本含「以下是真实数据」时把特征数值 88.8% 回声进页面（验证 MCP 数据烤进 HTML）
+ *   - system 含「大屏读图精读专家」→ 返回一份固定的参考图内容清单 JSON（无地图，避免联网备料）
+ *   - system 含「大屏验收员」→ 返回截图审查 JSON：需求文本带「演示视觉修复」时
+ *     同一需求首次报一个问题（之后的复查放行），否则空清单
  */
 import http from 'node:http'
 
@@ -17,6 +22,9 @@ const args = process.argv.slice(2)
 const noVision = args.includes('--no-vision')
 const portArg = args.find((a) => /^\d+$/.test(a))
 const PORT = Number(portArg ?? process.env.STUB_PORT ?? 9100)
+
+// 截图审查已报过问题的需求文本（同一需求只在首次审查时报问题，复查放行，模拟"修好了"）
+const shotReviewReported = new Set()
 
 function reply(content) {
   return {
@@ -93,6 +101,11 @@ function dashboardHtml(userText) {
   const marker = userText.includes('演示视觉修复') && !userText.includes('检查没通过')
     ? '<!-- STUB_VISUAL_ISSUE -->'
     : ''
+  // 真实数据标记：user 文本含「以下是真实数据」说明编排层注入了取数快照，
+  // 把特征数值 88.8% 回声进页面，冒烟据此验证 MCP 数据真的烤进了 HTML
+  const dataKpi = userText.includes('以下是真实数据')
+    ? '<div class="kpi">88.8%<small>目标完成率（真实数据）</small></div>\n      '
+    : ''
   // 用重复的内联柱图把内容撑到 2KB 以上，全程无外部引用
   const bars = Array.from({ length: 12 }, (_, i) => {
     const h = 60 + ((i * 37) % 120)
@@ -125,7 +138,7 @@ ${marker}<html lang="zh-CN">
   <main>
     <section class="panel">
       <h2>核心指标</h2>
-      <div class="kpi">98.2%<small>正常运行率</small></div>
+      ${dataKpi}<div class="kpi">98.2%<small>正常运行率</small></div>
       <div class="kpi">1,024<small>当前在线</small></div>
       <div class="kpi">36ms<small>平均响应</small></div>
       <div class="kpi">7<small>待处理告警</small></div>
@@ -227,6 +240,41 @@ const server = http.createServer((req, res) => {
               componentIds: ['bar_charts', 'numerical_indicators', 'line_charts'],
               unmatched: []
             })
+      } else if (sys.includes('取数规划师')) {
+        // 取数规划：从工具目录里抓第一个数据源 + 第一个工具，规划一条调用；目录里没有工具就空 calls
+        const ut = userText(messages)
+        const sourceId = ut.match(/（sourceId：([^）]+)）/)?.[1] ?? ''
+        const tool = ut.match(/\n- ([^：\s]+)/)?.[1] ?? ''
+        content =
+          sourceId && tool
+            ? JSON.stringify({ calls: [{ sourceId, tool, args: {}, purpose: '大屏要展示的核心指标' }] })
+            : JSON.stringify({ calls: [] })
+      } else if (sys.includes('大屏读图精读专家')) {
+        // 参考图精读：返回一份固定的内容清单 JSON（hasMap=false，避免触发联网地图备料）
+        content = JSON.stringify({
+          title: '生产经营监控大屏',
+          layout: '顶部标题条 + 左右两列面板 + 中央主视觉',
+          panels: [
+            { name: '核心指标', position: '左列上方', content: '4 个 KPI 数字卡' },
+            { name: '趋势分析', position: '左列下方', content: '折线图' },
+            { name: '排行', position: '右列', content: '条形排行' }
+          ],
+          kpis: ['98.2% 正常运行率', '1,024 当前在线'],
+          colors: '深蓝底 + 青色高亮',
+          hasMap: false,
+          mapAdcode: '',
+          mapCities: [],
+          notes: '冒烟固定清单'
+        })
+      } else if (sys.includes('大屏验收员')) {
+        // 截图审查：需求文本带「演示视觉修复」时同一需求首次报一个问题（修复后复查放行），否则空清单
+        const ut = userText(messages)
+        if (ut.includes('演示视觉修复') && !shotReviewReported.has(ut)) {
+          shotReviewReported.add(ut)
+          content = JSON.stringify({ issues: [{ title: '表格内容可能超出屏幕边界', detail: '给表格区域加上自动换行，并把总宽度收窄到画面内' }] })
+        } else {
+          content = JSON.stringify({ issues: [] })
+        }
       } else if (sys.includes('布局检查员')) {
         // 视觉检查：HTML 里埋了 STUB_VISUAL_ISSUE 标记才报一个问题，否则放行
         content = userText(messages).includes('STUB_VISUAL_ISSUE')

@@ -243,6 +243,29 @@ router.post(
   })
 )
 
+/* ------------------------------ 数据源 ------------------------------ */
+
+router.get('/data-sources', (_req, res) => {
+  res.json(orch.getDataSources())
+})
+
+router.put(
+  '/data-sources',
+  wrap((req, res) => {
+    if (!Array.isArray(req.body)) throw new HttpError(400, '数据源列表格式不对')
+    res.json(orch.saveDataSources(req.body))
+  })
+)
+
+router.post(
+  '/data-sources/probe',
+  wrap(async (req, res) => {
+    // 真实探测，永远不抛错：错误体现在 DataSourceProbeResult.ok=false
+    const source = req.body?.source && typeof req.body.source === 'object' ? req.body.source : req.body
+    res.json(await orch.probeDataSource(source))
+  })
+)
+
 /* ------------------------------ SSE ------------------------------ */
 
 router.get('/dashboards/:id/events', (req, res) => {

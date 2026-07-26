@@ -33,11 +33,24 @@ const TIMEOUTS: Record<AgentRole, number> = {
 export const PIXEL_PNG_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
-/** 按角色选模型：角色模型为空串 = 跟随主模型 */
-export function modelFor(settings: ModelSettings, role: AgentRole): string {
-  const specific =
-    role === 'planner' ? settings.plannerModel : role === 'coder' ? settings.coderModel : settings.visionModel
-  return (specific && specific.trim()) || settings.model
+/** 一次调用的实际目标（角色字段留空 = 跟随主设置） */
+export interface ResolvedTarget {
+  apiBase: string
+  apiKey: string
+  model: string
+}
+
+/**
+ * 按角色解析实际调用目标：角色的 地址/Key/模型 任一留空就跟随主设置，
+ * 三个都填了就是完全独立的一套（不同功能模型可以挂在不同服务商下）。
+ */
+export function resolveFor(settings: ModelSettings, role: AgentRole): ResolvedTarget {
+  const cfg = settings[role]
+  return {
+    apiBase: cfg?.apiBase?.trim() || settings.apiBase,
+    apiKey: cfg?.apiKey?.trim() || settings.apiKey,
+    model: cfg?.model?.trim() || settings.model
+  }
 }
 
 function chatUrl(apiBase: string): string {
@@ -101,8 +114,9 @@ function hintForHttpError(status: number, snippet: string): string {
  * 网络错误与 5xx 重试 1 次；4xx 不重试（多半是地址/Key/参数问题）。
  */
 export async function chatCompletion(settings: ModelSettings, opts: ChatOptions): Promise<string> {
-  const url = chatUrl(settings.apiBase)
-  const model = modelFor(settings, opts.role)
+  const target = resolveFor(settings, opts.role)
+  const url = chatUrl(target.apiBase)
+  const model = target.model
   const timeoutMs = TIMEOUTS[opts.role]
   const payload: Record<string, unknown> = {
     model,
@@ -119,7 +133,7 @@ export async function chatCompletion(settings: ModelSettings, opts: ChatOptions)
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${settings.apiKey}`
+          Authorization: `Bearer ${target.apiKey}`
         },
         body: JSON.stringify(payload),
         signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(opts.signal ? [opts.signal] : [])])
@@ -174,8 +188,9 @@ export async function chatCompletionStream(
   opts: ChatOptions,
   onProgress: (chars: number, partial: string) => void
 ): Promise<string> {
-  const url = chatUrl(settings.apiBase)
-  const model = modelFor(settings, opts.role)
+  const target = resolveFor(settings, opts.role)
+  const url = chatUrl(target.apiBase)
+  const model = target.model
   const timeoutMs = TIMEOUTS[opts.role]
   const payload: Record<string, unknown> = {
     model,
@@ -193,7 +208,7 @@ export async function chatCompletionStream(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${settings.apiKey}`
+          Authorization: `Bearer ${target.apiKey}`
         },
         body: JSON.stringify(payload),
         signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(opts.signal ? [opts.signal] : [])])
@@ -292,9 +307,10 @@ export async function probe(settings: ModelSettings): Promise<ProbeResult> {
       detail: 'apiBase 或 apiKey 为空。'
     }
   }
-  // 第一步：连通性
+  // 第一步：连通性（测主设置本身——顶栏状态和提示文案都指主模型；角色独立配置在实际调用时解析）
+  const EMPTY_ROLE = { model: '', apiBase: '', apiKey: '' }
   try {
-    await chatCompletion(settings, {
+    await chatCompletion({ ...settings, planner: EMPTY_ROLE, coder: EMPTY_ROLE, vision: EMPTY_ROLE }, {
       role: 'planner',
       messages: [{ role: 'user', content: 'ping' }],
       maxTokens: 16
@@ -344,8 +360,10 @@ export async function probe(settings: ModelSettings): Promise<ProbeResult> {
  * 3) 报"only support stream"类错误自动改用流式重试（qwen omni 部分端点只支持流式）。
  */
 async function probeVision(settings: ModelSettings): Promise<{ ok: boolean; detail?: string }> {
-  const url = chatUrl(settings.apiBase)
-  const model = modelFor(settings, 'vision')
+  // 视觉角色可能有独立的地址/Key（如视觉模型挂在另一个服务商），探测必须走同一套配置
+  const target = resolveFor(settings, 'vision')
+  const url = chatUrl(target.apiBase)
+  const model = target.model
   const messages: LlmMessage[] = [
     {
       role: 'user',
@@ -361,7 +379,7 @@ async function probeVision(settings: ModelSettings): Promise<{ ok: boolean; deta
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${settings.apiKey}`
+        Authorization: `Bearer ${target.apiKey}`
       },
       body: JSON.stringify({ model, messages, max_tokens: 16, stream }),
       signal: AbortSignal.timeout(TIMEOUTS.vision)

@@ -1,5 +1,5 @@
 /**
- * 设置中心数据源：模型设置 + 测试连接。
+ * 设置中心数据源：模型设置 + 测试连接 + 数据源（MCP）管理。
  * 用法：
  *   const settings = useSettingsStore()
  *   onMounted(() => settings.load())
@@ -7,11 +7,16 @@
  *   await settings.save()            // 保存当前表单
  *   await settings.testConnection()  // 结果在 settings.probe，大白话文案直接用
  *   settings.isMultimodal            // false 时 📎 置灰 + 提示换模型
+ *   onMounted(() => settings.loadDataSources())  // 数据源列表独立加载/保存
+ *   await settings.probeDataSource(draft)        // 测试某个数据源，probing[id] 标记进行中
  */
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '../api'
-import type { ModelSettings, ProbeResult } from '../types'
+import type { DataSourceProbeResult, McpDataSource, ModelSettings, ProbeResult, RoleModelConfig } from '../types'
+
+/** 空白角色配置（留空 = 跟随主设置） */
+const EMPTY_ROLE: RoleModelConfig = { model: '', apiBase: '', apiKey: '' }
 
 /** 空白默认值（load 之前的表单初值） */
 const EMPTY: ModelSettings = {
@@ -19,9 +24,9 @@ const EMPTY: ModelSettings = {
   apiBase: '',
   apiKey: '',
   model: '',
-  plannerModel: '',
-  coderModel: '',
-  visionModel: ''
+  planner: { ...EMPTY_ROLE },
+  coder: { ...EMPTY_ROLE },
+  vision: { ...EMPTY_ROLE }
 }
 
 export const useSettingsStore = defineStore('settings', () => {
@@ -86,9 +91,49 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
+  /* ---------- 数据源（独立于模型设置的 load/save，全量列表风格） ---------- */
+  /** 数据源列表 */
+  const dataSources = ref<McpDataSource[]>([])
+  /** 数据源是否已加载 */
+  const dataSourcesLoaded = ref(false)
+  /** 数据源保存中 */
+  const dataSourcesSaving = ref(false)
+  /** 每个数据源的「测试连接」进行中标记（按数据源 id 记） */
+  const probing = ref<Record<string, boolean>>({})
+
+  /** 读取数据源列表（幂等） */
+  async function loadDataSources(): Promise<void> {
+    dataSources.value = await api.getDataSources()
+    dataSourcesLoaded.value = true
+  }
+
+  /** 全量保存数据源列表；不传时用当前 state（保存后 state 与存档一致） */
+  async function saveDataSources(list?: McpDataSource[]): Promise<void> {
+    dataSourcesSaving.value = true
+    try {
+      const snapshot = (list ?? dataSources.value).map((s) => ({ ...s }))
+      await api.saveDataSources(snapshot)
+      dataSources.value = snapshot
+    } finally {
+      dataSourcesSaving.value = false
+    }
+  }
+
+  /** 测试某个数据源连接（草稿即可，无需先保存；结果由调用方展示） */
+  async function probeDataSource(source: McpDataSource): Promise<DataSourceProbeResult> {
+    probing.value = { ...probing.value, [source.id]: true }
+    try {
+      return await api.probeDataSource({ ...source })
+    } finally {
+      probing.value = { ...probing.value, [source.id]: false }
+    }
+  }
+
   return {
     settings, loaded, saving, testing, probe,
     isMultimodal, statusLine,
-    load, save, testConnection
+    load, save, testConnection,
+    dataSources, dataSourcesLoaded, dataSourcesSaving, probing,
+    loadDataSources, saveDataSources, probeDataSource
   }
 })
