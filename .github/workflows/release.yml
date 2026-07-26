@@ -1,6 +1,7 @@
 # 打 tag（v*）即触发三平台构建并发布到 GitHub Releases：
 #   git tag v0.1.0 && git push origin v0.1.0
-# electron-builder --publish always 用 GITHUB_TOKEN 把产物挂到该 tag 的 Release 上。
+# 结构：matrix 三平台只构建不发布（--publish never）→ publish 单任务汇总上传。
+# 不让各平台自己发，是因为 electron-builder 并发创建 draft Release 会撞出重复草稿。
 # VITE_API_BASE 必须在构建期注入——客户端靠它切 HTTP 模式，缺了会打包成 Mock 演示模式。
 name: release
 
@@ -38,8 +39,35 @@ jobs:
           VITE_API_BASE: http://localhost:8787
 
       # 不签名（无证书）：mac 关掉证书自动发现，win 出未签名包（SmartScreen 提示属正常）
-      - run: npx electron-builder --publish always
+      - run: npx electron-builder --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           VITE_API_BASE: http://localhost:8787
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            client/release/*.exe
+            client/release/*.dmg
+            client/release/*.AppImage
+            client/release/*.deb
+            client/release/*.yml
+            client/release/*.blockmap
+            !client/release/builder-debug.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist-release
+          merge-multiple: true
+
+      - run: gh release create "$TAG" dist-release/* --title "$TAG" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
