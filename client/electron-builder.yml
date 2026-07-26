@@ -2,6 +2,11 @@
 # 产物：win=NSIS 安装包 / mac=DMG / linux=AppImage+deb，均发布到 GitHub Releases
 appId: com.jouryjc.aidashboard
 productName: AI-Dashboard
+# 显式发布目标：client/ 是子目录，electron-builder 从 .git/config 探测不到仓库
+publish:
+  provider: github
+  owner: Jouryjc
+  repo: ai-dashboard
 directories:
   output: release
 files:
