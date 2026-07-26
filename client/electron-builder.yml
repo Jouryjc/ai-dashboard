@@ -1,0 +1,24 @@
+# electron-builder 打包配置（CI 三平台构建用，见 .github/workflows/release.yml）
+# 产物：win=NSIS 安装包 / mac=DMG / linux=AppImage+deb，均发布到 GitHub Releases
+appId: com.jouryjc.aidashboard
+productName: AI-Dashboard
+directories:
+  output: release
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+win:
+  target: nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+mac:
+  target: dmg
+  category: public.app-category.business
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility

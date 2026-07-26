@@ -11,7 +11,8 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "electron:dev": "node scripts/electron-dev.mjs",
-    "electron:start": "npm run build && electron ."
+    "electron:start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder"
   },
   "dependencies": {
     "pinia": "^3.0.1",
@@ -23,6 +24,7 @@
     "@types/node": "^22.10.0",
     "@vitejs/plugin-vue": "^5.2.1",
     "electron": "^37.2.0",
+    "electron-builder": "^26.15.3",
     "tailwindcss": "^4.1.0",
     "typescript": "~5.8.3",
     "vite": "^6.3.5",

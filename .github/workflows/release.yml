@@ -1,0 +1,45 @@
+# 打 tag（v*）即触发三平台构建并发布到 GitHub Releases：
+#   git tag v0.1.0 && git push origin v0.1.0
+# electron-builder --publish always 用 GITHUB_TOKEN 把产物挂到该 tag 的 Release 上。
+# VITE_API_BASE 必须在构建期注入——客户端靠它切 HTTP 模式，缺了会打包成 Mock 演示模式。
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run build
+        env:
+          VITE_API_BASE: http://localhost:8787
+
+      # 不签名（无证书）：mac 关掉证书自动发现，win 出未签名包（SmartScreen 提示属正常）
+      - run: npx electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          VITE_API_BASE: http://localhost:8787
