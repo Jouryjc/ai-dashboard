@@ -1,0 +1,304 @@
+<!-- source: 1.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>饼图组件 - 环形 / 平面饼图 / 3D 饼图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 2124px; height: 289px; }
+  body {
+    background: #191e2a;
+    display: flex;
+    font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+  }
+  .variant { height: 289px; display: flex; align-items: center; flex-shrink: 0; }
+  .v-a { width: 470px; margin-right: 190px; }
+  .v-b { width: 668px; margin-right: 228px; }
+  .v-c { flex: 1; }
+
+  svg { display: block; flex-shrink: 0; }
+
+  /* 图例 */
+  .legend { align-self: center; display: flex; flex-direction: column; }
+  .legend .row { display: flex; align-items: center; height: 12px; margin-bottom: 22px; }
+  .legend .row:last-child { margin-bottom: 0; }
+  .legend .dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+  .legend .name { font-size: 15px; color: #c2c4c8; margin-left: 11px; line-height: 1; }
+  .legend .value { font-size: 15px; color: #dedfe2; margin-left: 36px; line-height: 1; }
+
+  /* SVG 内文字 */
+  .t-pct    { font-size: 20px; font-weight: 500; fill: #ededee; }
+  .t-series { font-size: 15px; fill: #97999e; }
+</style>
+</head>
+<body>
+
+  <!-- 变体 A：环形图 + 右侧图例 -->
+  <section class="variant v-a">
+    <svg id="chartA" width="254" height="289" viewBox="0 0 254 289"></svg>
+    <div class="legend" id="legendA" style="margin-left:44px; margin-top:20px;"></div>
+  </section>
+
+  <!-- 变体 B：平面饼图 + 四周引导线标签 -->
+  <section class="variant v-b">
+    <svg id="chartB" width="668" height="289" viewBox="0 0 668 289"></svg>
+  </section>
+
+  <!-- 变体 C：3D 立体饼图 + 右侧图例 -->
+  <section class="variant v-c">
+    <svg id="chartC" width="356" height="289" viewBox="0 0 356 289"></svg>
+    <div class="legend" id="legendC" style="margin-left:60px; margin-top:24px;"></div>
+  </section>
+
+<script>
+/* ===================== 可配置常量 ===================== */
+const COLOR = {
+  bg:        '#191e2a',  // 页面背景
+  blue:      '#3377ff',  // 主蓝（1.png 饼图扇区）
+  blueDot:   '#2e6de6',  // 图例圆点蓝
+  teal:      '#45e6e6',  // 青（环形图扇区）
+  tealPie:   '#2ee6e6',  // 青（平面饼图扇区）
+  orange:    '#ff9500',  // 橙
+  gray:      '#596a80',  // 灰蓝
+  gap:       '#050c19',  // 扇区间隔深色
+  rim:       '#0d1420',  // 饼图外沿描边
+  decoRing:  '#2b3040',  // 装饰虚线环
+  decoArc:   '#20355f',  // 装饰蓝色弧
+  pct:       '#ededee',  // 引导线百分比文字
+  series:    '#97999e',  // 引导线系列名文字
+};
+
+/* 变体 A 数据：环形图（角度为从 12 点顺时针的度数区间） */
+const CHART_A = {
+  cx: 127, cy: 154, rOuter: 88, rInner: 38,
+  decoR: 95,                       // 装饰环半径
+  slices: [
+    { color: COLOR.blue,   a0: 0,   a1: 191 },
+    { color: COLOR.teal,   a0: 198, a1: 265 },
+    { color: COLOR.orange, a0: 271, a1: 335 },
+    { color: COLOR.gray,   a0: 341, a1: 353 },
+  ],
+};
+
+/* 变体 B 数据：平面饼图 + 引导线标签 */
+const CHART_B = {
+  cx: 361, cy: 151, r: 84,
+  decoR: 91,
+  slices: [
+    { color: COLOR.blue,    a0: 0,   a1: 145 },
+    { color: COLOR.tealPie, a0: 152, a1: 264 },
+    { color: COLOR.gray,    a0: 270, a1: 284 },
+    { color: COLOR.orange,  a0: 290, a1: 354 },
+  ],
+  /* 引导线标签（相对本 SVG 坐标，页面对应 x+660） */
+  labels: [
+    { color: COLOR.orange,  pct: '50%', name: '系列一', side: 'left',  tx: 63,  ty: 75,  marker: [136, 67],  corner: [242, 67],  join: [257, 82]  },
+    { color: COLOR.gray,    pct: '50%', name: '系列一', side: 'left',  tx: 63,  ty: 223, marker: [136, 213], corner: [220, 213], join: [235, 228] },
+    { color: COLOR.blue,    pct: '50%', name: '系列一', side: 'right', tx: 590, ty: 75,  marker: [576, 70],  corner: [450, 70],  join: [437, 85]  },
+    { color: COLOR.tealPie, pct: '50%', name: '系列一', side: 'right', tx: 590, ty: 223, marker: [576, 213], corner: [460, 213], join: [445, 228] },
+  ],
+};
+
+/* 变体 C 数据：3D 饼图 */
+const CHART_C = {
+  cx: 180, cy: 129, rx: 109, ry: 46,
+  hSide: 13,          // 普通扇区厚度
+  hHigh: 23,          // 高亮（蓝色）扇区厚度
+  explode: { dx: 4, dy: -4 },  // 蓝色扇区轻微外移
+  slices: [
+    { color: '#16bec6', side: '#107352', a0: 222, a1: 358 },              // 青（左）
+    { color: '#cdc17c', side: '#c0962a', a0: 142, a1: 217 },              // 卡其（下）
+    { color: '#3377ff', side: '#215ed9', a0: 0,   a1: 128, highlight: true }, // 蓝（右上，抽出加高）
+  ],
+  cutWall: '#1948a6',          // 抽出扇区的剖面墙色
+  platTop: '#182b54',          // 托盘顶面
+  platSide: '#192340',         // 托盘侧面
+  platH: 11,                   // 托盘厚度
+  platCy: 158, platRx: 135, platRy: 40,
+  glow: '#0e6fc4',             // 托盘底部光环
+};
+
+/* 图例数据（截图占位文字原样照抄） */
+const LEGEND_A = [
+  { color: COLOR.blueDot, name: '图例', value: '28' },
+  { color: COLOR.teal,    name: '图例', value: '28' },
+  { color: COLOR.orange,  name: '图例', value: '28' },
+  { color: COLOR.gray,    name: '图例', value: '28' },
+];
+const LEGEND_C = [
+  { color: COLOR.blueDot, name: '图例', value: '28' },
+  { color: COLOR.teal,    name: '图例', value: '28' },
+  { color: COLOR.orange,  name: '图例', value: '28' },
+];
+
+/* ===================== SVG 工具函数 ===================== */
+const NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+/* 角度（12 点顺时针，度）→ 圆周点 */
+function pt(cx, cy, r, a) {
+  const t = (a - 90) * Math.PI / 180;
+  return [cx + r * Math.cos(t), cy + r * Math.sin(t)];
+}
+/* 椭圆周点 */
+function ptE(cx, cy, rx, ry, a) {
+  const t = (a - 90) * Math.PI / 180;
+  return [cx + rx * Math.cos(t), cy + ry * Math.sin(t)];
+}
+/* 实心扇形路径 */
+function wedge(cx, cy, r, a0, a1) {
+  const [x0, y0] = pt(cx, cy, r, a0), [x1, y1] = pt(cx, cy, r, a1);
+  const large = (a1 - a0) > 180 ? 1 : 0;
+  return `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1} Z`;
+}
+/* 圆环扇形路径 */
+function annular(cx, cy, ro, ri, a0, a1) {
+  const [x0, y0] = pt(cx, cy, ro, a0), [x1, y1] = pt(cx, cy, ro, a1);
+  const [x2, y2] = pt(cx, cy, ri, a1), [x3, y3] = pt(cx, cy, ri, a0);
+  const large = (a1 - a0) > 180 ? 1 : 0;
+  return `M${x0},${y0} A${ro},${ro} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${ri},${ri} 0 ${large} 0 ${x3},${y3} Z`;
+}
+/* 圆弧描边路径 */
+function arc(cx, cy, r, a0, a1) {
+  const [x0, y0] = pt(cx, cy, r, a0), [x1, y1] = pt(cx, cy, r, a1);
+  const large = (a1 - a0) > 180 ? 1 : 0;
+  return `M${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1}`;
+}
+
+/* 渲染图例 */
+function renderLegend(container, items) {
+  container.innerHTML = items.map(it =>
+    `<div class="row">
+       <span class="dot" style="background:${it.color}"></span>
+       <span class="name">${it.name}</span>
+       <span class="value">${it.value}</span>
+     </div>`).join('');
+}
+
+/* ===================== 变体 A：环形图 ===================== */
+(function drawA() {
+  const svg = document.getElementById('chartA');
+  const { cx, cy, rOuter, rInner, decoR, slices } = CHART_A;
+
+  // 装饰虚线环 + 右下蓝色装饰弧
+  el('circle', { cx, cy, r: decoR, fill: 'none', stroke: COLOR.decoRing,
+                 'stroke-width': 1.5, 'stroke-dasharray': '2 6' }, svg);
+  el('path', { d: arc(cx, cy, decoR, 15, 185), fill: 'none',
+               stroke: '#23407d', 'stroke-width': 2, opacity: .85 }, svg);
+
+  // 深色底环（形成扇区间隔）
+  el('path', { d: annular(cx, cy, rOuter, rInner, 0, 359.9), fill: COLOR.gap }, svg);
+  // 各扇区
+  slices.forEach(s => el('path', { d: annular(cx, cy, rOuter, rInner, s.a0, s.a1), fill: s.color }, svg));
+
+  renderLegend(document.getElementById('legendA'), LEGEND_A);
+})();
+
+/* ===================== 变体 B：平面饼图 ===================== */
+(function drawB() {
+  const svg = document.getElementById('chartB');
+  const { cx, cy, r, decoR, slices, labels } = CHART_B;
+
+  // 装饰点状环（原图极淡，r≈97）+ 右下→底部 faint 蓝色光辉弧（约 90°..195°，原图无青色弧）
+  el('circle', { cx, cy, r: 97, fill: 'none', stroke: '#262c3a',
+                 'stroke-width': 1, 'stroke-dasharray': '1 5' }, svg);
+  el('path', { d: arc(cx, cy, 94, 88, 197), fill: 'none', stroke: '#24407a',
+               'stroke-width': 4, opacity: .4, 'stroke-linecap': 'round' }, svg);
+
+  // 深色底盘（形成间隔与外沿描边）
+  el('circle', { cx, cy, r: r + 1.5, fill: COLOR.gap, stroke: COLOR.rim, 'stroke-width': 2 }, svg);
+  // 各扇区
+  slices.forEach(s => el('path', { d: wedge(cx, cy, r, s.a0, s.a1), fill: s.color }, svg));
+
+  // 引导线标签：斜线 + 水平线 + 方块端点 + 文字
+  labels.forEach(L => {
+    const [mx, my] = L.marker, [cx2, cy2] = L.corner, [jx, jy] = L.join;
+    el('polyline', { points: `${jx},${jy} ${cx2},${cy2} ${mx},${my}`,
+                     fill: 'none', stroke: L.color, 'stroke-width': 1.6 }, svg);
+    el('rect', { x: mx - 3.5, y: my - 3.5, width: 7, height: 7, fill: L.color }, svg);
+    const anchor = L.side === 'left' ? 'start' : 'start';
+    const t1 = el('text', { x: L.tx, y: L.ty, class: 't-pct', 'text-anchor': anchor }, svg);
+    t1.textContent = L.pct;
+    const t2 = el('text', { x: L.tx, y: L.ty + 34, class: 't-series', 'text-anchor': anchor }, svg);
+    t2.textContent = L.name;
+  });
+})();
+
+/* ===================== 变体 C：3D 饼图 ===================== */
+(function drawC() {
+  const svg = document.getElementById('chartC');
+  const C = CHART_C;
+
+  // 渐变与发光定义
+  const defs = el('defs', {}, svg);
+  defs.innerHTML = `
+    <linearGradient id="blueTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2691e8"/>
+      <stop offset="0.3" stop-color="#3377ff"/>
+      <stop offset="1" stop-color="#3377ff"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>`;
+
+  // 椭圆扇形（顶面）
+  function wedgeE(cx, cy, rx, ry, a0, a1) {
+    const [x0, y0] = ptE(cx, cy, rx, ry, a0), [x1, y1] = ptE(cx, cy, rx, ry, a1);
+    const large = (a1 - a0) > 180 ? 1 : 0;
+    return `M${cx},${cy} L${x0},${y0} A${rx},${ry} 0 ${large} 1 ${x1},${y1} Z`;
+  }
+  // 侧壁：顶面外弧向下挤出 h
+  function sideWall(cx, cy, rx, ry, a0, a1, h) {
+    const [x0, y0] = ptE(cx, cy, rx, ry, a0), [x1, y1] = ptE(cx, cy, rx, ry, a1);
+    const large = (a1 - a0) > 180 ? 1 : 0;
+    return `M${x0},${y0} A${rx},${ry} 0 ${large} 1 ${x1},${y1} L${x1},${y1 + h} A${rx},${ry} 0 ${large} 0 ${x0},${y0 + h} Z`;
+  }
+  // 剖面墙（抽出扇区的切割面）
+  function cutWallPath(cx, cy, rx, ry, a, h) {
+    const [x, y] = ptE(cx, cy, rx, ry, a);
+    return `M${cx},${cy} L${x},${y} L${x},${y + h} L${cx},${cy + h} Z`;
+  }
+
+  // 最外层装饰椭圆（底部 faint）
+  el('ellipse', { cx: 192 - 12, cy: 206, rx: 132, ry: 28, fill: 'none',
+                  stroke: '#17243a', 'stroke-width': 1, opacity: .9 }, svg);
+
+  // 托盘：侧面 → 顶面 → 底部光环
+  el('path', { d: sideWall(180, C.platCy, C.platRx, C.platRy, 0, 359.9, C.platH), fill: C.platSide }, svg);
+  el('ellipse', { cx: 180, cy: C.platCy, rx: C.platRx, ry: C.platRy, fill: C.platTop }, svg);
+  // 托盘底部光环：只亮正前方一段（约 35°..145°）
+  const glowArc = 'M103,202 A135,40 0 0 0 257,202';
+  el('path', { d: glowArc, fill: 'none', stroke: C.glow, 'stroke-width': 2.5,
+               opacity: .55, filter: 'url(#glow)' }, svg);
+  el('path', { d: glowArc, fill: 'none', stroke: C.glow, 'stroke-width': 1.6 }, svg);
+
+  // 饼体：先画普通扇区（侧壁 → 顶面），再画抽出的高亮扇区
+  const normal = C.slices.filter(s => !s.highlight);
+  const high = C.slices.find(s => s.highlight);
+
+  normal.forEach(s => {
+    el('path', { d: sideWall(180, C.cy, C.rx, C.ry, s.a0, s.a1, C.hSide), fill: s.side }, svg);
+  });
+  // 高亮扇区侧壁与剖面墙
+  const hx = 180 + C.explode.dx, hy = C.cy + C.explode.dy;
+  el('path', { d: sideWall(hx, hy, C.rx, C.ry, high.a0, high.a1, C.hHigh), fill: high.side }, svg);
+  el('path', { d: cutWallPath(hx, hy, C.rx, C.ry, high.a0, C.hHigh), fill: C.cutWall }, svg);
+  el('path', { d: cutWallPath(hx, hy, C.rx, C.ry, high.a1, C.hHigh), fill: C.cutWall }, svg);
+
+  // 顶面
+  normal.forEach(s => {
+    el('path', { d: wedgeE(180, C.cy, C.rx, C.ry, s.a0, s.a1), fill: s.color }, svg);
+  });
+  el('path', { d: wedgeE(hx, hy, C.rx, C.ry, high.a0, high.a1), fill: 'url(#blueTop)' }, svg);
+
+  renderLegend(document.getElementById('legendC'), LEGEND_C);
+})();
+</script>
+</body>
+</html>

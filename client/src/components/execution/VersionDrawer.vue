@@ -8,6 +8,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { Version } from '../../types'
+import { api } from '../../api'
+import { useSessionStore } from '../../stores/session'
+import { fetchTextAsDownload, sanitizeFilename } from '../../utils/download'
 import { formatRelativeTime } from './utils'
 import AppIcon from '../common/AppIcon.vue'
 
@@ -21,12 +24,24 @@ const emit = defineEmits<{
   rollback: [versionId: string]
 }>()
 
+const session = useSessionStore()
+
 /* 回退二次确认（行内展开，不弹窗） */
 const confirmingId = ref<string | null>(null)
 
 function confirmRollback(v: Version): void {
   emit('rollback', v.id)
   confirmingId.value = null
+}
+
+/* 导出该版本代码：下载完整 HTML，文件名 <大屏名>-<版本标签>.html */
+function exportVersion(v: Version): void {
+  if (!session.dashboardId) return
+  const url = api.exportVersionUrl(session.dashboardId, v.id)
+  const filename = `${sanitizeFilename(session.dashboardName)}-${v.label}.html`
+  void fetchTextAsDownload(url, filename).catch(() => {
+    /* 静默失败：导出失败不打断使用 */
+  })
 }
 </script>
 
@@ -63,6 +78,14 @@ function confirmRollback(v: Version): void {
               <p class="text-sm font-medium text-ink">{{ v.label }}</p>
               <span v-if="v.isCurrent" class="rounded-control bg-primary-soft px-1 py-0.5 text-[11px] leading-none text-primary">当前</span>
               <span v-if="v.published" class="inline-flex items-center gap-0.5 rounded-control bg-primary-soft px-1 py-0.5 text-[11px] leading-none text-status-published"><AppIcon name="star" :size="11" /> 已发布</span>
+              <!-- 导出该版本代码 -->
+              <button
+                type="button"
+                class="ml-auto flex h-6 w-6 items-center justify-center rounded-control text-ink-faint hover:bg-panel hover:text-primary"
+                :title="`导出 ${v.label} 的代码`"
+                :aria-label="`导出 ${v.label} 的代码`"
+                @click="exportVersion(v)"
+              ><AppIcon name="download" :size="13" /></button>
             </div>
             <p class="mt-0.5 text-xs leading-5 text-ink-secondary">{{ v.summary }}</p>
             <p class="text-xs text-ink-faint">{{ formatRelativeTime(v.createdAt) }}</p>

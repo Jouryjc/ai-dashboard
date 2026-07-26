@@ -1,0 +1,31 @@
+{
+  "name": "ai-dashboard",
+  "version": "0.1.0",
+  "description": "AI 大屏工作台：自然语言描述需求，AI 自动生成 1920×1080 数据可视化大屏并实时预览",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jouryjc/ai-dashboard.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "npm --prefix server install && npm --prefix client install",
+    "dev": "bash scripts/dev.sh",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run electron:dev",
+    "typecheck": "npm --prefix server run typecheck && npm --prefix client run typecheck",
+    "smoke": "npm --prefix server run smoke",
+    "build": "npm --prefix server run build && npm --prefix client run build"
+  },
+  "keywords": [
+    "ai",
+    "dashboard",
+    "data-visualization",
+    "electron",
+    "vue3",
+    "llm"
+  ]
+}

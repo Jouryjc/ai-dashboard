@@ -100,6 +100,15 @@ export interface ClientApi {
   /** 切换预览分辨率（仅缩放展示，基准恒为 1920×1080） */
   setPreviewResolution(dashboardId: string, resolution: PreviewResolution): Promise<void>
 
+  /* ---------- 封面 / 导出 ---------- */
+  /**
+   * 上传大屏封面截图（Electron 离屏截取的 1920×1080 PNG dataURL，≤8MB）。
+   * 服务端落盘后回推 dashboardUpdated 更新封面；mock 为空操作（封面仍用关键字示例图）。
+   */
+  uploadCover(dashboardId: string, imageDataUrl: string): Promise<void>
+  /** 导出某版本完整 HTML 的下载地址（http：export 端点绝对地址；mock：该版本的预览地址） */
+  exportVersionUrl(dashboardId: string, versionId: string): string
+
   /* ---------- 发布 ---------- */
   /** 发布 = 提交发布申请（非管理员走审批，F6） */
   publish(dashboardId: string): Promise<void>

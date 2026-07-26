@@ -10,8 +10,10 @@
  */
 import { computed, nextTick, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { api } from '../../api'
 import { useSessionStore } from '../../stores/session'
 import { useDashboardsStore } from '../../stores/dashboards'
+import { fetchTextAsDownload, sanitizeFilename } from '../../utils/download'
 import PresentationOverlay from '../preview/PresentationOverlay.vue'
 import AppIcon from '../common/AppIcon.vue'
 
@@ -94,6 +96,20 @@ const currentVersion = computed(() => session.versions.find((v) => v.isCurrent) 
 function askPublish(): void {
   menuOpen.value = false
   publishConfirmOpen.value = true
+}
+
+/* ---------- 导出当前版本代码 ---------- */
+const canExportCurrent = computed(() => Boolean(currentVersion.value && session.dashboardId))
+
+function exportCurrentVersion(): void {
+  menuOpen.value = false
+  const cur = currentVersion.value
+  if (!cur || !session.dashboardId) return
+  const url = api.exportVersionUrl(session.dashboardId, cur.id)
+  const filename = `${sanitizeFilename(session.dashboardName)}-${cur.label}.html`
+  void fetchTextAsDownload(url, filename).catch(() => {
+    /* 静默失败：导出失败不打断使用 */
+  })
 }
 
 async function confirmPublish(): Promise<void> {
@@ -227,6 +243,19 @@ async function confirmPublish(): Promise<void> {
                 @click="askPublish"
               >
                 提交发布申请
+              </button>
+            </li>
+            <li>
+              <!-- 导出当前版本代码：下载该版本的完整 HTML -->
+              <button
+                type="button"
+                class="flex w-full items-center justify-between px-3 py-1.5 text-left text-xs"
+                :class="canExportCurrent ? 'text-ink hover:bg-primary-soft' : 'cursor-not-allowed text-ink-faint'"
+                :disabled="!canExportCurrent"
+                :title="canExportCurrent ? '' : '还没有做好的版本'"
+                @click="exportCurrentVersion"
+              >
+                导出当前版本代码
               </button>
             </li>
             <li>

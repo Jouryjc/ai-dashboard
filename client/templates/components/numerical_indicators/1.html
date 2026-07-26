@@ -1,0 +1,178 @@
+<!-- source: 1.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>数值指标卡 - 整体可用率</title>
+<style>
+  /* ===== 基础主题（深色大屏） ===== */
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #1a1d32; /* 截图底色：深藏青 */
+    font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+  }
+
+  /* ===== 指标卡容器：按截图原始尺寸 372x139 ===== */
+  .indicator-card {
+    width: 372px;
+    height: 139px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    padding: 0 24px;
+  }
+
+  /* 左侧 3D 发光图标 */
+  .indicator-icon {
+    flex: 0 0 96px;
+    height: 110px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .indicator-icon svg { width: 100%; height: 100%; }
+
+  /* 右侧文字区 */
+  .indicator-info {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 10px;
+  }
+  .value-row {
+    display: flex;
+    align-items: baseline;
+    line-height: 1;
+  }
+  .value {
+    font-size: 46px;
+    font-weight: 900;
+    font-style: italic; /* 截图中数字为斜体 */
+    letter-spacing: 2px;
+  }
+  .suffix {
+    font-size: 34px;
+    font-weight: 900;
+    font-style: italic;
+    margin-left: 2px;
+  }
+  .unit {
+    font-size: 18px;
+    font-weight: 700;
+    margin-left: 8px;
+    letter-spacing: 1px;
+  }
+  .label {
+    font-size: 19px;
+    font-weight: 700;
+    font-style: italic; /* 截图中标签同为斜体 */
+    letter-spacing: 3px;
+  }
+</style>
+</head>
+<body>
+
+  <div class="indicator-card">
+    <!-- 左侧：等轴测「工」形晶体图标（inline SVG，渐变+发光） -->
+    <div class="indicator-icon">
+      <svg viewBox="0 0 120 122" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <!-- 顶面渐变：亮青 -->
+          <linearGradient id="topG" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#8ff4ff"/>
+            <stop offset="1" stop-color="#35b6ea"/>
+          </linearGradient>
+          <!-- 左面渐变：中青 -->
+          <linearGradient id="leftG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#2b9fd8"/>
+            <stop offset="1" stop-color="#1668b0"/>
+          </linearGradient>
+          <!-- 右面渐变：暗青 -->
+          <linearGradient id="rightG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#1d7fc0"/>
+            <stop offset="1" stop-color="#0f4f8f"/>
+          </linearGradient>
+          <!-- 发光滤镜 -->
+          <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="4" result="b"/>
+            <feMerge>
+              <feMergeNode in="b"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+        </defs>
+
+        <g filter="url(#glow)" stroke="#9feaff" stroke-width="1.2" stroke-linejoin="round">
+          <!-- 顶部小板 -->
+          <polygon points="60,13 92,26 60,39 28,26" fill="url(#topG)"/>
+          <polygon points="28,26 60,39 60,48 28,35" fill="url(#leftG)"/>
+          <polygon points="92,26 60,39 60,48 92,35" fill="url(#rightG)"/>
+          <!-- 中间立柱（左右两个面） -->
+          <polygon points="47,42 60,48 60,86 47,80" fill="url(#leftG)"/>
+          <polygon points="73,42 60,48 60,86 73,80" fill="url(#rightG)"/>
+          <!-- 底部大板 -->
+          <polygon points="60,81 92,94 60,107 28,94" fill="url(#topG)"/>
+          <polygon points="28,94 60,107 60,116 28,103" fill="url(#leftG)"/>
+          <polygon points="92,94 60,107 60,116 92,103" fill="url(#rightG)"/>
+          <!-- 环绕轨道线 -->
+          <ellipse cx="60" cy="58" rx="42" ry="12" fill="none" stroke="#5fdcff" stroke-width="1.5" opacity="0.85"/>
+          <ellipse cx="60" cy="68" rx="30" ry="9"  fill="none" stroke="#5fdcff" stroke-width="1.2" opacity="0.6"/>
+          <!-- 轨道上的光点 -->
+          <circle cx="18" cy="58" r="2.5" fill="#bffbff" stroke="none"/>
+          <circle cx="102" cy="68" r="2" fill="#bffbff" stroke="none"/>
+        </g>
+      </svg>
+    </div>
+
+    <!-- 右侧：数值 + 单位 + 标签 -->
+    <div class="indicator-info">
+      <div class="value-row">
+        <span class="value" id="value"></span><span class="suffix" id="suffix"></span><span class="unit" id="unit"></span>
+      </div>
+      <div class="label" id="label"></div>
+    </div>
+  </div>
+
+<script>
+  /* ===== 参数区：颜色与数据集中配置 ===== */
+  const CONFIG = {
+    value: "99999",     // 主数值（截图占位数据）
+    suffix: "+",        // 数值后缀
+    unit: "秒",         // 单位
+    label: "整体可用率", // 指标名称
+    colors: {
+      value: "#ffffff",                 // 数字颜色
+      unit: "#d8f1ff",                  // 单位颜色
+      label: "#f0f8ff",                 // 标签颜色
+      glow: "rgba(84, 205, 255, 0.75)"  // 文字青色光晕
+    }
+  };
+
+  // 渲染：填充数据并应用颜色
+  const { colors } = CONFIG;
+  const elValue = document.getElementById("value");
+  const elSuffix = document.getElementById("suffix");
+  const elUnit = document.getElementById("unit");
+  const elLabel = document.getElementById("label");
+
+  elValue.textContent = CONFIG.value;
+  elSuffix.textContent = CONFIG.suffix;
+  elUnit.textContent = CONFIG.unit;
+  elLabel.textContent = CONFIG.label;
+
+  elValue.style.color = colors.value;
+  elValue.style.textShadow = `0 0 14px ${colors.glow}`;
+  elSuffix.style.color = colors.value;
+  elSuffix.style.textShadow = `0 0 12px ${colors.glow}`;
+  elUnit.style.color = colors.unit;
+  elUnit.style.textShadow = `0 0 10px ${colors.glow}`;
+  elLabel.style.color = colors.label;
+  elLabel.style.textShadow = `0 0 10px ${colors.glow}`;
+</script>
+</body>
+</html>

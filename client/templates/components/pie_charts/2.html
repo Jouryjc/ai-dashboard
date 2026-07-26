@@ -1,0 +1,189 @@
+<!-- source: 2.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>环形图组件 - 图例版 / 引导线版</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1357px; height: 273px; }
+  body {
+    background: #191e2a;
+    display: flex;
+    font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+  }
+  .variant { height: 273px; display: flex; align-items: center; flex-shrink: 0; }
+  .v-a { width: 672px; background: #191e2a; }
+  .v-b { flex: 1; background: #1c1f28; }   /* 右半部分面板底色略浅 */
+
+  svg { display: block; flex-shrink: 0; }
+
+  /* 图例 */
+  .legend { align-self: center; display: flex; flex-direction: column; }
+  .legend .row { display: flex; align-items: center; height: 12px; margin-bottom: 22px; }
+  .legend .row:last-child { margin-bottom: 0; }
+  .legend .dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+  .legend .name { font-size: 15px; color: #c2c4c8; margin-left: 11px; line-height: 1; }
+  .legend .value { font-size: 15px; color: #dedfe2; margin-left: 36px; line-height: 1; }
+
+  /* SVG 内文字 */
+  .t-num    { font-size: 34px; font-weight: 700; fill: #ffffff; }
+  .t-total  { font-size: 16px; fill: #9c9c9c; }
+  .t-pct    { font-size: 20px; font-weight: 500; fill: #ededee; }
+  .t-series { font-size: 15px; fill: #97999e; }
+</style>
+</head>
+<body>
+
+  <!-- 变体 A：环形图 + 中心指标 + 右侧图例 -->
+  <section class="variant v-a">
+    <svg id="chartA" width="260" height="273" viewBox="0 0 260 273"></svg>
+    <div class="legend" id="legendA" style="margin-left:47px; margin-top:5px;"></div>
+  </section>
+
+  <!-- 变体 B：环形图 + 中心指标 + 四周引导线标签 -->
+  <section class="variant v-b">
+    <svg id="chartB" width="685" height="273" viewBox="0 0 685 273"></svg>
+  </section>
+
+<script>
+/* ===================== 可配置常量 ===================== */
+const COLOR = {
+  bg:       '#191e2a',   // 左侧面板底色
+  bgPanel:  '#1c1f28',   // 右侧面板底色
+  blue:     '#2e6de6',   // 主蓝（2.png 圆环扇区）
+  teal:     '#45e6e6',   // 青
+  orange:   '#ff9500',   // 橙
+  gray:     '#596a80',   // 灰蓝
+  gap:      '#0a1220',   // 扇区间隔深色
+  decoDash: '#454a53',   // 装饰虚线环（左）
+  decoFaint:'#212531',   // 装饰细环（左）
+  decoDot:  '#2a2e38',   // 装饰点状环（右）
+  discBd:   '#3f4149',   // 右侧中心圆描边
+  pct:      '#ededee',
+  series:   '#97999e',
+};
+
+/* 圆环数据：两变体共用同一组占比（角度为 12 点顺时针区间） */
+const RING_SLICES = [
+  { color: COLOR.teal,   a0: 2,   a1: 87,  pct: '26%' },  // 右上
+  { color: COLOR.orange, a0: 93,  a1: 132, pct: '12%' },  // 右下
+  { color: COLOR.gray,   a0: 137, a1: 178, pct: '12%' },  // 左下
+  { color: COLOR.blue,   a0: 183, a1: 357, pct: '50%' },  // 左+上
+];
+
+const CHART_A = {
+  cx: 128, cy: 141, rOuter: 79, rInner: 63,
+  decoR1: 87,   // 内层细环
+  decoR2: 95,   // 外层虚线环
+  number: '288', unit: '总数',
+};
+
+const CHART_B = {
+  cx: 335, cy: 141, rOuter: 82, rInner: 63,
+  discR: 60,          // 中心圆
+  decoR: 93,          // 外层点状环
+  number: '288', unit: '总数',
+  /* 引导线标签（相对本 SVG 坐标，页面对应 x+672） */
+  labels: [
+    { color: COLOR.blue,   pct: '50%', name: '系列一', tx: 35,  ty: 66,  marker: [114, 56],  corner: [206, 56],  join: [230, 82]  },
+    { color: COLOR.gray,   pct: '12%', name: '系列一', tx: 35,  ty: 211, marker: [114, 201], corner: [206, 201], join: [232, 177] },
+    { color: COLOR.teal,   pct: '26%', name: '系列一', tx: 543, ty: 66,  marker: [526, 56],  corner: [468, 56],  join: [443, 82]  },
+    { color: COLOR.orange, pct: '12%', name: '系列一', tx: 543, ty: 211, marker: [526, 201], corner: [468, 201], join: [440, 178] },
+  ],
+};
+
+/* 图例数据（截图占位文字原样照抄） */
+const LEGEND_A = [
+  { color: COLOR.blue,   name: '图例', value: '28' },
+  { color: COLOR.teal,   name: '图例', value: '28' },
+  { color: COLOR.orange, name: '图例', value: '28' },
+  { color: COLOR.gray,   name: '图例', value: '28' },
+];
+
+/* ===================== SVG 工具函数 ===================== */
+const NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function pt(cx, cy, r, a) {
+  const t = (a - 90) * Math.PI / 180;
+  return [cx + r * Math.cos(t), cy + r * Math.sin(t)];
+}
+function annular(cx, cy, ro, ri, a0, a1) {
+  const [x0, y0] = pt(cx, cy, ro, a0), [x1, y1] = pt(cx, cy, ro, a1);
+  const [x2, y2] = pt(cx, cy, ri, a1), [x3, y3] = pt(cx, cy, ri, a0);
+  const large = (a1 - a0) > 180 ? 1 : 0;
+  return `M${x0},${y0} A${ro},${ro} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${ri},${ri} 0 ${large} 0 ${x3},${y3} Z`;
+}
+function renderLegend(container, items) {
+  container.innerHTML = items.map(it =>
+    `<div class="row">
+       <span class="dot" style="background:${it.color}"></span>
+       <span class="name">${it.name}</span>
+       <span class="value">${it.value}</span>
+     </div>`).join('');
+}
+/* 中心指标：大号数值 + 下方单位 */
+function drawCenter(svg, cx, cy, number, unit) {
+  const t1 = el('text', { x: cx, y: cy - 2, class: 't-num', 'text-anchor': 'middle' }, svg);
+  t1.textContent = number;
+  const t2 = el('text', { x: cx, y: cy + 32, class: 't-total', 'text-anchor': 'middle' }, svg);
+  t2.textContent = unit;
+}
+/* 圆环主体：深色底环 + 彩色扇区 */
+function drawRing(svg, cx, cy, ro, ri) {
+  el('path', { d: annular(cx, cy, ro, ri, 0, 359.9), fill: COLOR.gap }, svg);
+  RING_SLICES.forEach(s =>
+    el('path', { d: annular(cx, cy, ro, ri, s.a0, s.a1), fill: s.color }, svg));
+}
+
+/* ===================== 变体 A：环形图 + 图例 ===================== */
+(function drawA() {
+  const svg = document.getElementById('chartA');
+  const { cx, cy, rOuter, rInner, decoR1, decoR2 } = CHART_A;
+
+  // 装饰：内层细环 + 外层虚线环
+  el('circle', { cx, cy, r: decoR1, fill: 'none', stroke: COLOR.decoFaint, 'stroke-width': 1 }, svg);
+  el('circle', { cx, cy, r: decoR2, fill: 'none', stroke: COLOR.decoDash,
+                 'stroke-width': 1.5, 'stroke-dasharray': '2 5' }, svg);
+
+  drawRing(svg, cx, cy, rOuter, rInner);
+  drawCenter(svg, cx, cy, CHART_A.number, CHART_A.unit);
+  renderLegend(document.getElementById('legendA'), LEGEND_A);
+})();
+
+/* ===================== 变体 B：环形图 + 引导线标签 ===================== */
+(function drawB() {
+  const svg = document.getElementById('chartB');
+  const { cx, cy, rOuter, rInner, discR, decoR, labels } = CHART_B;
+
+  // 装饰点状环
+  el('circle', { cx, cy, r: decoR, fill: 'none', stroke: COLOR.decoDot,
+                 'stroke-width': 1, 'stroke-dasharray': '1 6' }, svg);
+
+  drawRing(svg, cx, cy, rOuter, rInner);
+
+  // 中心圆（带细描边）与中心指标
+  el('circle', { cx, cy, r: discR, fill: COLOR.bgPanel, stroke: COLOR.discBd, 'stroke-width': 1.5 }, svg);
+  drawCenter(svg, cx, cy, CHART_B.number, CHART_B.unit);
+
+  // 引导线标签：斜线 + 水平线 + 方块端点 + 文字
+  labels.forEach(L => {
+    const [mx, my] = L.marker, [cx2, cy2] = L.corner, [jx, jy] = L.join;
+    el('polyline', { points: `${jx},${jy} ${cx2},${cy2} ${mx},${my}`,
+                     fill: 'none', stroke: L.color, 'stroke-width': 1.6 }, svg);
+    el('rect', { x: mx - 3.5, y: my - 3.5, width: 7, height: 7, fill: L.color }, svg);
+    const t1 = el('text', { x: L.tx, y: L.ty, class: 't-pct' }, svg);
+    t1.textContent = L.pct;
+    const t2 = el('text', { x: L.tx, y: L.ty + 33, class: 't-series' }, svg);
+    t2.textContent = L.name;
+  });
+})();
+</script>
+</body>
+</html>

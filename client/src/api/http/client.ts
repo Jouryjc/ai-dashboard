@@ -90,6 +90,18 @@ export function createHttpClient(baseUrl: string): ClientApi {
     return url.startsWith('/') ? `${base}${url}` : url
   }
 
+  /** 封面 URL 同样由服务端托管（/covers/...），跨源渲染必须拼 baseUrl，否则上传的封面 404 */
+  function fixDashboard(d: Dashboard): Dashboard {
+    d.coverUrl = absolutize(d.coverUrl) ?? ''
+    return d
+  }
+
+  /** 版本截图可能引用服务端封面（/covers/...），一并绝对化 */
+  function fixVersion(v: Version): Version {
+    v.screenshotUrl = absolutize(v.screenshotUrl) ?? ''
+    return v
+  }
+
   /* ---------- SSE：同一时间只维护当前大屏的一条流 ---------- */
   let eventSource: EventSource | null = null
   let streamingDashboardId: string | null = null
@@ -109,6 +121,14 @@ export function createHttpClient(baseUrl: string): ClientApi {
         if (type === 'previewBuilding') {
           const p = payload as ClientEventMap['previewBuilding']
           p.url = absolutize(p.url) as string
+        }
+        if (type === 'dashboardUpdated') {
+          const p = payload as ClientEventMap['dashboardUpdated']
+          fixDashboard(p.dashboard)
+        }
+        if (type === 'versionAdded') {
+          const p = payload as ClientEventMap['versionAdded']
+          fixVersion(p.version)
         }
         emit(type, payload)
       })
@@ -151,10 +171,12 @@ export function createHttpClient(baseUrl: string): ClientApi {
   return {
     // ---- 首页 ----
     async listDashboards(): Promise<Dashboard[]> {
-      return request<Dashboard[]>('GET', '/api/v1/dashboards')
+      const list = await request<Dashboard[]>('GET', '/api/v1/dashboards')
+      return list.map(fixDashboard)
     },
     async createDashboard(name: string): Promise<Dashboard> {
-      return request<Dashboard>('POST', '/api/v1/dashboards', { name })
+      const d = await request<Dashboard>('POST', '/api/v1/dashboards', { name })
+      return fixDashboard(d)
     },
     async renameDashboard(id: string, name: string): Promise<void> {
       await request<Dashboard>('POST', `/api/v1/dashboards/${encodeURIComponent(id)}/rename`, { name })
@@ -172,6 +194,8 @@ export function createHttpClient(baseUrl: string): ClientApi {
         `/api/v1/dashboards/${encodeURIComponent(id)}/enter`
       )
       snap.preview.url = absolutize(snap.preview.url)
+      fixDashboard(snap.dashboard)
+      snap.versions.forEach(fixVersion)
       openStream(id)
       return snap
     },
@@ -211,7 +235,8 @@ export function createHttpClient(baseUrl: string): ClientApi {
 
     // ---- 版本 ----
     async listVersions(dashboardId: string): Promise<Version[]> {
-      return request<Version[]>('GET', `/api/v1/dashboards/${encodeURIComponent(dashboardId)}/versions`)
+      const list = await request<Version[]>('GET', `/api/v1/dashboards/${encodeURIComponent(dashboardId)}/versions`)
+      return list.map(fixVersion)
     },
     async previewVersion(dashboardId: string, versionId: string): Promise<void> {
       await request<void>(
@@ -234,6 +259,16 @@ export function createHttpClient(baseUrl: string): ClientApi {
       await request<void>('POST', `/api/v1/dashboards/${encodeURIComponent(dashboardId)}/preview-resolution`, {
         resolution
       })
+    },
+
+    // ---- 封面 / 导出 ----
+    async uploadCover(dashboardId: string, imageDataUrl: string): Promise<void> {
+      await request<void>('POST', `/api/v1/dashboards/${encodeURIComponent(dashboardId)}/cover`, {
+        image: imageDataUrl
+      })
+    },
+    exportVersionUrl(dashboardId: string, versionId: string): string {
+      return `${base}/api/v1/dashboards/${encodeURIComponent(dashboardId)}/versions/${encodeURIComponent(versionId)}/export`
     },
 
     // ---- 发布 ----

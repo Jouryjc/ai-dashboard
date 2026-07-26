@@ -1,0 +1,411 @@
+<!-- source: 1.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>关系拓扑组件 - relation_type</title>
+<style>
+  /* ===== 深色大屏主题 ===== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #191e2a;               /* 截图底色 */
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+  /* 内容区按截图原尺寸 915px 宽，三个变体纵向排布 */
+  .canvas {
+    width: 915px;
+    display: flex;
+    flex-direction: column;
+  }
+  .variant-1 { height: 360px; }                 /* 网状拓扑 */
+  .variant-2 { height: 520px; margin-top: 70px; } /* 树形拓扑 + 悬浮详情卡 */
+  .variant-3 { height: 333px; margin-top: 76px; } /* 分组面板拓扑 + 指标卡 */
+  svg { display: block; width: 100%; height: 100%; }
+  text { user-select: none; }
+</style>
+</head>
+<body>
+<div class="canvas">
+  <section class="variant-1" id="v1"></section>
+  <section class="variant-2" id="v2"></section>
+  <section class="variant-3" id="v3"></section>
+</div>
+
+<script>
+/* =========================================================
+ * 样式与数据集中配置（LLM 拼装时只需改这里）
+ * ========================================================= */
+const THEME = {
+  pageBg:    '#191e2a',   // 页面底色
+  panelBg1:  '#0b1838',   // 面板渐变亮端
+  panelBg2:  '#060f28',   // 面板渐变暗端
+  panelBd:   '#1d3c78',   // 面板描边
+  cyan:      '#1fe6d0',   // 青色强调（角标/装饰）
+  linkOk:    '#1ec8b4',   // 网络正常连线
+  linkBad:   '#e44444',   // 网络异常连线
+  linkDash:  '#3f7a68',   // 备用虚线
+  blue:      '#2f8bff',   // 平均耗时圆点
+  red:       '#ff5454',   // 丢包率圆点
+  green:     '#2fe6a0',   // 在线状态
+  pillBg1:   '#1e56a8',   // 节点标签渐变亮端
+  pillBg2:   '#123a7d',   // 节点标签渐变暗端
+  pillBd:    '#3b6fd4',
+  txtMain:   '#dce8ff',   // 主文字
+  txtSub:    '#8fa5cc',   // 次要文字
+  txtNode:   '#b9cdf2'    // 节点名称
+};
+
+/* 变体一：网状拓扑数据 */
+const MESH = {
+  nodes: [
+    { id:'sheng',     x:75,  y:72,  label:'省健康云半山节点', icon:'cloud' },
+    { id:'net',       x:237, y:70,  label:'互联网',          icon:'cloud' },
+    { id:'zhuan',     x:398, y:70,  label:'专网',            icon:'cloud' },
+    { id:'jiaxing',   x:240, y:177, label:'嘉兴健康云',      icon:'cloud', hot:true },
+    { id:'tongcheng', x:392, y:173, label:'同城容灾中心',    icon:'server' },
+    { id:'shishu',    x:242, y:283, label:'市属医院',        icon:'server' },
+    { id:'tongxiang', x:392, y:280, label:'桐乡健康云',      icon:'cloud' }
+  ],
+  edges: [ // type: ok 正常 / bad 异常 / dash 备用虚线
+    { from:'sheng',     to:'jiaxing',   type:'ok',   label:{x:155,y:128} },
+    { from:'net',       to:'jiaxing',   type:'ok',   label:{x:237,y:120} },
+    { from:'zhuan',     to:'jiaxing',   type:'ok',   label:{x:318,y:128} },
+    { from:'sheng',     to:'tongcheng', type:'dash' },
+    { from:'zhuan',     to:'tongcheng', type:'dash' },
+    { from:'jiaxing',   to:'tongcheng', type:'bad',  label:{x:316,y:182} },
+    { from:'jiaxing',   to:'shishu',    type:'bad',  label:{x:242,y:242} },
+    { from:'jiaxing',   to:'tongxiang', type:'bad',  label:{x:316,y:243} },
+    { from:'tongcheng', to:'tongxiang', type:'bad' }
+  ],
+  linkLabel: { ms:'12ms', pct:'21.0%' }   // 占位数据
+};
+
+/* =========================================================
+ * 公共 SVG 片段
+ * ========================================================= */
+// 全局渐变 / 滤镜定义
+function defs() {
+  return `<defs>
+    <linearGradient id="panelGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${THEME.panelBg1}"/><stop offset="1" stop-color="${THEME.panelBg2}"/>
+    </linearGradient>
+    <linearGradient id="panelGradSoft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2233"/><stop offset="1" stop-color="#1d2f4b"/>
+    </linearGradient>
+    <linearGradient id="pillGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${THEME.pillBg1}"/><stop offset="1" stop-color="${THEME.pillBg2}"/>
+    </linearGradient>
+    <linearGradient id="faceTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9cc8ff"/><stop offset="1" stop-color="#4f8fe8"/>
+    </linearGradient>
+    <linearGradient id="faceLeft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a63c8"/><stop offset="1" stop-color="#1c4a9e"/>
+    </linearGradient>
+    <linearGradient id="faceRight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a4490"/><stop offset="1" stop-color="#102c66"/>
+    </linearGradient>
+    <radialGradient id="glowBlue" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="rgba(60,140,255,.55)"/><stop offset="1" stop-color="rgba(60,140,255,0)"/>
+    </radialGradient>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="2.2"/>
+    </filter>
+    <marker id="arrG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="${THEME.green}"/>
+    </marker>
+    <marker id="arrW" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#eaf3ff"/>
+    </marker>
+  </defs>`;
+}
+
+// 菱形底座（节点底盘 + 底部辉光）
+function plate(cx, cy, rx, hot) {
+  const ry = rx * 0.5;
+  return `<ellipse cx="${cx}" cy="${cy+6}" rx="${rx*1.7}" ry="${ry*1.8}" fill="url(#glowBlue)" opacity="${hot?1:.5}"/>
+  <polygon points="${cx},${cy-ry} ${cx+rx},${cy} ${cx},${cy+ry} ${cx-rx},${cy}"
+    fill="#0d1730" stroke="rgba(150,190,255,.6)" stroke-width="1.2"/>
+  <polygon points="${cx},${cy-ry+3.5} ${cx+rx-6},${cy} ${cx},${cy+ry-3.5} ${cx-rx+6},${cy}"
+    fill="none" stroke="rgba(90,140,230,.35)" stroke-width="1"/>`;
+}
+
+// 等距方块（一层）：cx,ty 为顶面中心，w 半宽，h 厚度
+function slab(cx, ty, w, h) {
+  const k = w * 0.5;
+  return `
+  <polygon points="${cx-w},${ty} ${cx},${ty+k} ${cx},${ty+k+h} ${cx-w},${ty+h}" fill="url(#faceLeft)"/>
+  <polygon points="${cx},${ty+k} ${cx+w},${ty} ${cx+w},${ty+h} ${cx},${ty+k+h}" fill="url(#faceRight)"/>
+  <polygon points="${cx},${ty-k} ${cx+w},${ty} ${cx},${ty+k} ${cx-w},${ty}" fill="url(#faceTop)"/>`;
+}
+
+// 浅色底座方块（交换机白色底层）
+function slabLight(cx, ty, w, h) {
+  const k = w * 0.5;
+  return `
+  <polygon points="${cx-w},${ty} ${cx},${ty+k} ${cx},${ty+k+h} ${cx-w},${ty+h}" fill="#aebdd9"/>
+  <polygon points="${cx},${ty+k} ${cx+w},${ty} ${cx+w},${ty+h} ${cx},${ty+k+h}" fill="#8499bf"/>
+  <polygon points="${cx},${ty-k} ${cx+w},${ty} ${cx},${ty+k} ${cx-w},${ty}" fill="#eef4ff"/>`;
+}
+
+// 云型节点图标（带圆形徽标）
+function iconCloud(cx, cy) {
+  return `
+  ${slab(cx, cy-16, 24, 12)}
+  <circle cx="${cx}" cy="${cy-19}" r="8.5" fill="rgba(255,255,255,.18)" stroke="#e8f2ff" stroke-width="1.6"/>
+  <path d="M ${cx-4} ${cy-17} a3.4 3.4 0 0 1 6.6-1 a2.8 2.8 0 0 1 1.4 5.2 l -7.6 0 a2.6 2.6 0 0 1 -.4-4.2 z"
+    fill="#e8f2ff" transform="translate(0,-1)"/>`;
+}
+
+// 服务器型节点图标（三层堆叠）
+function iconServer(cx, cy, big) {
+  const w = big ? 30 : 22, gap = big ? 13 : 10;
+  let s = '';
+  for (let i = 0; i < 3; i++) {
+    const ty = cy - 12 - (2 - i) * gap;
+    s += slab(cx, ty, w, big ? 9 : 7);
+    // 左侧指示灯
+    s += `<circle cx="${cx-w*0.55}" cy="${ty + w*0.25 + (big?4:3)}" r="1.4" fill="#8fe6ff"/>`;
+  }
+  return s;
+}
+
+// 小型交换机图标（蓝色主体 + 白色底层，顶面四向箭头，带状态点）
+function iconSwitch(cx, cy, status) {
+  const dot = status === 'bad' ? THEME.red : THEME.green;
+  return `
+  ${slabLight(cx, cy-3, 21, 7)}
+  ${slab(cx, cy-13, 21, 8)}
+  <line x1="${cx-9}" y1="${cy-13}" x2="${cx+9}" y2="${cy-13}" stroke="#eaf3ff" stroke-width="1.3"
+    marker-start="url(#arrW)" marker-end="url(#arrW)"/>
+  <line x1="${cx}" y1="${cy-18}" x2="${cx}" y2="${cy-8}" stroke="#eaf3ff" stroke-width="1.3"
+    marker-start="url(#arrW)" marker-end="url(#arrW)"/>
+  ${status ? `<circle cx="${cx+18}" cy="${cy+1}" r="5.5" fill="${dot}" stroke="rgba(255,255,255,.85)" stroke-width="1.4"/>` : ''}`;
+}
+
+// 防火墙图标（立式高盒 + 白色小底座，带状态点）
+function iconFirewall(cx, cy, status) {
+  const dot = status === 'bad' ? THEME.red : THEME.green;
+  return `
+  <polygon points="${cx},${cy+3} ${cx+15},${cy+9} ${cx},${cy+15} ${cx-15},${cy+9}" fill="#dfebff"/>
+  <polygon points="${cx},${cy+3} ${cx+15},${cy+9} ${cx},${cy+15} ${cx-15},${cy+9}" fill="none" stroke="rgba(150,190,255,.4)"/>
+  <polygon points="${cx-10},${cy-17} ${cx},${cy-12} ${cx},${cy+6} ${cx-10},${cy+1}" fill="url(#faceLeft)"/>
+  <polygon points="${cx},${cy-12} ${cx+10},${cy-17} ${cx+10},${cy+1} ${cx},${cy+6}" fill="url(#faceRight)"/>
+  <polygon points="${cx},${cy-23} ${cx+10},${cy-17} ${cx},${cy-12} ${cx-10},${cy-17}" fill="url(#faceTop)"/>
+  ${status ? `<circle cx="${cx+17}" cy="${cy+3}" r="5.5" fill="${dot}" stroke="rgba(255,255,255,.85)" stroke-width="1.4"/>` : ''}`;
+}
+
+// 蓝色渐变标签 pill
+function pill(cx, cy, w, text, fs) {
+  const h = 24;
+  return `<g>
+    <rect x="${cx-w/2}" y="${cy-h/2}" width="${w}" height="${h}" rx="3"
+      fill="url(#pillGrad)" stroke="${THEME.pillBd}" stroke-width="1"/>
+    <text x="${cx}" y="${cy+1}" fill="${THEME.txtMain}" font-size="${fs||13}"
+      text-anchor="middle" dominant-baseline="middle">${text}</text>
+  </g>`;
+}
+
+// 面板标题（pill + 下方青色小括号装饰）
+function panelTitle(cx, cy, text) {
+  return `<g>
+    ${pill(cx, cy, 120, text, 14)}
+    <path d="M ${cx-14} ${cy+15} l 5 5 h 18 l 5 -5" fill="none" stroke="${THEME.cyan}" stroke-width="2.4"/>
+  </g>`;
+}
+
+// 悬浮卡顶部青色角标
+function cornerMark(cx, y) {
+  return `<path d="M ${cx-20} ${y+8} l 6 -8 h 28 l 6 8" fill="none" stroke="${THEME.cyan}" stroke-width="3"/>`;
+}
+
+/* =========================================================
+ * 变体一：网状拓扑（含图例、连线耗时/丢包标签）
+ * ========================================================= */
+function buildV1() {
+  const N = {}; MESH.nodes.forEach(n => N[n.id] = n);
+  const L = MESH.linkLabel;
+  let s = `<svg viewBox="0 0 915 360" xmlns="http://www.w3.org/2000/svg">${defs()}`;
+
+  // --- 连线 ---
+  MESH.edges.forEach(e => {
+    const a = N[e.from], b = N[e.to];
+    const x1 = a.x, y1 = a.y + 8, x2 = b.x, y2 = b.y - 18;
+    const my = (y1 + y2) / 2;
+    const d = `M ${x1} ${y1} C ${x1} ${my+22}, ${x2} ${my-22}, ${x2} ${y2}`;
+    const color = e.type === 'ok' ? THEME.linkOk : e.type === 'bad' ? THEME.linkBad : THEME.linkDash;
+    const dash  = e.type === 'dash' ? ' stroke-dasharray="5 5" opacity=".55"' : '';
+    s += `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.6"${dash}/>`;
+    if (e.type !== 'dash') // 正常线加微光
+      s += `<path d="${d}" fill="none" stroke="${color}" stroke-width="4" opacity=".25" filter="url(#soft)"/>`;
+  });
+
+  // --- 连线标签：平均耗时 / 丢包率 ---
+  MESH.edges.filter(e => e.label).forEach(e => {
+    const { x, y } = e.label;
+    s += `<g>
+      <rect x="${x-34}" y="${y-17}" width="68" height="36" rx="4" fill="rgba(7,15,34,.5)"/>
+      <circle cx="${x-24}" cy="${y-6}" r="3" fill="${THEME.blue}"/>
+      <text x="${x-16}" y="${y-6}" fill="#a9c6f8" font-size="11.5" dominant-baseline="middle">${L.ms}</text>
+      <circle cx="${x-24}" cy="${y+9}" r="3" fill="${THEME.red}"/>
+      <text x="${x-16}" y="${y+9}" fill="#eeb9b9" font-size="11.5" dominant-baseline="middle">${L.pct}</text>
+    </g>`;
+  });
+
+  // --- 节点 ---
+  MESH.nodes.forEach(n => {
+    s += plate(n.x, n.y + 14, 34, n.hot);
+    s += n.icon === 'cloud' ? iconCloud(n.x, n.y) : iconServer(n.x, n.y, false);
+    s += `<text x="${n.x}" y="${n.y+30}" fill="${THEME.txtNode}" font-size="13"
+      text-anchor="middle">${n.label}</text>`;
+  });
+
+  // --- 图例 ---
+  const lg = [
+    { y:22, mark:`<circle cx="545" cy="22" r="3.4" fill="${THEME.blue}"/>`,        t:'平均耗时' },
+    { y:44, mark:`<circle cx="545" cy="44" r="3.4" fill="${THEME.red}"/>`,         t:'丢包率' },
+    { y:66, mark:`<line x1="536" y1="66" x2="554" y2="66" stroke="${THEME.linkOk}" stroke-width="2.4"/>`, t:'网络正常' },
+    { y:88, mark:`<line x1="536" y1="88" x2="554" y2="88" stroke="${THEME.linkBad}" stroke-width="2.4"/>`, t:'网络异常' }
+  ];
+  lg.forEach(i => {
+    s += `${i.mark}<text x="562" y="${i.y+1}" fill="#d7e4ff" font-size="13" dominant-baseline="middle">${i.t}</text>`;
+  });
+
+  document.getElementById('v1').innerHTML = s + '</svg>';
+}
+
+/* =========================================================
+ * 变体二：树形拓扑（服务器 → 端口 → 分组交换机 + 端口详情卡）
+ * ========================================================= */
+const TREE = {
+  root:  { x:365, y:55, label:'服务器：Storage Switch1' },
+  ports: [ { x:190, name:'eth3' }, { x:460, name:'eth5' }, { x:612, name:'eth6' } ],
+  groups: [
+    { x:33,  w:320, title:'隧道交换机', nodes:[{ x:193, name:'SW_Manage_1' }] },
+    { x:377, w:320, title:'管理交换机', nodes:[{ x:465, name:'SW_Manage_1' }, { x:612, name:'SW_Manage_2' }] }
+  ],
+  tip: { title:'SW_Manage_2', rows:[
+    ['端口状态', '在线'], ['交换机端口', '100GE1/0/2'],
+    ['对端设备', 'Storage Switch2'], ['对端设备端口', 'eth2']
+  ]}
+};
+
+function buildV2() {
+  const R = TREE.root;
+  let s = `<svg viewBox="0 0 915 520" xmlns="http://www.w3.org/2000/svg">${defs()}`;
+
+  // --- 分组面板 ---
+  TREE.groups.forEach(g => {
+    s += `<rect x="${g.x}" y="265" width="${g.w}" height="120" rx="4"
+      fill="url(#panelGrad)" stroke="${THEME.panelBd}" stroke-width="1.2"/>`;
+  });
+
+  // --- 树形连线（圆角折线，带蓝色微光） ---
+  TREE.ports.forEach(p => {
+    const d = `M ${R.x} 140 V 168 Q ${R.x} 180 ${R.x - 14} 180 H ${p.x + 14} Q ${p.x} 180 ${p.x} 194 V 214`;
+    s += `<path d="${d}" fill="none" stroke="#2f6fd0" stroke-width="5" opacity=".22" filter="url(#soft)"/>
+          <path d="${d}" fill="none" stroke="#2f6fd0" stroke-width="1.8"/>
+          <line x1="${p.x}" y1="238" x2="${p.x}" y2="288" stroke="#2f6fd0" stroke-width="1.8"/>`;
+  });
+
+  // --- 根节点：服务器图标 + 标签 ---
+  s += plate(R.x, R.y + 26, 46, false);
+  s += iconServer(R.x, R.y + 8, true);
+  s += pill(R.x, 128, 176, '服务器：<tspan fill="#bcd6ff">Storage Switch1</tspan>', 13.5);
+
+  // --- 端口 pill ---
+  TREE.ports.forEach(p => { s += pill(p.x, 226, 62, p.name, 12.5); });
+
+  // --- 组内节点 + 组标题 ---
+  TREE.groups.forEach(g => {
+    g.nodes.forEach(n => {
+      s += plate(n.x, 306, 24, false);
+      s += iconSwitch(n.x, 300, null);
+      s += pill(n.x, 336, 116, n.name, 12.5);
+    });
+    s += panelTitle(g.x + g.w/2, 372, g.title);
+  });
+
+  // --- 悬浮详情卡 ---
+  const t = TREE.tip, tx = 648, ty = 300, tw = 240;
+  s += `<g>
+    <rect x="${tx}" y="${ty}" width="${tw}" height="176" rx="5"
+      fill="#0a1330" stroke="#23407f" stroke-width="1.2"/>
+    ${cornerMark(tx + 112, ty)}
+    <text x="${tx + tw/2}" y="${ty+30}" fill="#ffffff" font-size="15.5" font-weight="600" text-anchor="middle">${t.title}</text>
+    <rect x="${tx + tw - 14}" y="${ty + 20}" width="3.4" height="18" fill="${THEME.blue}"/>
+    <line x1="${tx+16}" y1="${ty+46}" x2="${tx+tw-16}" y2="${ty+46}" stroke="rgba(90,130,200,.35)"/>`;
+  t.rows.forEach((r, i) => {
+    const ry = ty + 72 + i * 27;
+    s += `<text x="${tx+20}" y="${ry}" fill="${THEME.txtSub}" font-size="13" dominant-baseline="middle">${r[0]}</text>`;
+    if (r[0] === '端口状态')
+      s += `<circle cx="${tx+tw-58}" cy="${ry}" r="4.6" fill="none" stroke="${THEME.green}" stroke-width="2"/>
+            <circle cx="${tx+tw-58}" cy="${ry}" r="1.8" fill="${THEME.green}"/>
+            <text x="${tx+tw-20}" y="${ry}" fill="#e8f2ff" font-size="13" text-anchor="end" dominant-baseline="middle">${r[1]}</text>`;
+    else
+      s += `<text x="${tx+tw-20}" y="${ry}" fill="#e8f2ff" font-size="13" text-anchor="end" dominant-baseline="middle">${r[1]}</text>`;
+  });
+  s += '</g>';
+
+  document.getElementById('v2').innerHTML = s + '</svg>';
+}
+
+/* =========================================================
+ * 变体三：分组边界拓扑（状态点 + 虚线互连 + 设备指标卡）
+ * ========================================================= */
+const ZONE = {
+  title: 'I 侧边界',
+  row1: [ { x:185, name:'核心交换机_2', st:'bad', icon:'sw' }, { x:420, name:'边界防火墙_2', st:'bad', icon:'fw' } ],
+  row2: [ { x:185, name:'核心交换机_3', st:'ok',  icon:'sw' }, { x:420, name:'边界防火墙_3', st:'ok',  icon:'fw' } ],
+  tip: { title:'核心交换机3', rows:[
+    ['CPU利用率', '89%', 'bad'], ['内存利用率', '20%'],
+    ['上行速率', '23.2 Mbps'], ['下行速率', '94.0 Mbps']
+  ]}
+};
+
+function buildV3() {
+  let s = `<svg viewBox="0 0 915 333" xmlns="http://www.w3.org/2000/svg">${defs()}`;
+
+  // --- 边界面板（原图中底色比变体二更浅更通透） ---
+  s += `<rect x="30" y="2" width="550" height="206" rx="4"
+    fill="url(#panelGradSoft)" stroke="${THEME.panelBd}" stroke-width="1.2"/>`;
+  s += cornerMark(290, 0);
+  s += pill(290, 16, 110, ZONE.title, 14);
+
+  // --- 两行节点 ---
+  const drawRow = (row, iy, py) => row.forEach(n => {
+    s += plate(n.x, iy + 6, 24, false);
+    s += n.icon === 'fw' ? iconFirewall(n.x, iy, n.st) : iconSwitch(n.x, iy, n.st);
+    s += pill(n.x, py, 120, n.name, 13);
+  });
+  drawRow(ZONE.row1, 40, 74);
+  drawRow(ZONE.row2, 120, 167);
+
+  // --- 绿色虚线互连（双向箭头） ---
+  s += `<line x1="248" y1="74" x2="357" y2="74" stroke="${THEME.green}" stroke-width="1.6"
+    stroke-dasharray="4 4" marker-start="url(#arrG)" marker-end="url(#arrG)"/>`;
+
+  // --- 设备指标悬浮卡（遮盖下层节点，与截图一致） ---
+  const t = ZONE.tip, tx = 195, ty = 154, tw = 240;
+  s += `<g>
+    <rect x="${tx}" y="${ty}" width="${tw}" height="167" rx="5"
+      fill="#0a1330" stroke="#23407f" stroke-width="1.2"/>
+    ${cornerMark(tx + tw/2, ty - 2)}
+    <text x="${tx + tw/2}" y="${ty+30}" fill="#ffffff" font-size="15.5" font-weight="600" text-anchor="middle">${t.title}</text>
+    <line x1="${tx+16}" y1="${ty+46}" x2="${tx+tw-16}" y2="${ty+46}" stroke="rgba(90,130,200,.35)"/>`;
+  t.rows.forEach((r, i) => {
+    const ry = ty + 70 + i * 27;
+    const vc = r[2] === 'bad' ? '#ff4d4d' : '#e8f2ff';   // 超标值红色
+    s += `<text x="${tx+22}" y="${ry}" fill="${THEME.txtSub}" font-size="13.5" dominant-baseline="middle">${r[0]}</text>
+          <text x="${tx+tw-22}" y="${ry}" fill="${vc}" font-size="13.5" text-anchor="end" dominant-baseline="middle">${r[1]}</text>`;
+  });
+  s += '</g>';
+
+  document.getElementById('v3').innerHTML = s + '</svg>';
+}
+
+buildV1(); buildV2(); buildV3();
+</script>
+</body>
+</html>

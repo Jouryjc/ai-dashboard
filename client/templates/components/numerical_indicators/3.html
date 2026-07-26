@@ -1,0 +1,224 @@
+<!-- source: 3.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>数值指标卡（带图例） - 虚拟机总数</title>
+<style>
+  /* ===== 基础主题（深色大屏） ===== */
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #1a1d32; /* 截图底色：深藏青 */
+    font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+  }
+
+  /* ===== 指标卡容器：按截图原始尺寸 748x236 ===== */
+  .indicator-card {
+    width: 748px;
+    height: 236px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    padding: 0 36px;
+    gap: 36px;
+  }
+
+  /* 左侧 3D 层叠图标 */
+  .indicator-icon {
+    flex: 0 0 150px;
+    height: 168px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .indicator-icon svg { width: 100%; height: 100%; }
+
+  /* 中间：数值 + 标签 */
+  .indicator-main {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 14px;
+  }
+  .value-row {
+    display: flex;
+    align-items: baseline;
+    line-height: 1;
+  }
+  .value {
+    font-size: 64px;
+    font-weight: 900;
+    letter-spacing: 2px;
+  }
+  .unit {
+    font-size: 24px;
+    font-weight: 700;
+    margin-left: 10px;
+    letter-spacing: 1px;
+  }
+  .label {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 3px;
+  }
+
+  /* 右侧：分类图例列表 */
+  .legend {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 16px;
+    max-width: 300px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: baseline;
+    font-size: 18px;
+    letter-spacing: 1px;
+  }
+  .legend-item .dot {
+    margin-right: 10px;
+    font-weight: 900;
+  }
+  .legend-item .name { white-space: nowrap; }
+  .legend-item .num {
+    margin-left: 12px; /* 截图中数值紧跟名称，固定间距而非右对齐 */
+  }
+</style>
+</head>
+<body>
+
+  <div class="indicator-card">
+    <!-- 左侧：等轴测层叠方块图标（inline SVG，渐变+发光） -->
+    <div class="indicator-icon">
+      <svg viewBox="0 0 120 134" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <!-- 顶面渐变：亮青 -->
+          <linearGradient id="topG" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#8ff4ff"/>
+            <stop offset="1" stop-color="#35b6ea"/>
+          </linearGradient>
+          <!-- 左面渐变：中青 -->
+          <linearGradient id="leftG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#2b9fd8"/>
+            <stop offset="1" stop-color="#1668b0"/>
+          </linearGradient>
+          <!-- 右面渐变：暗青 -->
+          <linearGradient id="rightG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#1d7fc0"/>
+            <stop offset="1" stop-color="#0f4f8f"/>
+          </linearGradient>
+          <!-- 发光滤镜 -->
+          <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="5" result="b"/>
+            <feMerge>
+              <feMergeNode in="b"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+        </defs>
+
+        <g filter="url(#glow)" stroke="#9feaff" stroke-width="1.2" stroke-linejoin="round">
+          <!-- 顶部悬浮的线框菱形 -->
+          <polygon points="60,8 100,26 60,44 20,26" fill="rgba(80,200,255,0.08)"/>
+          <!-- 第一层 -->
+          <polygon points="60,36 100,54 60,72 20,54" fill="url(#topG)"/>
+          <polygon points="20,54 60,72 60,84 20,66" fill="url(#leftG)"/>
+          <polygon points="100,54 60,72 60,84 100,66" fill="url(#rightG)"/>
+          <!-- 第二层 -->
+          <polygon points="60,60 100,78 60,96 20,78" fill="url(#topG)"/>
+          <polygon points="20,78 60,96 60,108 20,90" fill="url(#leftG)"/>
+          <polygon points="100,78 60,96 60,108 100,90" fill="url(#rightG)"/>
+          <!-- 第三层 -->
+          <polygon points="60,84 100,102 60,120 20,102" fill="url(#topG)"/>
+          <polygon points="20,102 60,120 60,132 20,114" fill="url(#leftG)"/>
+          <polygon points="100,102 60,120 60,132 100,114" fill="url(#rightG)"/>
+        </g>
+      </svg>
+    </div>
+
+    <!-- 中间：数值 + 单位 + 标签 -->
+    <div class="indicator-main">
+      <div class="value-row">
+        <span class="value" id="value"></span><span class="unit" id="unit"></span>
+      </div>
+      <div class="label" id="label"></div>
+    </div>
+
+    <!-- 右侧：分类图例（由 JS 根据 CONFIG.legend 生成） -->
+    <div class="legend" id="legend"></div>
+  </div>
+
+<script>
+  /* ===== 参数区：颜色与数据集中配置 ===== */
+  const CONFIG = {
+    value: "120",       // 主数值（截图占位数据）
+    unit: "台",         // 单位
+    label: "虚拟机总数", // 指标名称
+    // 图例占位数据（与截图一致）
+    legend: [
+      { name: "HIS系统", value: 50 },
+      { name: "LIS系统", value: 30 },
+      { name: "PACS系统", value: 20 },
+      { name: "其他三方业务系统", value: 40 }
+    ],
+    colors: {
+      value: "#3df0cd",                 // 主数字颜色：亮青绿（截图取色）
+      unit: "#3df0cd",                  // 单位与数字同色
+      label: "#f0f8ff",                 // 标签颜色
+      legendText: "#d6e2f5",            // 图例文字颜色
+      legendDot: "#7fd8ff",             // 图例圆点颜色
+      glow: "rgba(84, 205, 255, 0.7)"   // 文字青色光晕
+    }
+  };
+
+  // 渲染主数值区
+  const { colors } = CONFIG;
+  const elValue = document.getElementById("value");
+  const elUnit = document.getElementById("unit");
+  const elLabel = document.getElementById("label");
+
+  elValue.textContent = CONFIG.value;
+  elUnit.textContent = CONFIG.unit;
+  elLabel.textContent = CONFIG.label;
+
+  elValue.style.color = colors.value;
+  elValue.style.textShadow = `0 0 16px ${colors.glow}`;
+  elUnit.style.color = colors.unit;
+  elUnit.style.textShadow = `0 0 10px ${colors.glow}`;
+  elLabel.style.color = colors.label;
+  elLabel.style.textShadow = `0 0 12px ${colors.glow}`;
+
+  // 渲染图例列表
+  const elLegend = document.getElementById("legend");
+  CONFIG.legend.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "legend-item";
+    row.style.color = colors.legendText;
+    row.style.textShadow = `0 0 8px ${colors.glow}`;
+
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.textContent = "·";
+    dot.style.color = colors.legendDot;
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = item.name;
+
+    const num = document.createElement("span");
+    num.className = "num";
+    num.textContent = item.value;
+
+    row.append(dot, name, num);
+    elLegend.appendChild(row);
+  });
+</script>
+</body>
+</html>

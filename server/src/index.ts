@@ -31,6 +31,8 @@ app.use(express.json({ limit: '30mb' }))
 /* 静态：构建产物预览 + 封面 */
 app.use('/preview', express.static(dirs.previews, { index: 'index.html' }))
 app.use('/covers', express.static(dirs.covers))
+// 模板库（布局/组件 demo 图），启动时从 client/templates 同步
+app.use('/templates', express.static(path.join(dirs.root, 'templates')))
 
 /* API */
 app.use('/api/v1', router)

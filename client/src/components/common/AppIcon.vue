@@ -166,6 +166,8 @@ const ICONS: Record<string, string[]> = {
   ],
   // 发布（上传箭头）
   publish: ['M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z'],
+  // 下载（导出代码）
+  download: ['M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z'],
   // 左右对比
   compare: [
     'M10 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h5v2h2V1h-2v2zm0 15H5l5-6v6zm9-15h-5v2h5v13l-5 6v2h5c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z'

@@ -1,0 +1,250 @@
+<!-- source: 1.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>柱状图组件</title>
+<style>
+  /* ===== 深色大屏基础样式 ===== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #131a2c; /* 页面底色，取自截图 */
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+  /* 三个变体横向排布，总宽按原图 2126px */
+  .stage {
+    width: 2126px;
+    height: 434px;
+    display: flex;
+    gap: 48px;
+    padding: 12px 16px;
+  }
+  .panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel svg { flex: 1; width: 100%; display: block; }
+
+  /* 图例 */
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    padding: 6px 12px 2px;
+  }
+  .legend.right  { justify-content: flex-end; }
+  .legend.center { justify-content: center; }
+  .legend .item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #9aa3b8;
+    font-size: 13px;
+  }
+  .legend .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <!-- 变体一：单系列柱状图（带数值气泡） -->
+  <div class="panel">
+    <svg id="chart1" viewBox="0 0 620 356" preserveAspectRatio="none"></svg>
+    <div class="legend center" id="legend1"></div>
+  </div>
+  <!-- 变体二：双系列分组柱状图 -->
+  <div class="panel">
+    <svg id="chart2" viewBox="0 0 620 356" preserveAspectRatio="none"></svg>
+    <div class="legend center" id="legend2"></div>
+  </div>
+  <!-- 变体三：四系列堆叠柱状图 -->
+  <div class="panel">
+    <svg id="chart3" viewBox="0 0 620 356" preserveAspectRatio="none"></svg>
+    <div class="legend center" id="legend3"></div>
+  </div>
+</div>
+
+<script>
+/* ================= 样式与数据常量（参数化配置区） ================= */
+const THEME = {
+  axisText:   '#7f879b',   // 坐标轴文字
+  unitText:   '#7f879b',   // 单位「次」
+  gridLine:   '#252b40',   // 横向网格线
+  axisLine:   '#2c334d',   // 坐标轴线
+  tooltipBg:  '#153737',   // 数值气泡底（深青，取自截图）
+  tooltipBd:  '#2e6b60',   // 数值气泡描边（青色微光）
+  tooltipTxt: '#3ee2b0',   // 数值气泡文字（青绿）
+};
+
+/* 各系列柱子的纵向渐变（顶 → 底） */
+const SERIES_COLORS = {
+  blue:  ['#4a9dff', '#1e5ae0'],
+  green: ['#3fe3b0', '#15a37a'],
+  cyan:  ['#2fd4e8', '#1496b8'],
+  gray:  ['#9aa1b5', '#5a6175'],
+};
+
+const Y_MAX   = 350;                       // Y 轴最大值
+const Y_TICKS = [0, 50, 100, 150, 200, 250, 300, 350];
+const Y_UNIT  = '次';
+const X_LABELS = ['00:00','03:00','06:00','09:00','12:00','15:00','18:00','21:00','24:00'];
+
+/* 变体一：单系列（截图中 06:00 上方有气泡「325」） */
+const DATA_SINGLE = [125, 218, 335, 215, 215, 120, 215, 335, 218];
+const TOOLTIP = { index: 2, text: '325' };
+
+/* 变体二：蓝 / 绿 双系列分组 */
+const DATA_GROUP = {
+  blue:  [135, 225, 222, 285, 225, 132, 222, 285, 225],
+  green: [165, 277, 277, 350, 277, 165, 277, 350, 277],
+};
+
+/* 变体三：蓝 / 青 / 绿 / 灰 四系列堆叠 */
+const DATA_STACK = {
+  blue:  [58,  98, 98, 150, 98, 58, 98, 150, 98],
+  cyan:  [28,  50, 50,  80, 50, 28, 50,  80, 50],
+  green: [28,  43, 43,  65, 43, 28, 43,  65, 43],
+  gray:  [45,  65, 65,  80, 65, 45, 65,  80, 65],
+};
+
+/* ================= SVG 工具函数 ================= */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function text(parent, x, y, str, attrs) {
+  const t = el('text', Object.assign({ x, y, 'font-size': 12, fill: THEME.axisText }, attrs || {}), parent);
+  t.textContent = str;
+  return t;
+}
+
+/* 定义一组纵向渐变，返回渐变 id 前缀 */
+function defineGradients(svg, keys) {
+  const defs = el('defs', {}, svg);
+  keys.forEach(k => {
+    const g = el('linearGradient', { id: 'grad-' + k + '-' + svg.id, x1: 0, y1: 0, x2: 0, y2: 1 }, defs);
+    el('stop', { offset: '0%',  'stop-color': SERIES_COLORS[k][0] }, g);
+    el('stop', { offset: '100%', 'stop-color': SERIES_COLORS[k][1] }, g);
+  });
+}
+
+/* 绘制坐标轴 + 网格线，返回绘图区换算函数 */
+function drawAxes(svg, pad) {
+  const W = 620, H = 356;
+  const plotW = W - pad.l - pad.r;
+  const plotH = H - pad.t - pad.b;
+  const yOf = v => pad.t + plotH - (v / Y_MAX) * plotH;
+
+  // 单位「次」置于 Y 轴上方
+  text(svg, pad.l - 6, pad.t - 16, Y_UNIT, { 'text-anchor': 'middle', fill: THEME.unitText });
+
+  Y_TICKS.forEach(v => {
+    const y = yOf(v);
+    text(svg, pad.l - 10, y + 4, v, { 'text-anchor': 'end' });
+    if (v > 0) el('line', { x1: pad.l, y1: y, x2: W - pad.r, y2: y, stroke: THEME.gridLine, 'stroke-width': 1 }, svg);
+  });
+  // X 轴基线
+  el('line', { x1: pad.l, y1: yOf(0), x2: W - pad.r, y2: yOf(0), stroke: THEME.axisLine, 'stroke-width': 1 }, svg);
+
+  const step = plotW / X_LABELS.length;
+  const xOf = i => pad.l + step * (i + 0.5); // 第 i 个类目的中心 x
+  X_LABELS.forEach((s, i) => text(svg, xOf(i), H - 8, s, { 'text-anchor': 'middle' }));
+
+  return { yOf, xOf, step, baseY: yOf(0) };
+}
+
+/* 单根圆角顶柱 */
+function bar(svg, x, y, w, h, colorKey, rx) {
+  el('rect', { x, y, width: w, height: h, rx: rx || 2, fill: `url(#grad-${colorKey}-${svg.id})` }, svg);
+}
+
+/* ================= 变体一：单系列 ================= */
+(function renderSingle() {
+  const svg = document.getElementById('chart1');
+  defineGradients(svg, ['blue']);
+  const pad = { l: 48, r: 12, t: 44, b: 28 };
+  const { yOf, xOf, baseY } = drawAxes(svg, pad);
+  const BW = 16;
+
+  DATA_SINGLE.forEach((v, i) => {
+    const y = yOf(v);
+    bar(svg, xOf(i) - BW / 2, y, BW, baseY - y, 'blue');
+  });
+
+  // 数值气泡（截图中 06:00 柱上方）
+  const cx = xOf(TOOLTIP.index), topY = yOf(DATA_SINGLE[TOOLTIP.index]);
+  const bw = 46, bh = 26, bx = cx - bw / 2, by = topY - bh - 8;
+  const g = el('g', {}, svg);
+  el('rect', { x: bx, y: by, width: bw, height: bh, rx: 5, fill: THEME.tooltipBg, stroke: THEME.tooltipBd, 'stroke-width': 1 }, g);
+  el('path', { d: `M ${cx - 5} ${by + bh} L ${cx} ${by + bh + 6} L ${cx + 5} ${by + bh} Z`, fill: THEME.tooltipBg, stroke: THEME.tooltipBd, 'stroke-width': 1 }, g);
+  el('rect', { x: cx - 6, y: by + bh - 1, width: 12, height: 2, fill: THEME.tooltipBg }, g); // 盖住指针接缝
+  text(g, cx, by + 17, TOOLTIP.text, { 'text-anchor': 'middle', 'font-size': 13, fill: THEME.tooltipTxt, 'font-weight': 'bold' });
+})();
+
+/* ================= 变体二：分组 ================= */
+(function renderGroup() {
+  const svg = document.getElementById('chart2');
+  defineGradients(svg, ['blue', 'green']);
+  const pad = { l: 48, r: 12, t: 44, b: 28 };
+  const { yOf, xOf, baseY } = drawAxes(svg, pad);
+  const BW = 11, GAP = 5;
+
+  X_LABELS.forEach((_, i) => {
+    const c = xOf(i);
+    ['blue', 'green'].forEach((k, s) => {
+      const v = DATA_GROUP[k][i];
+      const x = c + (s === 0 ? -(BW + GAP / 2) : GAP / 2);
+      bar(svg, x, yOf(v), BW, baseY - yOf(v), k);
+    });
+  });
+})();
+
+/* ================= 变体三：堆叠 ================= */
+(function renderStack() {
+  const svg = document.getElementById('chart3');
+  const order = ['blue', 'cyan', 'green', 'gray']; // 自底向上
+  defineGradients(svg, order);
+  const pad = { l: 48, r: 12, t: 44, b: 28 };
+  const { yOf, xOf } = drawAxes(svg, pad);
+  const BW = 16;
+
+  X_LABELS.forEach((_, i) => {
+    let acc = 0;
+    order.forEach(k => {
+      const v = DATA_STACK[k][i];
+      const y1 = yOf(acc + v), y0 = yOf(acc);
+      bar(svg, xOf(i) - BW / 2, y1, BW, y0 - y1, k, 0);
+      acc += v;
+    });
+  });
+})();
+
+/* ================= 图例渲染 ================= */
+function renderLegend(id, items) {
+  const box = document.getElementById(id);
+  items.forEach(k => {
+    const item = document.createElement('span');
+    item.className = 'item';
+    const sw = document.createElement('i');
+    sw.className = 'swatch';
+    sw.style.background = `linear-gradient(180deg, ${SERIES_COLORS[k][0]}, ${SERIES_COLORS[k][1]})`;
+    item.appendChild(sw);
+    item.appendChild(document.createTextNode('图例')); // 截图原文
+    box.appendChild(item);
+  });
+}
+renderLegend('legend1', ['blue']);
+renderLegend('legend2', ['blue', 'green']);
+renderLegend('legend3', ['blue', 'cyan', 'green', 'gray']);
+</script>
+</body>
+</html>

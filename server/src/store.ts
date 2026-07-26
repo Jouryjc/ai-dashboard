@@ -222,6 +222,13 @@ export class Store {
     fs.rmSync(path.join(dirs.previews, dashId), { recursive: true, force: true })
   }
 
+  /* ---------- 封面：客户端上传的截图 ---------- */
+
+  writeCover(dashId: string, buf: Buffer): void {
+    fs.mkdirSync(dirs.covers, { recursive: true })
+    fs.writeFileSync(path.join(dirs.covers, `${dashId}.png`), buf)
+  }
+
   /* ---------- 封面：从 client/public/covers 拷贝（只读 client，不改动） ---------- */
 
   private copyCoversOnce(): void {

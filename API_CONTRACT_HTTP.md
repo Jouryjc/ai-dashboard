@@ -35,7 +35,7 @@ Base URL 示例：`http://localhost:8787`。所有 JSON。CORS：开发期 `Acce
 
 `GET /api/v1/dashboards/:id/events`
 
-- 帧格式：`id: <seq>` + `event: <type>` + `data: <json>`，`<type>` ∈ `ClientEventMap` 的 10 个键（message / messageUpdated / stage / issue / blocker / previewReady / versionAdded / runStatus / dashboardUpdated / assist），data 载荷与 `ClientEventMap[type]` 完全一致（含 dashboardId）。
+- 帧格式：`id: <seq>` + `event: <type>` + `data: <json>`，`<type>` ∈ `ClientEventMap` 的 11 个键（message / messageUpdated / stage / issue / blocker / previewReady / previewBuilding / versionAdded / runStatus / dashboardUpdated / assist），data 载荷与 `ClientEventMap[type]` 完全一致（含 dashboardId）。
 - `seq` 单大屏内单调递增；事件同时落盘 `server/data/events/<dashboardId>.jsonl`（append-only）。
 - 重连带 `Last-Event-ID: <seq>` 时先补发缺失事件再续流（EventSource 自动携带）。心跳：每 15s 一行 `: ping`。
 
@@ -46,9 +46,22 @@ Base URL 示例：`http://localhost:8787`。所有 JSON。CORS：开发期 `Acce
 
 ## 行为语义（与 mock 剧本一致，但内容由真实大模型驱动）
 
-- 新建：理解需求（LLM 分析需求+参考图）→ 如需澄清发澄清卡片（≤3 题、恰一个★推荐+理由）并 `awaiting_clarification` + blocker(clarification) → 回答后继续 → 查找组件 → 编写页面（LLM 生成完整 HTML）→ 视觉检查（确定性校验 + LLM 结构化布局审查，最多报 3 个问题）→ 修复问题（发现问题时：每个问题一张 Issue 卡、LLM 修复≤2 次，再失败→卡点卡片：★推荐按规则表；无问题则直接打勾）→ previewReady + versionAdded + 「你的大屏做好了」。
+- 新建：理解需求（LLM 分析需求+参考图）→ 如需澄清发澄清卡片（≤3 题、恰一个★推荐+理由）并 `awaiting_clarification` + blocker(clarification) → 回答后继续 → **匹配模板**（LLM 将需求/参考图与模板库比对：3 种布局 + 7 类组件；命中则照模板生成保证还原度，部分命中则未覆盖部分自定义；完全无命中 → 确认卡片：★自定义生成 / 用最接近的模板）→ 编写页面（LLM 生成完整 HTML，模板命中的布局结构 + 组件 demo 图注入 prompt）→ 视觉检查（确定性校验 + LLM 结构化布局审查，最多报 3 个问题）→ 修复问题（发现问题时：每个问题一张 Issue 卡、LLM 修复≤2 次，再失败→卡点卡片：★推荐按规则表；无问题则直接打勾）→ previewReady + versionAdded + 「你的大屏做好了」。
 - 修改：精简 3 阶段（修改→构建→检查），LLM 基于当前 HTML + 指令改稿，产生新节点。
 - 生成中 sendMessage = 排队，当前阶段完成后合并处理，消息带 `queued: true`。
 - 发布：进入等待审批，5 秒后审批通过（一期自动），版本打 ★、大屏状态已发布。
 - 回退：复制目标版本产物生成新节点，历史不删。
 - 协助：callAssist → 1 秒后客服「小李」接入（assist 事件流：查看执行过程…/代办动作），endAssist 结束并发小结系统条。
+
+## 追加（封面自动更新 + 导出代码）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/dashboards/:id/cover` | 客户端上传大屏封面截图。body `{image: string}`（data:image/png;base64 dataURL，≤8MB）。服务端校验 PNG 魔数 → 存 `data/covers/<dashId>.png` → `dashboard.coverUrl = /covers/<dashId>.png?t=<时间戳>` → 发 `dashboardUpdated` → 204 |
+| GET | `/api/v1/dashboards/:id/versions/:versionId/export` | 导出该版本完整 HTML：`200 text/html` + `Content-Disposition: attachment; filename*=UTF-8''<大屏名>-<版本标签>.html`（RFC 5987 编码）。版本不存在 → 404 |
+
+ClientApi 新增方法（mock 也要实现）：
+- `uploadCover(dashboardId: string, imageDataUrl: string): Promise<void>` —— mock：空操作（mock 模式封面仍用关键字示例图）
+- `exportVersionUrl(dashboardId: string, versionId: string): string` —— http：返回 export 端点绝对地址；mock：返回该版本的 /preview 相对地址
+
+封面上传时序（客户端行为，非服务端职责）：previewReady 事件后（http 模式且 Electron 环境有 captureUrl 能力时）离屏截取预览 1920×1080 → uploadCover，fire-and-forget，失败静默。每个版本最多上传一次。

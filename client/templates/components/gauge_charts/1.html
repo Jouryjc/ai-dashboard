@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<!-- source: 1.png · 由截图还原 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>仪表盘组件 · 仲裁盘使用率</title>
+<style>
+  /* ================= 基础 ================= */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #191e2a; /* 截图底色 */
+    font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  }
+  /* 舞台：与截图同尺寸 2103×230，三个变体横向排布 */
+  .stage { width: 2103px; height: 230px; display: flex; }
+  .cell  { flex: 1; display: flex; align-items: center; min-width: 0; }
+  .cell svg { display: block; flex: none; }
+
+  /* 各单元内「仪表 + 图例」的相对位置（按截图实测像素） */
+  .cell:nth-child(1) .legend { margin: 26px 0 0 32px; }
+  .cell:nth-child(2) svg     { margin-left: 44px; }
+  .cell:nth-child(2) .legend { margin: -19px 0 0 45px; }
+  .cell:nth-child(3) svg     { margin-left: 208px; }
+  .cell:nth-child(3) .legend { margin: -19px 0 0 66px; }
+
+  /* ================= 图例（总数 / 已使用） ================= */
+  .legend { display: flex; align-items: center; }
+  .legend .col { display: flex; flex-direction: column; }
+  .num-row { display: flex; align-items: center; }
+  .dot  { width: 7px; height: 7px; border-radius: 2px; background: #3377ff; margin-right: 8px; }
+  .num  { font-size: 26px; font-weight: 500; color: #f4f4f4; line-height: 1; }
+  .unit { font-style: normal; font-size: 15px; margin-left: 3px; }
+  .lab  { margin-top: 9px; font-size: 17px; line-height: 1; color: #9fa1a6; }
+  .lab--indent { padding-left: 15px; } /* 跳过色点，与数字左对齐 */
+  .sep  { width: 2px; height: 62px; background: #121825; margin: 0 26px; } /* 深色竖分隔线 */
+</style>
+</head>
+<body>
+  <div class="stage">
+    <!-- 变体一：速度表式（刻度 + 指针） -->
+    <div class="cell">
+      <svg id="g1" width="240" height="230" role="img" aria-label="速度表式仪表盘"></svg>
+      <div class="legend" data-legend></div>
+    </div>
+    <!-- 变体二：圆弧填充式 -->
+    <div class="cell">
+      <svg id="g2" width="290" height="230" role="img" aria-label="圆弧填充式仪表盘"></svg>
+      <div class="legend" data-legend></div>
+    </div>
+    <!-- 变体三：分段式 -->
+    <div class="cell">
+      <svg id="g3" width="210" height="230" style="overflow: visible" role="img" aria-label="分段式仪表盘"></svg>
+      <div class="legend" data-legend></div>
+    </div>
+  </div>
+
+<script>
+/* ================= 可配置常量（颜色 / 数据集中于此） ================= */
+const CFG = {
+  blue:   '#338bff',  // 主蓝（表1弧 / 指针）
+  dot:    '#3377ff',  // 图例色点
+  green:  '#33ffcc',  // 表1弧末端绿
+  cyan:   '#51d0d3',  // 表2填充起点青
+  blue2:  '#3885f8',  // 表2 / 表3 填充末端蓝
+  track:  '#1e222e',  // 表2轨道 / 底盘
+  tick:   '#565b6a',  // 表1刻度文字
+  label:  '#6b6e76',  // 表底标题
+  /* 截图占位数据 */
+  data: { value: 52, title: '仲裁盘使用率', total: '300', used: '90', unit: 'GB', totalLabel: '总数', usedLabel: '已使用' },
+  /* 三个变体的图形参数（按截图实测，与中央数值无关） */
+  g1: { needlePct: 84 },            // 指针指向（蓝绿交界处）
+  g2: { fillPct: 67, flagPct: 70 }, // 填充终点 / 尖端小旗位置
+  g3: { total: 21, lit: 13 },       // 分段总数 / 点亮段数
+  /* 表3 分段配色：点亮段青绿→蓝渐变，未点亮段向右渐隐 */
+  g3Lit: ['#59e6d1','#52d2da','#4bbde2','#44aae9','#3d95f2','#3681fa','#3379fe',
+          '#347bfd','#367ffc','#3681fa','#3885f9','#3887f8','#398bf7'],
+  g3Dim: ['#353c45','#353c45','#353c45','#353c45','#323941','#272b33','#1d2028','#1e212a'],
+};
+
+const NS = 'http://www.w3.org/2000/svg';
+const D  = CFG.data;
+
+/* ---------- 小工具 ---------- */
+/* 创建 SVG 元素 */
+function el(name, attrs, text) {
+  const n = document.createElementNS(NS, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text != null) n.textContent = text;
+  return n;
+}
+/* 极坐标（角度制，0° 在右侧，逆时针为正，y 轴翻转） */
+function polar(cx, cy, r, deg) {
+  const a = deg * Math.PI / 180;
+  return [cx + r * Math.cos(a), cy - r * Math.sin(a)];
+}
+/* 从 fromDeg 到 toDeg 的上半圆弧路径（经过顶部，from > to） */
+function arcPath(cx, cy, r, from, to) {
+  const [x1, y1] = polar(cx, cy, r, from);
+  const [x2, y2] = polar(cx, cy, r, to);
+  return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 0 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+}
+/* 「数字 + 小号%」文本；scaleX 可横向压缩（截图数字为窄体字形） */
+function pctText(x, y, num, size, color, weight, scaleX) {
+  const t = el('text', { x: 0, y: 0, 'text-anchor': 'middle', 'font-size': size, fill: color });
+  if (weight) t.setAttribute('font-weight', weight);
+  t.textContent = num;
+  const ts = el('tspan', { 'font-size': Math.round(size * 0.55), dx: 2 });
+  ts.textContent = '%';
+  t.append(ts);
+  if (scaleX && scaleX !== 1) {
+    const g = el('g', { transform: `translate(${x},${y}) scale(${scaleX},1)` });
+    g.append(t);
+    return g;
+  }
+  t.setAttribute('x', x);
+  t.setAttribute('y', y);
+  return t;
+}
+
+/* ================= 变体一：速度表式（刻度 + 指针） ================= */
+(function () {
+  const svg = document.getElementById('g1');
+  const cx = 109, cy = 130, R = 80;
+
+  /* 弧渐变：约 80% 处由蓝过渡到绿 */
+  const defs = el('defs', {});
+  const lg = el('linearGradient', { id: 'lg1', gradientUnits: 'userSpaceOnUse', x1: cx - R, y1: 0, x2: cx + R, y2: 0 });
+  lg.append(el('stop', { offset: '0%',   'stop-color': CFG.blue }));
+  lg.append(el('stop', { offset: '84%',  'stop-color': CFG.blue }));
+  lg.append(el('stop', { offset: '100%', 'stop-color': CFG.green }));
+  defs.append(lg);
+  svg.append(defs);
+
+  /* 主弧（整半圆常亮，无暗轨道） */
+  svg.append(el('path', { d: arcPath(cx, cy, R, 180, 0), fill: 'none', stroke: 'url(#lg1)', 'stroke-width': 13 }));
+
+  /* 刻度数值 0/20/40/60/80/100 */
+  [0, 20, 40, 60, 80, 100].forEach(v => {
+    const [x, y] = polar(cx, cy, 100, 180 - v * 1.8);
+    svg.append(el('text', { x, y: y + 5, 'text-anchor': 'middle', 'font-size': 15, fill: CFG.tick }, v));
+  });
+  /* 弧上白色圆点（20/40/60/80 处） */
+  [20, 40, 60, 80].forEach(v => {
+    const [x, y] = polar(cx, cy, R, 180 - v * 1.8);
+    svg.append(el('circle', { cx: x, cy: y, r: 2.8, fill: '#fff' }));
+  });
+
+  /* 内侧虚线弧 + 内侧细弧（装饰） */
+  svg.append(el('path', { d: arcPath(cx, cy, 62, 168, 12), fill: 'none', stroke: '#1c4066', 'stroke-width': 3, 'stroke-dasharray': '7 6' }));
+  svg.append(el('path', { d: arcPath(cx, cy, 35, 150, 30), fill: 'none', stroke: '#0b223c', 'stroke-width': 2.5 }));
+
+  /* 指针（截图中指向蓝绿交界处，约 84% 位置；细针、尖端探入弧带、无轴点圆） */
+  const na = 180 - CFG.g1.needlePct * 1.8;
+  const [tx, ty] = polar(cx, cy, 78, na);
+  svg.append(el('line', { x1: cx, y1: cy, x2: tx, y2: ty, stroke: CFG.blue, 'stroke-width': 5, 'stroke-linecap': 'round', opacity: .22 })); // 光晕
+  svg.append(el('line', { x1: cx, y1: cy, x2: tx, y2: ty, stroke: CFG.blue, 'stroke-width': 2.6, 'stroke-linecap': 'round' }));
+
+  /* 中央数值（与变体二/三同款窄体字形） */
+  svg.append(pctText(109, 176, D.value, 36, '#fff', 700, 0.83));
+
+  /* 底部标题 */
+  svg.append(el('text', { x: 110, y: 210, 'text-anchor': 'middle', 'font-size': 17, fill: CFG.label }, D.title));
+})();
+
+/* ================= 变体二：圆弧填充式 ================= */
+(function () {
+  const svg = document.getElementById('g2');
+  const cx = 133, cy = 128, R = 56, W = 16;
+
+  /* 填充渐变：青 → 蓝（沿 x 方向） */
+  const defs = el('defs', {});
+  const lg = el('linearGradient', { id: 'lg2', gradientUnits: 'userSpaceOnUse', x1: cx - R, y1: 0, x2: cx + R, y2: 0 });
+  lg.append(el('stop', { offset: '0%',   'stop-color': CFG.cyan }));
+  lg.append(el('stop', { offset: '45%',  'stop-color': CFG.blue2 }));
+  lg.append(el('stop', { offset: '100%', 'stop-color': CFG.blue2 }));
+  defs.append(lg);
+  svg.append(defs);
+
+  /* 深色半圆底盘（含轨道，同色无缝） */
+  svg.append(el('path', {
+    d: `M ${cx - R - W / 2} ${cy} A ${R + W / 2} ${R + W / 2} 0 0 1 ${cx + R + W / 2} ${cy} Z`,
+    fill: CFG.track
+  }));
+
+  /* 填充弧（按截图填充至约 63%） */
+  const endA = 180 - CFG.g2.fillPct * 1.8;
+  svg.append(el('path', { d: arcPath(cx, cy, R, 180, endA), fill: 'none', stroke: 'url(#lg2)', 'stroke-width': W }));
+
+  /* 尖端小旗：从填充末端外角伸出的细长三角刀锋（坐标按截图实测） */
+  const flag = '163,72 166,65 189,51';
+  svg.append(el('polygon', { points: flag, fill: CFG.blue2 }));
+
+  /* 起点小短杠（截图左端青色小横线） */
+  svg.append(el('rect', { x: 61, y: 138.8, width: 13, height: 2.4, rx: 1.2, fill: CFG.cyan }));
+
+  /* 刻度文字（0% / 50% / 100%，均极暗，100% 最暗） */
+  svg.append(pctText(161, 41,  '50',  15, '#3f434b'));
+  svg.append(pctText(12,  152, '0',   15, '#434856'));
+  svg.append(pctText(241, 152, '100', 15, '#2b303b'));
+
+  /* 中央数值与底部标题（截图中整体略偏右；数字为窄体字形） */
+  svg.append(pctText(161, 142, D.value, 36, '#fff', 700, 0.83));
+  svg.append(el('text', { x: 161, y: 178, 'text-anchor': 'middle', 'font-size': 17, fill: CFG.label }, D.title));
+})();
+
+/* ================= 变体三：分段式 ================= */
+(function () {
+  const svg = document.getElementById('g3');
+  const cx = 101, cy = 134, R = 70;      // 分段中线半径
+  const THICK = 14, SEG_W = 7;           // 分段径向厚度 / 切向宽度
+
+  /* 背后柔和圆形氛围光 */
+  const defs = el('defs', {});
+  const rg = el('radialGradient', { id: 'rg3' });
+  rg.append(el('stop', { offset: '0%',   'stop-color': '#20232c', 'stop-opacity': .95 }));
+  rg.append(el('stop', { offset: '70%',  'stop-color': '#20232c', 'stop-opacity': .6 }));
+  rg.append(el('stop', { offset: '100%', 'stop-color': '#20232c', 'stop-opacity': 0 }));
+  defs.append(rg);
+  svg.append(defs);
+  svg.append(el('ellipse', { cx, cy: 118, rx: 105, ry: 100, fill: 'url(#rg3)' }));
+
+  /* 内侧细弧（装饰） */
+  svg.append(el('path', { d: arcPath(cx, cy, 53.5, 165, 15), fill: 'none', stroke: '#2c313a', 'stroke-width': 1.5 }));
+
+  /* 21 个圆角分段：前 13 段点亮（青绿→蓝渐变），后 8 段向右渐隐 */
+  const pitch = 180 / CFG.g3.total;
+  for (let i = 0; i < CFG.g3.total; i++) {
+    const deg = 180 - (i + 0.5) * pitch;                 // 分段中心角
+    const [x, y] = polar(cx, cy, R, deg);
+    const ang = -deg - 90;                               // 使长轴沿径向（顶部竖直、端部水平）
+    const lit = i < CFG.g3.lit;
+    const color = lit ? CFG.g3Lit[i] : CFG.g3Dim[i - CFG.g3.lit];
+    svg.append(el('rect', {
+      x: x - SEG_W / 2, y: y - THICK / 2, width: SEG_W, height: THICK, rx: 2,
+      fill: color, transform: `rotate(${ang.toFixed(2)} ${x.toFixed(2)} ${y.toFixed(2)})`
+    }));
+  }
+
+  /* 中央数值与底部标题 */
+  svg.append(pctText(102, 142, D.value, 36, '#fff', 700, 0.83));
+  svg.append(el('text', { x: 102, y: 178, 'text-anchor': 'middle', 'font-size': 17, fill: CFG.label }, D.title));
+})();
+
+/* ================= 图例（三处共用同一组数据） ================= */
+document.querySelectorAll('[data-legend]').forEach(box => {
+  box.innerHTML = `
+    <div class="col">
+      <div class="num-row"><i class="dot"></i><span class="num">${D.total}<i class="unit">${D.unit}</i></span></div>
+      <span class="lab lab--indent">${D.totalLabel}</span>
+    </div>
+    <div class="sep"></div>
+    <div class="col">
+      <div class="num-row"><span class="num">${D.used}<i class="unit">${D.unit}</i></span></div>
+      <span class="lab">${D.usedLabel}</span>
+    </div>`;
+});
+</script>
+</body>
+</html>

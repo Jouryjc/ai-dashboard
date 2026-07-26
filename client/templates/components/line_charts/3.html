@@ -1,0 +1,292 @@
+<!-- source: 3.png · 由截图还原（已按原图像素级测量校准） -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>折线图组件 · 平滑/直线 双变体</title>
+<style>
+  /* ===== 页面与容器 ===== */
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #191e2a;            /* 深色大屏底色（取自原图像素 rgb(25,30,42)） */
+    font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  }
+  .stage {
+    width: 1407px;
+    height: 429px;
+    display: flex;                  /* 两个变体横向并排 */
+    flex-direction: row;
+    gap: 71px;                      /* 与截图中间间距一致（右面板起始于 x=739） */
+    box-sizing: border-box;
+  }
+  .chart-panel {
+    width: 668px;
+    height: 429px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+  }
+  .chart-svg-wrap {
+    flex: 1;
+    min-height: 0;
+  }
+  /* ===== 底部图例（原图位置略偏左） ===== */
+  .legend {
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 45px;
+    margin-right: 38px;             /* 原图图例中心比面板中心偏左约 19px */
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 15px;
+    color: #9a9fa9;
+  }
+  .legend-line {
+    width: 27px;
+    height: 3px;
+    border-radius: 1.5px;
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <!-- 变体一：平滑曲线 + 面积渐变 -->
+  <div class="chart-panel" id="panelSmooth">
+    <div class="chart-svg-wrap" id="svgSmooth"></div>
+    <div class="legend">
+      <div class="legend-item"><span class="legend-line" style="background:#1a7dff"></span>图例</div>
+      <div class="legend-item"><span class="legend-line" style="background:#2de3a6"></span>图例</div>
+    </div>
+  </div>
+  <!-- 变体二：直线段，无面积填充 -->
+  <div class="chart-panel" id="panelLinear">
+    <div class="chart-svg-wrap" id="svgLinear"></div>
+    <div class="legend">
+      <div class="legend-item"><span class="legend-line" style="background:#1a7dff"></span>图例</div>
+      <div class="legend-item"><span class="legend-line" style="background:#2de3a6"></span>图例</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+ * 参数配置区：颜色 / 数据 / 布局 集中在此，便于复用修改
+ * 注：几何与颜色均按 3.png 像素级测量校准
+ * ========================================================= */
+var CONFIG = {
+  colors: {
+    bg:        '#191e2a',   // 面板底色 rgb(25,30,42)
+    blue:      '#1a7dff',   // 系列一（蓝）rgb(26,125,255)
+    green:     '#2de3a6',   // 系列二（绿）rgb(45,227,166)
+    threshold: 'rgba(219,66,67,0.55)',  // 阈值虚线（80% 处，暗红）
+    axisText:  '#cdd3dd',   // 坐标轴文字（浅灰）
+    axisTextHi:'#db4243',   // 高亮刻度文字（80，亮红）
+    grid:      'rgba(255,255,255,0.08)',
+    axisLine:  'rgba(255,255,255,0.30)',
+    crosshair: 'rgba(255,255,255,0.19)',
+    tooltipBg: 'rgba(8,10,14,0.88)',
+    tooltipName:'#e8e8ea',
+    tooltipVal:'#d3d3d4'
+  },
+  /* 绘图区几何（原图实测：100 网格线 y=59.5，0 轴 y=336，左右 46/652） */
+  plot: { left: 46, right: 652, top: 59.5, bottom: 336 },
+  /* 原图 Y 轴为非均匀刻度：25 以上每单位 2.92px，25 以下每单位 2.34px */
+  yTicks: [100, 75, 50, 25, 0],
+  thresholdValue: 80,
+  thresholdY: 112,          // 阈值虚线实测 y 坐标（略高于 80 的线性位置）
+  xTicks: ['00:00','03:00','06:00','09:00','12:00','15:00','18:00','21:00','24:00'],
+  crosshairHour: 14,        // 两图十字线均在 14:00（实测 x=382）
+  /* 变体一：平滑曲线数据 */
+  smooth: {
+    blue:  [[-2.5,26],[-1,36],[0,52],[1.9,57],[4.5,44],[8,27.6],[10.5,34],[12,50],
+            [14,62.5],[17.3,75],[19.5,57],[21.5,40],[24,40],[25,47],[26,57],[27.5,67]],
+    green: [[-2.5,63],[-1,56],[0,45],[1.5,36],[2.8,33.7],[5,35.5],[7,43],[9.6,46.7],
+            [12,46],[14,42],[16.4,39.2],[19.5,38.9],[22.4,39.6],[24,47],[25.2,59.4],[26.3,61.5],[27.5,63.5]],
+    markers: [
+      { series: 'blue',  value: 62.5 },   // 十字线与蓝线交点处的标记
+      { series: 'green', value: 42 }      // 十字线与绿线交点处的标记
+    ],
+    cursor: { dx: 4, y: 150 },            // 鼠标指针尖端位置（相对十字线 x 偏移）
+    tooltip: { dx: 36, y: 151, w: 194, h: 83, padTop: 16, rowH: 34 }
+  },
+  /* 变体二：直线段数据 */
+  linear: {
+    blue:  [[-2,13],[0,31],[3.5,56],[14,7.5],[16,26],[18,42],[19,44],
+            [21,42.5],[23,44],[24.4,47],[25.5,44.5],[27.2,41]],
+    green: [[-2,80.5],[-1.7,80.5],[0,50],[1.2,33.7],[3.4,33.7],[9,49],[11,39.5],
+            [14,59],[16.6,68.7],[18.7,36.8],[22,36.1],[23.9,46.4],[27.2,31]],
+    markers: [
+      { series: 'green', value: 59 },     // 十字线与绿线交点处的标记
+      { series: 'blue',  value: 14.5 }    // 蓝色独立标记（悬浮于蓝线低点上方）
+    ],
+    cursor: { dx: 5, y: 165 },
+    tooltip: { dx: 34, y: 162, w: 195, h: 67, padTop: 14, rowH: 32 }
+  },
+  /* tooltip 占位内容（原样照抄截图文字） */
+  tooltip: [
+    { color: 'blue',  name: '图例 1', value: '55%' },
+    { color: 'green', name: '图例 2', value: '55%' }
+  ]
+};
+
+/* ================= 工具函数 ================= */
+var P = CONFIG.plot;
+function xOf(hour) {                   // 小时 -> x 像素（实测 00:00 在 x=85，21.2px/h）
+  return 85 + hour * 21.2;
+}
+function yOf(v) {                      // 数值 -> y 像素（非均匀刻度，与原图一致）
+  return v >= 25 ? 350.2 - 2.907 * v : 336 - 2.34 * v;
+}
+/* Catmull-Rom 转三次贝塞尔，生成平滑路径 */
+function smoothPath(pts) {
+  var d = 'M' + pts[0][0].toFixed(1) + ',' + pts[0][1].toFixed(1);
+  for (var i = 0; i < pts.length - 1; i++) {
+    var p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1],
+        p3 = pts[Math.min(pts.length - 1, i + 2)];
+    var c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    var c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += 'C' + c1x.toFixed(1) + ',' + c1y.toFixed(1) + ' ' +
+         c2x.toFixed(1) + ',' + c2y.toFixed(1) + ' ' +
+         p2[0].toFixed(1) + ',' + p2[1].toFixed(1);
+  }
+  return d;
+}
+function linearPath(pts) {
+  return pts.map(function (p, i) {
+    return (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1);
+  }).join('');
+}
+/* 白色鼠标指针形状（原图约 18x28） */
+function cursorArrow(x, y) {
+  return '<g transform="translate(' + x + ',' + y + ') scale(1.45)">' +
+    '<path d="M0,0 L0,17 L4.5,12.8 L7.5,19.5 L10,18.3 L7,11.6 L12.5,11.6 Z" ' +
+    'fill="#ffffff" stroke="#3a4356" stroke-width="1"/></g>';
+}
+
+/* ================= 渲染单个图表 ================= */
+function renderChart(elId, opt) {
+  var C = CONFIG.colors;
+  var uid = elId;
+  var s = '';
+
+  /* ---- defs：面积渐变 + 线条发光 + 绘图区裁剪 ---- */
+  s += '<defs>';
+  ['blue', 'green'].forEach(function (k) {
+    var col = C[k];
+    s += '<linearGradient id="' + uid + '-area-' + k + '" x1="0" y1="0" x2="0" y2="1">' +
+         '<stop offset="0%" stop-color="' + col + '" stop-opacity="0.38"/>' +
+         '<stop offset="100%" stop-color="' + col + '" stop-opacity="0.02"/></linearGradient>';
+    s += '<filter id="' + uid + '-glow-' + k + '" x="-40%" y="-40%" width="180%" height="180%">' +
+         '<feGaussianBlur stdDeviation="3.5" result="b"/>' +
+         '<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>';
+  });
+  s += '<clipPath id="' + uid + '-clip"><rect x="' + P.left + '" y="0" width="' +
+       (P.right - P.left) + '" height="' + (P.bottom + 1) + '"/></clipPath>';
+  s += '</defs>';
+
+  /* ---- 横向网格线（100/75/50/25） ---- */
+  CONFIG.yTicks.forEach(function (v) {
+    if (v === 0) return;
+    s += '<line x1="' + P.left + '" y1="' + yOf(v) + '" x2="' + P.right + '" y2="' + yOf(v) +
+         '" stroke="' + C.grid + '" stroke-width="1"/>';
+  });
+  /* 红色阈值虚线（实测 y=112，dasharray 3,4） */
+  s += '<line x1="' + P.left + '" y1="' + CONFIG.thresholdY +
+       '" x2="' + P.right + '" y2="' + CONFIG.thresholdY +
+       '" stroke="' + C.threshold + '" stroke-width="1" stroke-dasharray="3,4"/>';
+
+  /* ---- Y 轴文字（% 与刻度值，80 为红色） ---- */
+  s += '<text x="' + (P.left - 34) + '" y="48" font-size="14" fill="' + C.axisText + '">%</text>';
+  CONFIG.yTicks.forEach(function (v) {
+    s += '<text x="' + (P.left - 10) + '" y="' + (yOf(v) + 4) +
+         '" font-size="13" text-anchor="end" fill="' + C.axisText + '">' + v + '</text>';
+  });
+  s += '<text x="' + (P.left - 10) + '" y="' + (CONFIG.thresholdY + 4) +
+       '" font-size="13" text-anchor="end" fill="' + C.axisTextHi + '">' +
+       CONFIG.thresholdValue + '</text>';
+
+  /* ---- X 轴刻度文字（基线 y=360） ---- */
+  CONFIG.xTicks.forEach(function (t, i) {
+    s += '<text x="' + xOf(i * 3) + '" y="360" font-size="13" text-anchor="middle" fill="' +
+         C.axisText + '">' + t + '</text>';
+  });
+  /* 底部轴线（y=336） */
+  s += '<line x1="' + P.left + '" y1="' + P.bottom + '" x2="' + P.right + '" y2="' + P.bottom +
+       '" stroke="' + C.axisLine + '" stroke-width="1"/>';
+
+  /* ---- 数据折线（+ 可选面积填充），裁剪到绘图区 ---- */
+  s += '<g clip-path="url(#' + uid + '-clip)">';
+  ['blue', 'green'].forEach(function (k) {
+    var raw = opt.data[k];
+    var pts = raw.map(function (p) { return [xOf(p[0]), yOf(p[1])]; });
+    var line = opt.smooth ? smoothPath(pts) : linearPath(pts);
+    if (opt.area) {
+      var area = line +
+        'L' + pts[pts.length - 1][0].toFixed(1) + ',' + P.bottom +
+        'L' + pts[0][0].toFixed(1) + ',' + P.bottom + 'Z';
+      s += '<path d="' + area + '" fill="url(#' + uid + '-area-' + k + ')"/>';
+    }
+    s += '<path d="' + line + '" fill="none" stroke="' + C[k] +
+         '" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" ' +
+         'filter="url(#' + uid + '-glow-' + k + ')"/>';
+  });
+  s += '</g>';
+
+  /* ---- 十字线（实测从 y=10 到轴线，x 取整保证清晰） ---- */
+  var cx = Math.round(xOf(CONFIG.crosshairHour));
+  s += '<line x1="' + cx + '" y1="10" x2="' + cx + '" y2="' + P.bottom +
+       '" stroke="' + C.crosshair + '" stroke-width="1"/>';
+
+  /* ---- 数据点标记：光晕 + 圆环 + 实心点 ---- */
+  opt.markers.forEach(function (mk) {
+    var my = yOf(mk.value), mc = C[mk.series];
+    s += '<circle cx="' + cx + '" cy="' + my + '" r="8.5" fill="' + mc + '" opacity="0.28"/>' +
+         '<circle cx="' + cx + '" cy="' + my + '" r="10.5" fill="none" stroke="' + mc +
+         '" stroke-width="1.5" opacity="0.5"/>' +
+         '<circle cx="' + cx + '" cy="' + my + '" r="4.5" fill="' + mc + '"/>';
+  });
+
+  /* ---- tooltip 框（半透明深色，几何按各图实测） ---- */
+  var tt = opt.tooltip;
+  var tx = cx + tt.dx, ty = tt.y, tw = tt.w, th = tt.h;
+  s += '<rect x="' + tx + '" y="' + ty + '" width="' + tw + '" height="' + th + '" rx="4" ' +
+       'fill="' + C.tooltipBg + '"/>';
+  CONFIG.tooltip.forEach(function (row, i) {
+    var sy = ty + tt.padTop + i * tt.rowH;          // 色块 y
+    s += '<rect x="' + (tx + 18) + '" y="' + sy + '" width="11" height="11" rx="2" fill="' + C[row.color] + '"/>' +
+         '<text x="' + (tx + 40) + '" y="' + (sy + 14) + '" font-size="13" fill="' + C.tooltipName + '">' + row.name + '</text>' +
+         '<text x="' + (tx + tw - 20) + '" y="' + (sy + 14) + '" font-size="13" text-anchor="end" fill="' +
+         C.tooltipVal + '">' + row.value + '</text>';
+  });
+
+  /* 白色鼠标指针（截图原样） */
+  s += cursorArrow(cx + opt.cursor.dx, opt.cursor.y);
+
+  document.getElementById(elId).innerHTML =
+    '<svg width="668" height="373" viewBox="0 0 668 373" xmlns="http://www.w3.org/2000/svg">' + s + '</svg>';
+}
+
+/* ================= 渲染两个变体 ================= */
+renderChart('svgSmooth', {
+  smooth: true, area: true,
+  data: { blue: CONFIG.smooth.blue, green: CONFIG.smooth.green },
+  markers: CONFIG.smooth.markers,
+  cursor: CONFIG.smooth.cursor,
+  tooltip: CONFIG.smooth.tooltip
+});
+renderChart('svgLinear', {
+  smooth: false, area: false,
+  data: { blue: CONFIG.linear.blue, green: CONFIG.linear.green },
+  markers: CONFIG.linear.markers,
+  cursor: CONFIG.linear.cursor,
+  tooltip: CONFIG.linear.tooltip
+});
+</script>
+</body>
+</html>

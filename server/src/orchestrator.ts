@@ -21,8 +21,10 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { store } from './store'
+import { dirs, store } from './store'
 import * as gw from './gateway'
+import { COMPONENTS, LAYOUTS, catalogText, keywordHint, syncTemplates, templateImageDataUrl } from './templates'
+import { prompt } from './prompts'
 import type {
   AssistSession,
   Blocker,
@@ -59,6 +61,16 @@ interface PendingRun {
   /** 本轮校验失败累计次数（决定推荐规则表场景） */
   failCount: number
   issueId: string | null
+  /** 模板匹配决策（null = 还没做过匹配） */
+  template?: TemplateDecision | null
+}
+
+/** 模板匹配环节的结论 */
+interface TemplateDecision {
+  layoutId: string | null
+  componentIds: string[]
+  /** false = 用户在"没有匹配"卡片里确认了自定义生成 */
+  useTemplate: boolean
 }
 
 /** 工作台会话快照（sessions/<id>.json 落盘内容） */
@@ -89,6 +101,18 @@ interface ActiveRun {
   retryLlm: (() => void) | null
   /** 卡点解除后继续流程（修复成功 / 人工修好后的收尾） */
   proceed: (() => void) | null
+  /** 当前 LLM 调用的中止器（20 分钟看门狗用） */
+  abort?: AbortController | null
+  /** 20 分钟看门狗定时器 */
+  watchdog?: ReturnType<typeof setTimeout> | null
+  /** 看门狗布防的阶段（超时时停掉/拆分用） */
+  watchdogStageId?: string
+  /** 本轮是否已用过拆分（拆分后再超时 → 上报问题卡片，不再二次拆分） */
+  splitUsed?: boolean
+  /** 看门狗主动中止的那个中止器（catch 里对比身份识别"本次调用是否被看门狗接管"，不能用布尔——拆分接管后旧调用的 catch 才落地，布尔已被新流程重置） */
+  watchdogAborted?: AbortController | null
+  /** 拆分完成后接力的 检查/修复/收尾 阶段 id；before = 接力前先补打勾的阶段（如编辑流的「构建」） */
+  checkIds?: { check: string; repair: string | null; finish: string; before?: string[] }
 }
 
 interface Runtime {
@@ -103,6 +127,9 @@ interface Runtime {
 }
 
 const sessions = new Map<string, Runtime>()
+
+/** 模板库根目录（boot 时同步；null = 无模板库，匹配环节降级为全自定义） */
+let templatesRoot: string | null = null
 
 /* ============================== 小工具 ============================== */
 
@@ -406,8 +433,8 @@ async function getCapability(): Promise<{ ok: boolean; supportsVision: boolean }
 
 /* ============================== 阶段时间线 ============================== */
 
-const CREATE_TITLES = ['理解需求', '查找组件', '编写页面', '视觉检查', '修复问题', '生成预览']
-const CREATE_TITLES_WITH_IMAGE = ['分析参考图片', '查找组件', '编写页面', '视觉检查', '修复问题', '生成预览']
+const CREATE_TITLES = ['理解需求', '匹配模板', '编写页面', '视觉检查', '修复问题', '生成预览']
+const CREATE_TITLES_WITH_IMAGE = ['分析参考图片', '匹配模板', '编写页面', '视觉检查', '修复问题', '生成预览']
 const EDIT_TITLES = ['修改', '构建', '检查']
 
 function emitPlan(rt: Runtime, titles: string[]): void {
@@ -486,30 +513,262 @@ function makeLivePreview(rt: Runtime): (partial: string) => void {
   }
 }
 
-/* ============================== LLM：Planner ============================== */
+/* ============================== 20 分钟执行上限：看门狗 + 拆分步骤 ============================== */
 
-const PLANNER_SYSTEM = `你是「大屏规划师」，帮完全不懂技术的业务人员做数据大屏。
-你的任务：理解用户需求，用大白话说出你的分析结论，并判断开始动手前是否需要先跟用户确认几件事。
+/**
+ * 单 Agent 单步执行上限（默认 20 分钟，冒烟可用 AGENT_STEP_MAX_MS 压小）。
+ * 到点仍未完成：中止当前 LLM 调用 → 编码类任务自动拆成小步骤重做；其他任务上报问题卡片。
+ */
+const AGENT_STEP_MAX_MS = Number(process.env.AGENT_STEP_MAX_MS ?? 20 * 60 * 1000)
 
-严格要求：
-1. 面向不懂技术的业务人员，全部用简体中文大白话，禁止任何技术术语（不要说 API、组件库、ECharts、前端、代码、分辨率这些词）。
-2. 只输出一个 JSON 对象，不要输出任何其他文字，格式如下：
-{
-  "analysis": "你的分析结论（一两句大白话，说说你打算做个什么样的大屏）",
-  "needClarification": true 或 false,
-  "intro": "澄清卡片的引导语，比如「开始之前，想跟你确认两件事」",
-  "questions": [
+/**
+ * 给当前 Agent 步骤布防看门狗，返回本次布防的令牌。
+ * 调用方须持有本地 AbortController：catch 用 `run.watchdogAborted === ctl` 判断本次调用是否被看门狗接管，
+ * finally 用令牌撤防（仅当看门狗还是本次的）——看门狗接管后会立刻布防新步骤，旧调用的收尾不许踩新步骤。
+ */
+function armAgentWatchdog(
+  rt: Runtime,
+  run: ActiveRun,
+  stageId: string,
+  kind: 'coding' | 'other',
+  checkIds?: { check: string; repair: string | null; finish: string; before?: string[] }
+): ReturnType<typeof setTimeout> {
+  disarmAgentWatchdog(rt, run)
+  run.watchdogStageId = stageId
+  if (checkIds) run.checkIds = checkIds
+  const t = setTimeout(() => {
+    rt.timers.delete(t)
+    if (run.watchdog !== t) return // 已被撤防/替换（防御性，正常到不了这里）
+    run.watchdog = null
+    const ctl = run.abort
+    run.watchdogAborted = ctl ?? null
+    ctl?.abort()
+    if (kind === 'coding' && !run.splitUsed) {
+      pushAgent(rt, '这一步做了超过 20 分钟还没做完，我把它拆成几步小的来做，会快很多。')
+      void splitCodingFlow(rt, run, stageId)
+      return
+    }
+    raiseOvertimeCard(rt, run, stageId, kind === 'coding')
+  }, AGENT_STEP_MAX_MS)
+  rt.timers.add(t)
+  run.watchdog = t
+  return t
+}
+
+/** 撤防看门狗；带令牌时仅当当前布防的还是那一次才撤（防止旧调用的 finally 撤掉新步骤的看门狗） */
+function disarmAgentWatchdog(rt: Runtime, run: ActiveRun, token?: ReturnType<typeof setTimeout>): void {
+  if (token !== undefined && run.watchdog !== token) return
+  if (run.watchdog) {
+    rt.timers.delete(run.watchdog)
+    clearTimeout(run.watchdog)
+    run.watchdog = null
+  }
+}
+
+/**
+ * 超时问题卡片。canSplit=true（编码步骤）→ ★把任务拆小重新做；
+ * canSplit=false（规划/匹配/修复等非编码步骤）→ ★让 AI 再试一次（接 run.retryLlm，调用方须提前摆好）。
+ * 另给 呼叫人工 / 回退（有版本时）。
+ */
+function raiseOvertimeCard(rt: Runtime, run: ActiveRun, stageId: string | null, canSplit: boolean): void {
+  const title = '这一步做了太久'
+  const description = canSplit
+    ? '已经超过 20 分钟了还没做完。你的进度都还在，拆小一点重新做通常很快就出来。'
+    : '已经超过 20 分钟了还没做完。你的进度都还在，重新做一次通常很快就出来。'
+  const options: CardOption[] = [
+    canSplit
+      ? {
+          id: 'opt-split-redo',
+          title: '把任务拆小重新做',
+          consequence: '分成几步小任务，每一步都很快，大约 2～3 分钟',
+          recommended: true,
+          recommendReason: '拆开做每一步都在 20 分钟内，成功率最高',
+          riskLevel: 'low',
+          autoExecuteAt: null
+        }
+      : {
+          id: 'opt-retry-llm',
+          title: '让 AI 再试一次',
+          consequence: '重新做一次这一步，之前的进度都还在',
+          recommended: true,
+          recommendReason: '多数是模型一时卡住，重新做一次通常能成',
+          riskLevel: 'low',
+          autoExecuteAt: null
+        },
     {
-      "question": "问题文本（大白话）",
-      "options": [
-        { "title": "选项标题", "consequence": "选了这个会发生什么（大白话）", "recommended": true, "recommendReason": "推荐理由（大白话）" }
-      ]
+      id: 'opt-assist',
+      title: '呼叫人工协助',
+      consequence: '支持人员能看到全部过程，通常几分钟解决',
+      recommended: false,
+      recommendReason: null,
+      riskLevel: 'medium',
+      autoExecuteAt: null
     }
   ]
+  if (rt.s.versions.length > 0) {
+    options.push({
+      id: 'opt-rollback',
+      title: '回退到上一个正常版本',
+      consequence: '恢复到最近的可用版本，之后的修改会保留，随时可以回来',
+      recommended: false,
+      recommendReason: null,
+      riskLevel: 'high',
+      autoExecuteAt: null
+    })
+  }
+  const msg: ProblemMessage = {
+    kind: 'problem',
+    id: nextId('m'),
+    createdAt: Date.now(),
+    title,
+    description,
+    options,
+    chosenOptionId: null,
+    relatedIssueId: null
+  }
+  pushMessage(rt, msg)
+  setBlocker(rt, { id: nextId('blk'), type: 'failed', title, description, options, relatedMessageId: msg.id })
+  setStatus(rt, 'blocked')
+  updateDashboard(rt, { status: 'needs_attention' })
+  run.pending.awaiting = 'problem'
+  if (stageId) finishStageQuiet(rt, stageId)
+  rt.running = false
+  save(rt)
 }
-3. 澄清问题最多 3 个；每个问题给 2~3 个选项；每个问题的所有选项里恰好一个 recommended=true 并附推荐理由；每个选项都要写清 consequence（选了之后会发生什么）。
-4. 如果需求已经说得比较清楚，needClarification 输出 false，questions 输出空数组。
-5. 用户可能附了参考图片：如果看到图片，先在 analysis 里用大白话说说图片里是什么样的（整体风格、中间放什么、两边放什么），再按图片内容来提问。`
+
+/**
+ * 拆分步骤（编码任务超时的标准拆解）：
+ *   第 1 步：只生成页面骨架（完整 HTML 结构 + 全部样式 + 每个面板一个 <!--PANEL:名称--> 占位注释）
+ *   第 2..N 步：逐个面板生成内容片段，填回占位注释
+ * 每一步都是独立的小 LLM 调用（各自布防看门狗），单次不会超过 20 分钟。
+ */
+async function splitCodingFlow(rt: Runtime, run: ActiveRun, stageId: string): Promise<void> {
+  rt.running = true
+  run.splitUsed = true
+  run.pending.awaiting = null
+  // 子步骤超时（看门狗超时卡片）的"让 AI 再试一次"= 重跑整个拆分
+  run.retryLlm = () => void splitCodingFlow(rt, run, stageId)
+  setStatus(rt, 'generating')
+  setBlocker(rt, null)
+  activateStage(rt, stageId)
+  const livePreview = rt.s.versions.length === 0 ? makeLivePreview(rt) : null
+  const ids = run.checkIds ?? { check: 'st-4', repair: 'st-5', finish: 'st-6' }
+  /** 接力检查前，把正常路径会走、拆分路径跳过的阶段补打勾（如编辑流的「构建」st-2） */
+  const finishBeforeStages = (): void => {
+    for (const id of ids.before ?? []) {
+      activateStage(rt, id)
+      finishStage(rt, id)
+    }
+  }
+
+  const requirement =
+    run.pending.kind === 'create'
+      ? `请做这样一个大屏：${run.pending.text}${run.pending.answersSummary ? `\n用户确认的偏好：${run.pending.answersSummary}` : ''}`
+      : editRequirement(rt, run)
+
+  /**
+   * 每个子步骤一次独立 LLM 调用（带看门狗和中止器）。
+   * 返回 null = 本次调用被看门狗中止（超时卡片已接管），调用方直接 return，不再报失败卡。
+   * 注意：绝不重置 run.watchdogAborted——被中止的旧调用 catch 可能比新流程晚落地，要靠它认出"自己被接管了"。
+   */
+  async function callStep(label: string, userContent: string, onPartial?: (partial: string) => void): Promise<string | null> {
+    const wd = armAgentWatchdog(rt, run, stageId, 'other')
+    const ctl = new AbortController()
+    run.abort = ctl
+    const progress = llmProgress(rt, stageId, label)
+    try {
+      return await gw.chatCompletionStream(
+        cachedSettings,
+        {
+          role: 'coder',
+          messages: [
+            { role: 'system', content: prompt('coder.system') },
+            { role: 'user', content: userContent }
+          ],
+          signal: ctl.signal
+        },
+        (chars, partial) => {
+          progress(chars)
+          onPartial?.(partial)
+        }
+      )
+    } catch (err) {
+      if (run.watchdogAborted === ctl) return null
+      throw err
+    } finally {
+      if (run.abort === ctl) run.abort = null
+      disarmAgentWatchdog(rt, run, wd)
+    }
+  }
+
+  try {
+    // 第 1 步：骨架
+    const skeletonRaw = await callStep(
+      '拆分步骤 1：先搭页面骨架',
+      prompt('split.skeleton.user', { requirement }),
+      (partial) => livePreview?.(partial)
+    )
+    if (skeletonRaw === null) return // 看门狗已接管
+    let html = gw.extractHtml(skeletonRaw)
+    // 记录占位注释原文：名字 trim 后拼正则可能匹配不到含空格的原始注释，替换一律用原文
+    const panels = [...html.matchAll(/<!--PANEL:([^>]+?)-->/g)]
+      .map((m) => ({ raw: m[0], name: (m[1] ?? '').trim() }))
+      .filter((p) => p.name.length > 0)
+      .slice(0, 6)
+
+    if (panels.length === 0) {
+      // 模型没按占位约定输出：骨架已是完整页面，直接进入检查
+      run.html = html
+      finishStage(rt, stageId)
+      finishBeforeStages()
+      await checkRepairAndFinish(rt, run, ids.check, ids.repair, ids.finish)
+      return
+    }
+
+    // 第 2..N 步：逐个面板生成内容
+    for (let i = 0; i < panels.length; i++) {
+      const p = panels[i]
+      try {
+        const fragment = await callStep(
+          `拆分步骤 ${i + 2}/${panels.length + 1}：生成「${truncate(p.name, 10)}」`,
+          prompt('split.panel.user', { requirement, panelName: p.name })
+        )
+        if (fragment === null) return // 看门狗已接管
+        html = html.replace(p.raw, () => fragment)
+        livePreview?.(html)
+      } catch (err) {
+        // 单个面板失败：留占位说明，交给后续视觉检查 + 修复兜底
+        html = html.replace(p.raw, () => `<!-- 「${p.name}」暂未生成 -->`)
+      }
+    }
+
+    // 兜底：成品里不允许残留面板占位注释（异常路径防御，正常循环后不应剩余）
+    if (/<!--PANEL:/.test(html)) {
+      console.warn(`[orchestrator] ${rt.s.dashboard.id} 拆分生成后仍有面板占位符残留，已清理`)
+      html = html.replace(/<!--PANEL:[^>]*?-->/g, '<!-- 面板暂未生成 -->')
+    }
+
+    run.html = html
+    pushAgent(rt, '拆分生成完成，各部分已经拼好了。')
+    finishStage(rt, stageId)
+    finishBeforeStages()
+    await checkRepairAndFinish(rt, run, ids.check, ids.repair, ids.finish)
+  } catch (err) {
+    raiseLlmFailureCard(rt, run, err, stageId)
+    rt.running = false
+  }
+}
+
+/** 编辑拆分的任务描述：带上当前大屏完整 HTML，在保持现有内容的基础上改（丢了就会把原页面静默替换掉） */
+function editRequirement(rt: Runtime, run: ActiveRun): string {
+  const instruction = run.pending.text || '按用户发的参考图调整'
+  const current = rt.s.versions.find((v) => v.isCurrent) ?? rt.s.versions[0]
+  const currentHtml = run.html || (current ? (store.readPreview(rt.s.dashboard.id, current.id) ?? '') : '')
+  if (!currentHtml) return `用户要把现有大屏改成：${instruction}`
+  return `这是当前大屏的完整 HTML：\n${currentHtml}\n\n用户要求修改：${instruction}\n\n请在保持现有页面整体结构和内容不变的基础上完成这个修改。接下来会分步进行，请配合每一步的输出要求。`
+}
+
+/* ============================== LLM：Planner ============================== */
 
 interface PlanResult {
   analysis: string
@@ -577,10 +836,10 @@ function normalizePlan(raw: unknown): PlanResult {
 /** 组装 planner 的用户消息（vision 可用才带图，否则走非多模态路径并提示） */
 function plannerUserContent(text: string, attachments: string[], vision: boolean): gw.LlmMessage['content'] {
   const parts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = []
-  let body = `用户需求：${text || '（用户只发了图片，没有文字）'}`
-  if (attachments.length > 0 && !vision) {
-    body += '\n\n（用户附了参考图片，但当前模型不支持看图片，请只按文字理解，并在 analysis 里说明这一点。）'
-  }
+  const body = prompt('planner.user', {
+    text: text || '（用户只发了图片，没有文字）',
+    noVisionNote: attachments.length > 0 && !vision ? prompt('planner.user.no-vision-note') : ''
+  })
   parts.push({ type: 'text', text: body })
   if (vision) {
     for (const url of attachments) parts.push({ type: 'image_url', image_url: { url } })
@@ -592,93 +851,183 @@ async function callPlanner(
   text: string,
   attachments: string[],
   vision: boolean,
-  onProgress?: (chars: number, partial: string) => void
+  onProgress?: (chars: number, partial: string) => void,
+  signal?: AbortSignal
 ): Promise<PlanResult> {
   const reply = await gw.chatCompletionStream(cachedSettings, {
     role: 'planner',
     messages: [
-      { role: 'system', content: PLANNER_SYSTEM },
+      { role: 'system', content: prompt('planner.system') },
       { role: 'user', content: plannerUserContent(text, attachments, vision) }
-    ]
+    ],
+    signal
   }, onProgress ?? (() => {}))
   return normalizePlan(gw.extractJson(reply))
 }
 
 /* ============================== LLM：Coder ============================== */
 
-const CODER_SYSTEM = `你是「大屏开发」，负责输出一个完整自包含的数据大屏 HTML 文件。
-
-硬约束（必须全部满足，否则检查不通过）：
-1. 输出一个完整的 HTML 文件（从 <!DOCTYPE html> 到 </html>），1920×1080 的数据大屏，深色科技风。
-2. 所有图表用内联 SVG / CSS / JavaScript 手写实现（柱状图、折线图、饼图、仪表盘等），数据用写死的演示数据。
-3. 绝对禁止引用任何外部资源：不能有 src="http..."、href="http..."、url(http...)，不能用 CDN、外部字体、外部图片。所有内容必须写在这一个文件里。
-4. 只输出 HTML 本身，不要输出任何解释文字。`
-
-async function callCoderCreate(text: string, answersSummary: string, onProgress?: (chars: number, partial: string) => void): Promise<string> {
+async function callCoderCreate(
+  text: string,
+  answersSummary: string,
+  template: TemplateDecision | null | undefined,
+  vision: boolean,
+  onProgress?: (chars: number, partial: string) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  const tpl = template ? templateContext(template, vision) : { text: '', images: [] }
+  const userText = prompt('coder.create.user', {
+    text,
+    answersBlock: answersSummary ? prompt('coder.create.answers-block', { answersSummary }) : '',
+    templateContext: tpl.text,
+    imageNote: tpl.images.length > 0 ? prompt('coder.create.image-note') : ''
+  })
+  const content: LlmUserContent =
+    tpl.images.length > 0
+      ? [{ type: 'text', text: userText }, ...tpl.images.map((url) => ({ type: 'image_url' as const, image_url: { url } }))]
+      : userText
   const reply = await gw.chatCompletionStream(cachedSettings, {
     role: 'coder',
     messages: [
-      { role: 'system', content: CODER_SYSTEM },
-      {
-        role: 'user',
-        content: `请做这样一个大屏：${text}${answersSummary ? `\n用户确认的偏好：${answersSummary}` : ''}\n\n直接输出完整 HTML。`
-      }
-    ]
+      { role: 'system', content: prompt('coder.system') },
+      { role: 'user', content }
+    ],
+    signal
   }, onProgress ?? (() => {}))
   return gw.extractHtml(reply)
 }
 
-async function callCoderEdit(currentHtml: string, instruction: string, onProgress?: (chars: number, partial: string) => void): Promise<string> {
+async function callCoderEdit(currentHtml: string, instruction: string, onProgress?: (chars: number, partial: string) => void, signal?: AbortSignal): Promise<string> {
   const reply = await gw.chatCompletionStream(cachedSettings, {
     role: 'coder',
     messages: [
-      { role: 'system', content: CODER_SYSTEM },
+      { role: 'system', content: prompt('coder.system') },
       {
         role: 'user',
-        content: `这是当前大屏的完整 HTML：\n${currentHtml}\n\n用户要求修改：${instruction}\n\n请输出修改后的完整 HTML（还是一个自包含文件，约束不变）。`
+        content: prompt('coder.edit.user', { currentHtml, instruction })
       }
-    ]
+    ],
+    signal
   }, onProgress ?? (() => {}))
   return gw.extractHtml(reply)
 }
 
-async function callCoderRepair(html: string, problems: string[], onProgress?: (chars: number, partial: string) => void): Promise<string> {
+async function callCoderRepair(html: string, problems: string[], onProgress?: (chars: number, partial: string) => void, signal?: AbortSignal): Promise<string> {
   const reply = await gw.chatCompletionStream(cachedSettings, {
     role: 'coder',
     messages: [
-      { role: 'system', content: CODER_SYSTEM },
+      { role: 'system', content: prompt('coder.system') },
       {
         role: 'user',
-        content: `上次生成的页面检查没通过，问题是：\n${problems.map((p) => `- ${p}`).join('\n')}\n\n有问题的 HTML：\n${html}\n\n请输出修复后的完整 HTML（约束不变：一个自包含文件，禁止任何外部资源引用）。`
+        content: prompt('coder.repair.user', { problems: problems.map((p) => `- ${p}`).join('\n'), html })
       }
-    ]
+    ],
+    signal
   }, onProgress ?? (() => {}))
   return gw.extractHtml(reply)
+}
+
+/** 多模态 user content（与 gateway.LlmMessage['content'] 对齐） */
+type LlmUserContent =
+  | string
+  | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>
+
+/* ============================== LLM：模板匹配 ============================== */
+
+interface MatchResult {
+  layoutId: string | null
+  layoutReason: string
+  componentIds: string[]
+  unmatched: string[]
+}
+
+async function callTemplateMatch(
+  text: string,
+  attachments: string[],
+  vision: boolean,
+  onProgress?: (chars: number, partial: string) => void,
+  signal?: AbortSignal
+): Promise<MatchResult> {
+  const content: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
+    {
+      type: 'text',
+      text: prompt('match.user', {
+        text,
+        catalog: catalogText(),
+        keywordHint: keywordHint(text),
+        modeNote: vision ? prompt('match.note-vision') : prompt('match.note-text')
+      })
+    }
+  ]
+  if (vision) {
+    for (const url of attachments.slice(0, 1)) content.push({ type: 'image_url', image_url: { url } })
+    if (templatesRoot) {
+      for (const l of LAYOUTS) {
+        const dataUrl = templateImageDataUrl(templatesRoot, l.image.replace(/^\//, ''))
+        if (dataUrl) content.push({ type: 'image_url', image_url: { url: dataUrl } })
+      }
+    }
+  }
+  const reply = await gw.chatCompletionStream(
+    cachedSettings,
+    { role: 'planner', messages: [{ role: 'system', content: prompt('match.system') }, { role: 'user', content }], signal },
+    onProgress ?? (() => {})
+  )
+  const parsed = gw.extractJson(reply) as Partial<MatchResult>
+  const layoutId = LAYOUTS.some((l) => l.id === parsed.layoutId) ? (parsed.layoutId as string) : null
+  return {
+    layoutId,
+    layoutReason: typeof parsed.layoutReason === 'string' ? parsed.layoutReason : '',
+    componentIds: Array.isArray(parsed.componentIds)
+      ? parsed.componentIds.filter((id): id is string => COMPONENTS.some((c) => c.id === id))
+      : [],
+    unmatched: Array.isArray(parsed.unmatched) ? parsed.unmatched.map(String).filter(Boolean) : []
+  }
+}
+
+/** 模板上下文：注入 Coder prompt 的结构约束文本 + 参考图（vision 时） */
+function templateContext(dec: TemplateDecision, vision: boolean): { text: string; images: string[] } {
+  if (!dec.useTemplate) return { text: '', images: [] }
+  const layout = LAYOUTS.find((l) => l.id === dec.layoutId)
+  const comps = COMPONENTS.filter((c) => dec.componentIds.includes(c.id))
+  if (!layout && comps.length === 0) return { text: '', images: [] }
+  const text = prompt('coder.template-context', {
+    layoutBlock: layout
+      ? prompt('coder.template-context.layout-block', { layoutName: layout.name, layoutStructure: layout.structure }) + '\n'
+      : '',
+    componentsBlock:
+      comps.length > 0
+        ? prompt('coder.template-context.components-block', {
+            componentLines: comps.map((c) => `- ${c.name}：${c.description}`).join('\n')
+          })
+        : ''
+  })
+  const images: string[] = []
+  if (vision && templatesRoot) {
+    for (const rel of [layout?.image, ...comps.slice(0, 3).map((c) => c.image)]) {
+      if (!rel) continue
+      const dataUrl = templateImageDataUrl(templatesRoot, rel.replace(/^\//, ''))
+      if (dataUrl) images.push(dataUrl)
+    }
+  }
+  return { text, images }
 }
 
 /* ============================== LLM：视觉检查（结构化布局审查，设计 §4.1 非多模态路径） ============================== */
-
-const REVIEW_SYSTEM = `你是大屏页面的「布局检查员」。给你一张 1920×1080 数据大屏的完整 HTML 源码，请从源码角度检查真实存在的布局缺陷。
-只报告确实会让页面看起来出问题的缺陷，最多 3 个；没有就返回空列表。检查范围：
-1. 固定宽度或位置超出 1920×1080 的画面（如整体宽度超过屏幕、元素被摆到画面外）
-2. 表格、列表、长文本没有换行或滚动处理，会撑破所在区域
-3. 文字颜色与背景太接近，看不清
-4. 图表容器没有设置高度，可能一片空白
-5. 明显缺少用户要求的内容
-只输出一个 JSON 对象：{"issues":[{"title":"一句话说清问题（大白话，不用技术术语）","detail":"建议怎么修"}]}`
 
 interface ReviewIssue {
   title: string
   detail: string
 }
 
-async function callVisualReview(html: string, requirement: string, onProgress?: (chars: number, partial: string) => void): Promise<ReviewIssue[]> {
+async function callVisualReview(html: string, requirement: string, onProgress?: (chars: number, partial: string) => void, signal?: AbortSignal): Promise<ReviewIssue[]> {
   const reply = await gw.chatCompletionStream(cachedSettings, {
     role: 'planner',
     messages: [
-      { role: 'system', content: REVIEW_SYSTEM },
-      { role: 'user', content: `用户想要的大屏：${requirement}\n\n页面 HTML：\n${html}` }
-    ]
+      { role: 'system', content: prompt('review.system') },
+      { role: 'user', content: prompt('review.user', { requirement, html }) }
+    ],
+    signal
   }, onProgress ?? (() => {}))
   const parsed = gw.extractJson(reply) as { issues?: Array<{ title?: unknown; detail?: unknown }> }
   if (!Array.isArray(parsed.issues)) return []
@@ -804,6 +1153,59 @@ function raiseLlmFailureCard(rt: Runtime, run: ActiveRun, err: unknown, stageId:
   armAutoExec(rt, options)
 }
 
+/** 模板完全没匹配上 → 确认卡片：★自定义生成 / 用最接近的模板（UX §4.3 规范） */
+function raiseTemplateConfirmCard(rt: Runtime, run: ActiveRun, match: MatchResult | null): void {
+  const title = '模板库里没有完全匹配的模板'
+  const description = '你的需求和模板库里的布局、组件都对不上。可以让我按你的需求从零自定义，也可以先用最接近的模板搭个底子。'
+  const options: CardOption[] = [
+    {
+      id: 'opt-custom-generate',
+      title: '自定义生成组件',
+      consequence: '我按你的描述从零设计，更贴合需求，但样式没有模板保底',
+      recommended: true,
+      recommendReason: '模板都对不上时，硬套模板反而四不像，自定义更贴合',
+      riskLevel: 'low',
+      autoExecuteAt: null
+    },
+    {
+      id: 'opt-use-nearest',
+      title: '用最接近的模板做',
+      consequence: '用「U 型环绕」布局和通用图表样式搭底子，后续再慢慢调',
+      recommended: false,
+      recommendReason: null,
+      riskLevel: 'low',
+      autoExecuteAt: null
+    }
+  ]
+  const msg: ProblemMessage = {
+    kind: 'problem',
+    id: nextId('m'),
+    createdAt: Date.now(),
+    title,
+    description: match?.unmatched.length ? `${description}（对不上的部分：${match.unmatched.join('、')}）` : description,
+    options,
+    chosenOptionId: null,
+    relatedIssueId: null
+  }
+  pushMessage(rt, msg)
+  setBlocker(rt, {
+    id: nextId('blk'),
+    type: 'clarification',
+    title: '需要你定一下做法',
+    description: '模板库里没有完全匹配的模板，选一个做法我就继续。',
+    options,
+    relatedMessageId: msg.id
+  })
+  setStatus(rt, 'blocked')
+  run.pending.awaiting = 'problem'
+  // 自由输入兜底 = 按自定义继续
+  run.retryLlm = () => {
+    if (run.pending.template) run.pending.template.useTemplate = false
+    void continueCreateToCoding(rt, run)
+  }
+  save(rt)
+}
+
 /** LLM 失败时把进行中的阶段停掉（不留永久转圈） */
 function finishStageQuiet(rt: Runtime, id: string): void {
   const st = rt.s.stages.find((x) => x.id === id)
@@ -853,15 +1255,22 @@ async function runCreate(rt: Runtime, run: ActiveRun): Promise<void> {
       : '好的，我来帮你做。先理解一下你的需求…'
   )
 
-  // 阶段 1：理解需求 / 分析参考图片（Planner LLM）
+  // 阶段 1：理解需求 / 分析参考图片（Planner LLM，20 分钟看门狗）
   let plan: PlanResult
+  run.retryLlm = () => void runCreate(rt, run) // 超时卡片的"让 AI 再试一次"也走这里
+  const wdPlan = armAgentWatchdog(rt, run, 'st-1', 'other')
+  const ctl = new AbortController()
+  run.abort = ctl
   try {
-    plan = await callPlanner(run.pending.text, run.pending.attachments, vision, llmProgress(rt, 'st-1', '正在分析需求'))
+    plan = await callPlanner(run.pending.text, run.pending.attachments, vision, llmProgress(rt, 'st-1', '正在分析需求'), ctl.signal)
   } catch (err) {
+    if (run.watchdogAborted === ctl) return // 看门狗已接管（超时卡片）
     raiseLlmFailureCard(rt, run, err, 'st-1')
-    run.retryLlm = () => void runCreate(rt, run)
     rt.running = false
     return
+  } finally {
+    if (run.abort === ctl) run.abort = null
+    disarmAgentWatchdog(rt, run, wdPlan)
   }
   finishStage(rt, 'st-1')
   pushAgent(rt, hasImage && vision ? `图片分析完了：${plan.analysis}` : `我理解了：${plan.analysis}`)
@@ -906,30 +1315,95 @@ async function runCreate(rt: Runtime, run: ActiveRun): Promise<void> {
   await continueCreateToCoding(rt, run)
 }
 
-/** 澄清之后（或无需澄清）：查找组件 → 编写页面 → 视觉检查 → 修复问题 → 生成预览 */
+/** 澄清之后（或无需澄清）：匹配模板 → 编写页面 → 视觉检查 → 修复问题 → 生成预览 */
 async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void> {
   rt.running = true
   setStatus(rt, 'generating')
   activateStage(rt, 'st-2')
-  setStageDetail(rt, 'st-2', '按需求挑选合适的图表和布局结构…')
-  await sleep(800) // 查找组件（演示期无组件库，短暂停顿保持节奏感）
-  finishStage(rt, 'st-2')
+
+  // 阶段 2：匹配模板（模板库存在且本轮还没匹配过时）
+  if (templatesRoot && !run.pending.template) {
+    setStageDetail(rt, 'st-2', `正在和模板库比对：${LAYOUTS.length} 种布局、${COMPONENTS.length} 类组件…`)
+    let match: MatchResult | null = null
+    run.retryLlm = () => void continueCreateToCoding(rt, run) // 超时卡片的"让 AI 再试一次"也走这里
+    const cap = await getCapability()
+    const vision = run.pending.attachments.length > 0 && cap.ok && cap.supportsVision
+    const wdMatch = armAgentWatchdog(rt, run, 'st-2', 'other')
+    const ctlMatch = new AbortController()
+    run.abort = ctlMatch
+    try {
+      match = await callTemplateMatch(
+        run.pending.text,
+        run.pending.attachments,
+        vision,
+        llmProgress(rt, 'st-2', '正在比对模板'),
+        ctlMatch.signal
+      )
+    } catch (err) {
+      if (run.watchdogAborted === ctlMatch) return // 看门狗已接管（超时卡片），不能再按"没匹配上"发卡
+      match = null // 匹配失败不阻塞：按全自定义继续
+    } finally {
+      if (run.abort === ctlMatch) run.abort = null
+      disarmAgentWatchdog(rt, run, wdMatch)
+    }
+
+    if (match && (match.layoutId !== null || match.componentIds.length > 0)) {
+      // 有命中（含部分命中）：继续，未覆盖部分自定义
+      run.pending.template = {
+        layoutId: match.layoutId ?? 'layoutU',
+        componentIds: match.componentIds,
+        useTemplate: true
+      }
+      const layoutName = LAYOUTS.find((l) => l.id === run.pending.template?.layoutId)?.name
+      const compNames = match.componentIds
+        .map((id) => COMPONENTS.find((c) => c.id === id)?.name)
+        .filter(Boolean)
+        .join('、')
+      pushAgent(
+        rt,
+        `模板匹配好了：布局用「${layoutName}」${compNames ? `，组件匹配到 ${compNames}` : ''}，这些都会照着模板库的标准样式来做，还原度更高。` +
+          (match.unmatched.length > 0 ? `另外「${match.unmatched.join('、')}」模板库里没有，这部分我按需求自定义。` : '')
+      )
+      finishStage(rt, 'st-2')
+    } else {
+      // 完全没匹配上：让用户确认是否自定义生成（UX：必选项 + 必推荐）
+      run.pending.template = { layoutId: null, componentIds: [], useTemplate: false }
+      finishStage(rt, 'st-2')
+      raiseTemplateConfirmCard(rt, run, match)
+      rt.running = false
+      return
+    }
+  } else {
+    // 无模板库（或用户已做过选择）：直接过
+    if (!run.pending.template) setStageDetail(rt, 'st-2', '按需求挑选合适的图表和布局结构…')
+    await sleep(600)
+    finishStage(rt, 'st-2')
+  }
 
   activateStage(rt, 'st-3')
   // 首次创建（没有任何旧版本）时：边生成边把部分 HTML 推到预览区，页面逐步长出来
   const livePreview = rt.s.versions.length === 0 ? makeLivePreview(rt) : null
   const progress = llmProgress(rt, 'st-3', '正在编写页面')
+  const capForVision = await getCapability()
+  const visionOk = capForVision.ok && capForVision.supportsVision
   let html: string
+  const wdCode = armAgentWatchdog(rt, run, 'st-3', 'coding', { check: 'st-4', repair: 'st-5', finish: 'st-6' })
+  const ctl = new AbortController()
+  run.abort = ctl
   try {
-    html = await callCoderCreate(run.pending.text, run.pending.answersSummary, (chars, partial) => {
+    html = await callCoderCreate(run.pending.text, run.pending.answersSummary, run.pending.template, visionOk, (chars, partial) => {
       progress(chars)
       livePreview?.(partial)
-    })
+    }, ctl.signal)
   } catch (err) {
+    if (run.watchdogAborted === ctl) return // 看门狗已接管（自动拆分步骤）
     raiseLlmFailureCard(rt, run, err, 'st-3')
     run.retryLlm = () => void continueCreateToCoding(rt, run)
     rt.running = false
     return
+  } finally {
+    if (run.abort === ctl) run.abort = null
+    disarmAgentWatchdog(rt, run, wdCode)
   }
   run.html = html
   finishStage(rt, 'st-3')
@@ -948,14 +1422,22 @@ async function checkRepairAndFinish(
   activateStage(rt, checkStageId)
   const fixStageId = repairStageId ?? checkStageId
 
-  // 视觉检查 = 确定性硬校验 + LLM 结构化布局审查（审查失败不阻塞，硬校验兜底）
+  // 视觉检查 = 确定性硬校验 + LLM 结构化布局审查（审查失败不阻塞，硬校验兜底；LLM 调用布防看门狗，卡死出超时卡片）
   setStageDetail(rt, checkStageId, '先做硬性规则检查：页面完整性、是否引用外部素材…')
   let hard = validateHtml(run.html)
   let review: ReviewIssue[] = []
+  run.retryLlm = () => void checkRepairAndFinish(rt, run, checkStageId, repairStageId, finishStageId)
+  const wdReview = armAgentWatchdog(rt, run, checkStageId, 'other')
+  const ctlReview = new AbortController()
+  run.abort = ctlReview
   try {
-    review = await callVisualReview(run.html, run.pending.text, llmProgress(rt, checkStageId, '正在审查布局'))
-  } catch {
+    review = await callVisualReview(run.html, run.pending.text, llmProgress(rt, checkStageId, '正在审查布局'), ctlReview.signal)
+  } catch (err) {
+    if (run.watchdogAborted === ctlReview) return // 看门狗已接管（超时卡片）
     review = []
+  } finally {
+    if (run.abort === ctlReview) run.abort = null
+    disarmAgentWatchdog(rt, run, wdReview)
   }
   let problems = [...hard, ...review.map((r) => r.title)]
   const details = new Map(review.map((r) => [r.title, r.detail]))
@@ -993,14 +1475,21 @@ async function checkRepairAndFinish(
     })
     firstPass = false
     run.pending.failCount += 1
+    run.retryLlm = () => void resumeRepair(rt, run, fixStageId, finishStageId)
+    const wdFix = armAgentWatchdog(rt, run, fixStageId, 'other')
+    const ctlFix = new AbortController()
+    run.abort = ctlFix
     try {
-      run.html = await callCoderRepair(run.html, problems, llmProgress(rt, fixStageId, '正在修复问题'))
+      run.html = await callCoderRepair(run.html, problems, llmProgress(rt, fixStageId, '正在修复问题'), ctlFix.signal)
     } catch (err) {
+      if (run.watchdogAborted === ctlFix) return // 看门狗已接管（超时卡片）
       issues.forEach((i) => setIssue(rt, { ...i, status: 'failed' }))
       raiseLlmFailureCard(rt, run, err, fixStageId)
-      run.retryLlm = () => void resumeRepair(rt, run, fixStageId, finishStageId)
       rt.running = false
       return
+    } finally {
+      if (run.abort === ctlFix) run.abort = null
+      disarmAgentWatchdog(rt, run, wdFix)
     }
     // 修复后复跑硬校验（结构化审查的结论无法程序复核，硬校验通过即视为修好）
     hard = validateHtml(run.html)
@@ -1044,14 +1533,21 @@ async function resumeRepair(rt: Runtime, run: ActiveRun, checkStageId: string, f
   if (issue) {
     const next: Issue = { ...issue, attempt: issue.attempt + 1, status: 'fixing', title: problems[0] }
     setIssue(rt, next)
+    run.retryLlm = () => void resumeRepair(rt, run, checkStageId, finishStageId)
+    const wdFix = armAgentWatchdog(rt, run, checkStageId, 'other')
+    const ctlFix = new AbortController()
+    run.abort = ctlFix
     try {
-      run.html = await callCoderRepair(run.html, problems, llmProgress(rt, checkStageId, '正在修复问题'))
+      run.html = await callCoderRepair(run.html, problems, llmProgress(rt, checkStageId, '正在修复问题'), ctlFix.signal)
     } catch (err) {
+      if (run.watchdogAborted === ctlFix) return // 看门狗已接管（超时卡片）
       setIssue(rt, { ...next, status: 'failed' })
       raiseLlmFailureCard(rt, run, err, checkStageId)
-      run.retryLlm = () => void resumeRepair(rt, run, checkStageId, finishStageId)
       rt.running = false
       return
+    } finally {
+      if (run.abort === ctlFix) run.abort = null
+      disarmAgentWatchdog(rt, run, wdFix)
     }
     problems = validateHtml(run.html)
     if (problems.length === 0) {
@@ -1114,6 +1610,8 @@ function commitVersion(rt: Runtime, run: ActiveRun): void {
 }
 
 function completeRun(rt: Runtime, run: ActiveRun): void {
+  disarmAgentWatchdog(rt, run)
+  run.abort = null
   rt.running = false
   rt.activeRun = null
   run.pending.awaiting = null
@@ -1187,13 +1685,21 @@ async function runEdit(rt: Runtime, run: ActiveRun): Promise<void> {
     return
   }
 
+  // before: ['st-2'] —— 拆分路径直接接力检查时，先把正常路径的「构建」阶段补打勾，不留永久 pending
+  const wdEdit = armAgentWatchdog(rt, run, 'st-1', 'coding', { check: 'st-3', repair: null, finish: 'st-3', before: ['st-2'] })
+  const ctl = new AbortController()
+  run.abort = ctl
   try {
-    run.html = await callCoderEdit(currentHtml, run.pending.text || '按用户发的参考图调整', llmProgress(rt, 'st-1', '正在修改页面'))
+    run.html = await callCoderEdit(currentHtml, run.pending.text || '按用户发的参考图调整', llmProgress(rt, 'st-1', '正在修改页面'), ctl.signal)
   } catch (err) {
+    if (run.watchdogAborted === ctl) return // 看门狗已接管（自动拆分步骤）
     raiseLlmFailureCard(rt, run, err, 'st-1')
     run.retryLlm = () => void runEdit(rt, run)
     rt.running = false
     return
+  } finally {
+    if (run.abort === ctl) run.abort = null
+    disarmAgentWatchdog(rt, run, wdEdit)
   }
   finishStage(rt, 'st-1')
   activateStage(rt, 'st-2')
@@ -1360,6 +1866,39 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
         drainQueue(rt)
       } else {
         setStatus(rt, 'idle')
+      }
+      break
+    }
+    case 'opt-custom-generate': {
+      if (run) {
+        if (run.pending.template) run.pending.template.useTemplate = false
+        run.pending.awaiting = null
+        void continueCreateToCoding(rt, run)
+      } else {
+        setStatus(rt, 'idle')
+        drainQueue(rt)
+      }
+      break
+    }
+    case 'opt-use-nearest': {
+      if (run) {
+        // 用最接近的模板：给默认布局打底
+        run.pending.template = { layoutId: 'layoutU', componentIds: [], useTemplate: true }
+        run.pending.awaiting = null
+        void continueCreateToCoding(rt, run)
+      } else {
+        setStatus(rt, 'idle')
+        drainQueue(rt)
+      }
+      break
+    }
+    case 'opt-split-redo': {
+      if (run) {
+        const stageId = run.watchdogStageId ?? (run.pending.kind === 'create' ? 'st-3' : 'st-1')
+        void splitCodingFlow(rt, run, stageId)
+      } else {
+        setStatus(rt, 'idle')
+        drainQueue(rt)
       }
       break
     }
@@ -1672,6 +2211,34 @@ export function setPreviewResolution(id: string, resolution: PreviewResolution):
   save(rt)
 }
 
+/* ---------- 封面上传 + 导出代码（契约「追加」一节） ---------- */
+
+const COVER_MAX_BYTES = 8 * 1024 * 1024
+
+export function uploadCover(id: string, image: unknown): void {
+  const rt = mustRuntime(id)
+  const m = /^data:image\/png;base64,([A-Za-z0-9+/=\r\n]+)$/.exec(typeof image === 'string' ? image : '')
+  if (!m) throw new HttpError(400, '封面图片格式不对：需要 PNG 图片的 dataURL（以 data:image/png;base64 开头）')
+  const buf = Buffer.from(m[1], 'base64')
+  if (buf.length === 0) throw new HttpError(400, '封面图片是空的，请重新截图后再上传')
+  if (buf.length > COVER_MAX_BYTES) throw new HttpError(400, '封面图片太大了：不能超过 8MB，请重新截图后再上传')
+  // PNG 魔数：89 50 4E 47
+  if (buf.length < 4 || buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47) {
+    throw new HttpError(400, '封面图片不是真正的 PNG 文件，请重新截图后再上传')
+  }
+  store.writeCover(id, buf)
+  updateDashboard(rt, { coverUrl: `/covers/${id}.png?t=${Date.now()}` })
+}
+
+export function exportVersion(id: string, versionId: string): { filename: string; html: string } {
+  const rt = mustRuntime(id)
+  const v = rt.s.versions.find((x) => x.id === versionId)
+  if (!v) throw new HttpError(404, `版本不存在：${versionId}`)
+  const html = store.readPreview(id, versionId)
+  if (html === null) throw new HttpError(404, '这个版本的页面文件找不到了，可能已被清理')
+  return { filename: `${rt.s.dashboard.name}-${v.label}.html`, html }
+}
+
 /* ============================== 初始数据（首次启动种入） ============================== */
 
 const CLIENT_PREVIEW_DIR = path.resolve(process.cwd(), '../client/public/preview')
@@ -1770,6 +2337,8 @@ function seedIfEmpty(): void {
 /* ============================== 启动 ============================== */
 
 export function boot(): void {
+  // 同步模板库（client/templates → data/templates；源缺失时模板匹配自动降级）
+  templatesRoot = syncTemplates(dirs.root)
   // 载入设置
   const s = store.loadSettings()
   if (s) cachedSettings = { ...DEFAULT_SETTINGS, ...s }

@@ -1,0 +1,264 @@
+<!-- source: layoutL.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>L 型布局骨架 - AI 大屏工作台</title>
+<style>
+  /* ===== 基础 ===== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: #040a18; /* 页面底色（取自截图） */
+    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+    overflow: hidden;
+  }
+  /* 1920×1080 逻辑分辨率画布，居中并按窗口缩放 */
+  .screen {
+    position: absolute; left: 50%; top: 50%;
+    width: 1920px; height: 1080px;
+    transform: translate(-50%, -50%);
+    transform-origin: center center;
+    background:
+      radial-gradient(1200px 520px at 50% -80px, rgba(38,110,230,.22), transparent 60%),
+      #050b1c;
+    display: flex; flex-direction: column;
+  }
+
+  /* ===== 顶部标题栏 ===== */
+  .top { position: relative; height: 92px; flex: none; }
+  .top svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .title {
+    position: absolute; left: 0; right: 0; top: 14px;
+    text-align: center; font-size: 38px; font-weight: 800; font-style: italic;
+    letter-spacing: 4px; color: #f2f8ff;
+    text-shadow: 0 0 6px #7fd0ff, 0 0 22px rgba(60,160,255,.9), 0 2px 2px rgba(0,40,120,.6);
+  }
+
+  /* ===== 内容区：24 列网格 ===== */
+  .content {
+    flex: 1; min-height: 0;
+    display: grid;
+    grid-template-columns: repeat(24, 1fr);
+    grid-template-rows: 776px 136px; /* L 型：上部大区 + 底部一行（最小高度占2/12行） */
+    gap: 24px;
+    padding: 4px 24px;
+  }
+  /* 各分区占位（可视化区 18/24，右列 6/24，底部四卡各 6/24） */
+  .c-c  { grid-column: 1 / span 18; grid-row: 1; }
+  .col-r {
+    grid-column: 19 / span 6; grid-row: 1;
+    display: grid; grid-template-rows: 376px 376px; gap: 24px; /* 右列上下两卡 */
+    min-height: 0;
+  }
+  .c-b1 { grid-column: 1 / span 6;  grid-row: 2; }
+  .c-b2 { grid-column: 7 / span 6;  grid-row: 2; }
+  .c-b3 { grid-column: 13 / span 6; grid-row: 2; }
+  .c-b4 { grid-column: 19 / span 6; grid-row: 2; }
+
+  /* ===== 卡片（信息图表区） ===== */
+  .card {
+    display: flex; flex-direction: column; min-height: 0;
+    background: linear-gradient(180deg, rgba(22,54,112,.5), rgba(9,22,52,.42));
+    border: 1px solid rgba(72,142,232,.26);
+    box-shadow: inset 0 0 24px rgba(20,70,160,.18);
+  }
+  /* 卡片标题栏：左侧竖条 + 斜体标题 + 底部发光亮线 */
+  .card-hd {
+    position: relative; flex: none; height: 44px;
+    display: flex; align-items: center; gap: 10px; padding-left: 14px;
+    background: linear-gradient(90deg, rgba(38,94,196,.55), rgba(20,48,104,.28) 55%, rgba(12,26,60,.05));
+  }
+  .card-hd .bar {
+    width: 3px; height: 16px; flex: none;
+    background: linear-gradient(180deg, #9fe8ff, #2f8fe8);
+    box-shadow: 0 0 6px rgba(90,200,255,.9);
+  }
+  .card-hd .t {
+    font-size: 20px; font-style: italic; font-weight: 700; letter-spacing: 1px;
+    color: #dceeff; text-shadow: 0 0 10px rgba(90,190,255,.85);
+  }
+  .card-hd::after { /* 标题栏底部青色发光线（左亮右淡） */
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+    background: linear-gradient(90deg, rgba(0,220,255,0), #3fc9ff 14%, #a5ecff 26%, rgba(63,201,255,.25) 62%, transparent);
+    box-shadow: 0 0 8px rgba(70,200,255,.8);
+  }
+  .card-hd::before { /* 标题文字下方的辉光斑 */
+    content: ""; position: absolute; left: 18px; bottom: -6px; width: 150px; height: 12px;
+    background: radial-gradient(closest-side, rgba(120,220,255,.55), transparent);
+    pointer-events: none;
+  }
+  .card-bd {
+    position: relative; flex: 1; min-height: 0;
+    background-image: radial-gradient(rgba(130,185,255,.05) 1px, transparent 1.5px);
+    background-size: 26px 26px; /* 细密点阵纹理 */
+  }
+  /* ===== 主题可视化区（占位，带虚线选中框） ===== */
+  .viz {
+    position: relative; display: flex; align-items: center; justify-content: center; text-align: center;
+    background: linear-gradient(180deg, rgba(28,68,138,.42), rgba(12,28,64,.4));
+    border: 1px solid rgba(72,142,232,.22);
+    box-shadow: inset 0 0 60px rgba(25,80,180,.15);
+    outline: 2px dashed rgba(255,255,255,.45); /* 截图中的虚线选框 */
+    outline-offset: 2px;
+  }
+  .viz .big { font-size: 34px; font-weight: 800; color: #eef6ff; text-shadow: 0 0 14px rgba(90,180,255,.5); }
+  .viz .mid { font-size: 22px; color: #d6e9ff; margin-top: 16px; }
+  .viz .sub { font-size: 20px; color: #bcd6f5; margin-top: 10px; }
+
+  /* ===== 规格说明占位块（灰底白字 + 绿色尺寸标注） ===== */
+  .info-ph {
+    position: absolute; left: 24px; right: 24px; top: 8px; height: calc(100% - 40px);
+    background: rgba(150,165,190,.22); border: 1px solid rgba(190,205,225,.25);
+    display: flex; align-items: center; justify-content: center; text-align: center;
+  }
+  .info-ph .l1 { font-size: 28px; font-weight: 800; color: #f4f8ff; }
+  .info-ph .l2, .info-ph .l3, .info-ph .l4 { font-size: 20px; color: #e6eefb; margin-top: 12px; }
+  .tag { /* 绿色尺寸标签 */
+    position: absolute; z-index: 2;
+    background: #2fbf71; color: #04331a; font-size: 12px; font-weight: 700;
+    padding: 1px 7px; border-radius: 2px; line-height: 18px;
+  }
+  .tag::after { content: ""; position: absolute; background: #2fbf71; }
+  .tag-x { top: -22px; left: 56px; }
+  .tag-x::after { left: 50%; top: 100%; width: 1px; height: 8px; }
+  .tag-y { top: 14px; left: -34px; }
+  .tag-y::after { left: 100%; top: 50%; width: 10px; height: 1px; }
+
+  /* ===== 底部行高说明文字 ===== */
+  .note-min {
+    position: absolute; left: 18px; bottom: 14px;
+    font-size: 24px; font-weight: 800; color: #f0f7ff;
+  }
+
+  /* ===== 底部装饰 ===== */
+  .bottom { position: relative; height: 44px; flex: none; }
+  .bottom svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div class="screen">
+
+  <!-- 顶部标题栏：inline SVG 折角科技边框 + 发光标题 -->
+  <header class="top">
+    <svg viewBox="0 0 1920 92" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="hg-line" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#16407f" stop-opacity="0"/>
+          <stop offset=".3" stop-color="#2f7ede"/>
+          <stop offset=".5" stop-color="#8fe0ff"/>
+          <stop offset=".7" stop-color="#2f7ede"/>
+          <stop offset="1" stop-color="#16407f" stop-opacity="0"/>
+        </linearGradient>
+        <radialGradient id="hg-glow" cx=".5" cy=".5" r=".5">
+          <stop offset="0" stop-color="#3fa4ff" stop-opacity=".55"/>
+          <stop offset="1" stop-color="#3fa4ff" stop-opacity="0"/>
+        </radialGradient>
+        <filter id="hg-f" x="-20%" y="-60%" width="140%" height="220%">
+          <feGaussianBlur stdDeviation="2.5" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <ellipse cx="960" cy="40" rx="460" ry="46" fill="url(#hg-glow)"/>
+      <path d="M0 12 H520 L612 70 H1308 L1400 12 H1920" fill="none" stroke="#1c5cb6" stroke-width="1.2" opacity=".65"/>
+      <path d="M0 26 H560 L646 84 H1274 L1360 26 H1920" fill="none" stroke="url(#hg-line)" stroke-width="2.5" filter="url(#hg-f)"/>
+      <path d="M700 92 L762 34 H1158 L1220 92 Z" fill="rgba(30,84,190,.32)" stroke="#6fd2ff" stroke-width="2" filter="url(#hg-f)"/>
+      <path d="M716 92 L772 42 H1148 L1204 92" fill="none" stroke="#2f86e0" stroke-width="1" opacity=".8"/>
+      <path d="M676 92 l12 -16 h10 l-8 16 z" fill="#3fc9ff" opacity=".85"/>
+      <path d="M1244 92 l-12 -16 h-10 l8 16 z" fill="#3fc9ff" opacity=".85"/>
+    </svg>
+    <h1 class="title">这里是标题最长十三个中文字</h1>
+  </header>
+
+  <!-- 内容区：L 型分区骨架 -->
+  <main class="content">
+    <!-- 左侧主题可视化区（虚线选中框） -->
+    <section class="viz c-c">
+      <div>
+        <div class="big">主题可视化区</div>
+        <div class="mid">占12/24列</div>
+        <div class="sub">一般放置地图或设备可视化</div>
+      </div>
+    </section>
+    <!-- 右列两张卡片 -->
+    <div class="col-r">
+      <!-- 右上卡片：含规格说明占位块 -->
+      <section class="card">
+        <header class="card-hd"><i class="bar"></i><span class="t">标题20px</span></header>
+        <div class="card-bd">
+          <div class="info-ph">
+            <span class="tag tag-x">8px</span>
+            <span class="tag tag-y">24px</span>
+            <div>
+              <div class="l1">信息图表区</div>
+              <div class="l2">占6/24列</div>
+              <div class="l3">水槽24px，边距24px</div>
+              <div class="l4">内容区与卡片左右24px，上下8px</div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- 右下卡片 -->
+      <section class="card">
+        <header class="card-hd"><i class="bar"></i><span class="t">标题20px</span></header>
+        <div class="card-bd"></div>
+      </section>
+    </div>
+    <!-- 底部四张卡片 -->
+    <section class="card c-b1">
+      <header class="card-hd"><i class="bar"></i><span class="t">标题20px</span></header>
+      <div class="card-bd">
+        <span class="note-min">最小高度占2/12行</span>
+      </div>
+    </section>
+    <section class="card c-b2">
+      <header class="card-hd"><i class="bar"></i><span class="t">标题20px</span></header>
+      <div class="card-bd"></div>
+    </section>
+    <section class="card c-b3">
+      <header class="card-hd"><i class="bar"></i><span class="t">标题20px</span></header>
+      <div class="card-bd"></div>
+    </section>
+    <section class="card c-b4">
+      <header class="card-hd"><i class="bar"></i><span class="t">标题20px</span></header>
+      <div class="card-bd"></div>
+    </section>
+  </main>
+
+  <!-- 底部折角装饰线 -->
+  <footer class="bottom">
+    <svg viewBox="0 0 1920 44" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="bt-line" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#16407f" stop-opacity="0"/>
+          <stop offset=".35" stop-color="#2f7ede"/>
+          <stop offset=".5" stop-color="#8fe0ff"/>
+          <stop offset=".65" stop-color="#2f7ede"/>
+          <stop offset="1" stop-color="#16407f" stop-opacity="0"/>
+        </linearGradient>
+        <filter id="bt-f" x="-20%" y="-60%" width="140%" height="220%">
+          <feGaussianBlur stdDeviation="2" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <path d="M560 42 L648 16 H1272 L1360 42" fill="none" stroke="#1c5cb6" stroke-width="1" opacity=".5"/>
+      <path d="M520 42 L616 10 H1304 L1400 42" fill="none" stroke="url(#bt-line)" stroke-width="1.6" filter="url(#bt-f)" opacity=".85"/>
+      <path d="M900 10 h120" stroke="#6fd2ff" stroke-width="2" filter="url(#bt-f)"/>
+    </svg>
+  </footer>
+</div>
+
+<script>
+  /* 按窗口大小等比缩放 1920×1080 画布 */
+  (function () {
+    var screen = document.querySelector('.screen');
+    function fit() {
+      var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+      screen.style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    window.addEventListener('resize', fit);
+    fit();
+  })();
+</script>
+</body>
+</html>

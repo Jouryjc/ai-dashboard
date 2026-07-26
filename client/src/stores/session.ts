@@ -30,6 +30,36 @@ import {
   type Version
 } from '../types'
 
+/** 已上传过封面的版本 ID（每个版本最多传一次，模块级，跨会话记忆） */
+const coverUploadedVersions = new Set<string>()
+
+/**
+ * 封面自动更新（契约「追加」节）：
+ * 仅 http 模式（VITE_API_BASE 存在）且 Electron 有 captureUrl 能力时，
+ * previewReady 后延迟 ~1s 离屏截取预览 1920×1080 → uploadCover。
+ * fire-and-forget，失败静默；浏览器 dev 模式直接跳过。
+ */
+function maybeUploadCover(dashboardId: string, versionId: string, previewUrl: string): void {
+  if (!import.meta.env.VITE_API_BASE) return
+  const capture = window.electronApp?.captureUrl
+  if (typeof capture !== 'function') return
+  if (coverUploadedVersions.has(versionId)) return
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const dataUrl = await capture(previewUrl)
+        // 成功上传后才记入"已传"：截图失败（超时/服务没起）允许下一次 previewReady 重试
+        if (dataUrl) {
+          await api.uploadCover(dashboardId, dataUrl)
+          coverUploadedVersions.add(versionId)
+        }
+      } catch {
+        /* 静默失败：封面没更新不影响主流程 */
+      }
+    })()
+  }, 1000)
+}
+
 export const useSessionStore = defineStore('session', () => {
   /* ---------- state ---------- */
   /** 当前打开的大屏 ID（未打开 = null） */
@@ -142,6 +172,8 @@ export const useSessionStore = defineStore('session', () => {
         previewUrl.value = p.url
         previewBuildingLive.value = false
         viewingVersionId.value = null
+        // 封面自动更新：http + Electron 时才真正执行，否则静默跳过
+        maybeUploadCover(p.dashboardId, p.versionId, p.url)
       }),
       // 首次创建中：部分 HTML 实时预览（页面在预览区逐步长出来）
       api.on('previewBuilding', (p) => {

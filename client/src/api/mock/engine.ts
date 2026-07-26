@@ -401,6 +401,15 @@ export function createMockClient(): ClientApi {
       // 仅影响预览缩放，store 本地处理即可，mock 无需动作
     },
 
+    // ---- 封面 / 导出 ----
+    async uploadCover(_dashboardId: string, _imageDataUrl: string): Promise<void> {
+      // mock 模式封面仍用关键字示例图，上传为空操作
+    },
+    exportVersionUrl(dashboardId: string, versionId: string): string {
+      // mock 没有真实的导出文件，返回该版本的预览地址（导出 = 下载预览页）
+      return getRuntime(dashboardId).state.versionUrls.get(versionId) ?? ''
+    },
+
     // ---- 发布 ----
     async publish(dashboardId: string): Promise<void> {
       const rt = getRuntime(dashboardId)

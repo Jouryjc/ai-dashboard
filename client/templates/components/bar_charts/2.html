@@ -1,0 +1,318 @@
+<!-- source: 2.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>横向条形图组件</title>
+<style>
+  /* ===== 深色大屏基础样式 ===== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #131a2c; /* 页面底色，取自截图 */
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+  /* 三个变体横向排布，总宽按原图 2172px */
+  .stage {
+    width: 2172px;
+    height: 434px;
+    display: flex;
+    gap: 40px;
+    padding: 12px 16px;
+  }
+  .panel { display: flex; flex-direction: column; }
+  .panel.chart { flex: 0 0 640px; }
+  .panel.rank  { flex: 1; }
+  .panel svg { flex: 1; width: 100%; display: block; }
+
+  /* 图例 */
+  .legend {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    padding: 6px 12px 2px;
+  }
+  .legend .item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #9aa3b8;
+    font-size: 13px;
+  }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 2px; }
+
+  /* ===== 变体三：城市分段排行 ===== */
+  .rank { padding: 6px 8px; }
+  .rank .legend { justify-content: flex-end; padding: 0 4px 10px; }
+  .city-row {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 56px 1fr auto;
+    grid-template-rows: auto 1fr;
+    column-gap: 10px;
+    align-items: center;
+    padding: 6px 4px;
+  }
+  .city-icon { grid-row: 1 / 3; width: 52px; height: 52px; }
+  .city-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-bottom: 8px;
+  }
+  .city-name { color: #e8ecf5; font-size: 17px; }
+  .city-nums { display: flex; align-items: baseline; gap: 8px; font-size: 18px; font-weight: bold; }
+  .city-nums .sep { color: #4a5268; font-weight: normal; }
+  .city-bar {
+    position: relative;
+    height: 10px;
+    border-radius: 5px;
+    background: #1c2338; /* 槽底色 */
+    overflow: hidden;
+  }
+  .city-bar .seg {
+    position: absolute;
+    top: 0;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <!-- 变体一：单系列横向条形图 -->
+  <div class="panel chart">
+    <svg id="hbar1" viewBox="0 0 640 372" preserveAspectRatio="none"></svg>
+    <div class="legend" id="legend1"></div>
+  </div>
+  <!-- 变体二：四系列横向堆叠条形图 -->
+  <div class="panel chart">
+    <svg id="hbar2" viewBox="0 0 640 372" preserveAspectRatio="none"></svg>
+    <div class="legend" id="legend2"></div>
+  </div>
+  <!-- 变体三：城市分段排行条 -->
+  <div class="panel rank">
+    <div class="legend" id="legend3"></div>
+    <div id="cityList" style="flex:1; display:flex; flex-direction:column;"></div>
+  </div>
+</div>
+
+<script>
+/* ================= 样式与数据常量（参数化配置区） ================= */
+const THEME = {
+  axisText: '#7f879b',
+  labelText:'#c6cddb',  // 「数据标题」文字
+  gridLine: '#252b40',
+  track:    '#1c2338',  // 条形槽底色
+};
+
+/* 各系列横向渐变（左 → 右） */
+const SERIES_COLORS = {
+  blue:  ['#1e5ae0', '#4a9dff'],
+  cyan:  ['#1496b8', '#2fd4e8'],
+  green: ['#15a37a', '#3fe3b0'],
+  gray:  ['#5a6175', '#9aa1b5'],
+  red:   ['#c0392f', '#f0655a'],
+};
+
+const X_MAX   = 120;
+const X_TICKS = [0, 20, 40, 60, 80, 100, 120];
+const ROW_LABELS = ['数据标题','数据标题','数据标题','数据标题','数据标题'];
+
+/* 变体一：单系列 */
+const DATA_SINGLE = [25, 73, 120, 73, 120];
+
+/* 变体二：四系列堆叠（蓝/青/绿/灰） */
+const DATA_STACK = [
+  [20, 18, 10,  8],
+  [10, 15, 28, 25],
+  [48, 35, 25, 12],
+  [10, 15, 28, 25],
+  [48, 35, 25, 12],
+];
+const STACK_ORDER = ['blue', 'cyan', 'green', 'gray'];
+
+/* 变体三：城市数据（数值照抄截图，条宽占比为估计值） */
+const CITIES = [
+  { name: '杭州市', nums: [18, 14, 2, 2], width: 96, segs: [41, 28, 19, 12] },
+  { name: '丽水市', nums: [18, 14, 2, 2], width: 63, segs: [15, 20, 26, 39] },
+  { name: '嘉兴市', nums: [18, 14, 2, 2], width: 61, segs: [15, 20, 26, 39] },
+  { name: '宁波市', nums: [18, 14, 2, 2], width: 39, segs: [39, 32, 18, 11] },
+];
+const CITY_SEG_KEYS = ['blue', 'cyan', 'red', 'gray'];
+const CITY_NUM_COLORS = ['#4a9dff', '#2fd4e8', '#f0655a', '#9aa1b5'];
+
+/* ================= SVG 工具函数 ================= */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function text(parent, x, y, str, attrs) {
+  const t = el('text', Object.assign({ x, y, 'font-size': 12, fill: THEME.axisText }, attrs || {}), parent);
+  t.textContent = str;
+  return t;
+}
+/* 定义横向渐变 */
+function defineGradients(svg, keys) {
+  const defs = el('defs', {}, svg);
+  keys.forEach(k => {
+    const g = el('linearGradient', { id: 'hg-' + k + '-' + svg.id, x1: 0, y1: 0, x2: 1, y2: 0 }, defs);
+    el('stop', { offset: '0%',  'stop-color': SERIES_COLORS[k][0] }, g);
+    el('stop', { offset: '100%', 'stop-color': SERIES_COLORS[k][1] }, g);
+  });
+  return defs;
+}
+
+/* 绘制横向条形图坐标轴，返回换算函数 */
+function drawAxes(svg) {
+  const W = 640, H = 372;
+  const pad = { l: 78, r: 16, t: 18, b: 30 };
+  const plotW = W - pad.l - pad.r;
+  const plotH = H - pad.t - pad.b;
+  const xOf = v => pad.l + (v / X_MAX) * plotW;
+
+  X_TICKS.forEach(v => {
+    const x = xOf(v);
+    text(svg, x, H - 8, v, { 'text-anchor': 'middle' });
+    el('line', { x1: x, y1: pad.t, x2: x, y2: pad.t + plotH, stroke: THEME.gridLine, 'stroke-width': 1 }, svg);
+  });
+
+  const rowH = plotH / ROW_LABELS.length;
+  const yOf = i => pad.t + rowH * (i + 0.5); // 第 i 行中心 y
+  ROW_LABELS.forEach((s, i) => {
+    text(svg, pad.l - 12, yOf(i) + 4, s, { 'text-anchor': 'end', 'font-size': 14, fill: THEME.labelText });
+  });
+  return { xOf, yOf, rowH, plotW, pad };
+}
+
+/* ================= 变体一：单系列 ================= */
+(function renderSingle() {
+  const svg = document.getElementById('hbar1');
+  defineGradients(svg, ['blue']);
+  const { xOf, yOf, plotW, pad } = drawAxes(svg);
+  const BH = 14;
+
+  DATA_SINGLE.forEach((v, i) => {
+    const y = yOf(i) - BH / 2;
+    // 原图变体一无槽底，仅数据条
+    el('rect', { x: pad.l, y, width: xOf(v) - pad.l, height: BH, rx: BH / 2, fill: `url(#hg-blue-${svg.id})` }, svg);
+  });
+})();
+
+/* ================= 变体二：堆叠 ================= */
+(function renderStack() {
+  const svg = document.getElementById('hbar2');
+  const defs = defineGradients(svg, STACK_ORDER);
+  const { xOf, yOf, plotW, pad } = drawAxes(svg);
+  const BH = 14;
+
+  DATA_STACK.forEach((row, i) => {
+    const y = yOf(i) - BH / 2;
+    el('rect', { x: pad.l, y, width: plotW, height: BH, rx: BH / 2, fill: THEME.track }, svg);
+
+    // 用圆角矩形裁剪，保证堆叠两端圆润
+    const total = row.reduce((a, b) => a + b, 0);
+    const clip = el('clipPath', { id: 'clip-row-' + i }, defs);
+    el('rect', { x: pad.l, y, width: xOf(total) - pad.l, height: BH, rx: BH / 2 }, clip);
+
+    const g = el('g', { 'clip-path': `url(#clip-row-${i})` }, svg);
+    let acc = 0;
+    row.forEach((v, s) => {
+      const x0 = xOf(acc), x1 = xOf(acc + v);
+      el('rect', { x: x0, y, width: x1 - x0, height: BH, fill: `url(#hg-${STACK_ORDER[s]}-${svg.id})` }, g);
+      acc += v;
+    });
+  });
+})();
+
+/* ================= 变体三：城市分段排行 ================= */
+/* 宝石/数据库风格图标（inline SVG 手绘） */
+function gemIcon() {
+  return `
+  <svg class="city-icon" viewBox="0 0 52 52">
+    <defs>
+      <linearGradient id="gem-top" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#6fb5ff"/><stop offset="100%" stop-color="#2f7ef0"/>
+      </linearGradient>
+      <linearGradient id="gem-side" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#2f6fd8"/><stop offset="100%" stop-color="#1a3f8f"/>
+      </linearGradient>
+      <linearGradient id="gem-side2" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#2458b8"/><stop offset="100%" stop-color="#142f6e"/>
+      </linearGradient>
+    </defs>
+    <!-- 三层叠放的菱形台体 -->
+    <g>
+      <polygon points="26,4  44,13 26,22 8,13"  fill="url(#gem-top)"/>
+      <polygon points="8,13  26,22 26,30 8,21"  fill="url(#gem-side)"/>
+      <polygon points="44,13 26,22 26,30 44,21" fill="url(#gem-side2)"/>
+      <polygon points="8,23  26,32 26,40 8,31"  fill="url(#gem-side)"/>
+      <polygon points="44,23 26,32 26,40 44,31" fill="url(#gem-side2)"/>
+      <polygon points="8,33  26,42 26,50 8,41"  fill="url(#gem-side)"/>
+      <polygon points="44,33 26,42 26,50 44,41" fill="url(#gem-side2)"/>
+      <!-- 顶部十字高亮 -->
+      <polygon points="26,8 28.5,11.5 33,13 28.5,14.5 26,18 23.5,14.5 19,13 23.5,11.5" fill="#eaf4ff" opacity="0.95"/>
+    </g>
+  </svg>`;
+}
+
+(function renderCities() {
+  const list = document.getElementById('cityList');
+  CITIES.forEach(c => {
+    const row = document.createElement('div');
+    row.className = 'city-row';
+    row.innerHTML = `
+      ${gemIcon()}
+      <div class="city-head">
+        <span class="city-name">${c.name}</span>
+        <span class="city-nums">
+          ${c.nums.map((n, i) =>
+            `<span style="color:${CITY_NUM_COLORS[i]}">${n}</span>` +
+            (i < c.nums.length - 1 ? '<span class="sep">|</span>' : '')
+          ).join('')}
+        </span>
+      </div>
+      <div class="city-bar"></div>`;
+    const barBox = row.querySelector('.city-bar');
+    // 分段渲染：每段绝对定位，段间留 2px 缝隙
+    let acc = 0;
+    c.segs.forEach((p, i) => {
+      const seg = document.createElement('i');
+      seg.className = 'seg';
+      const left = acc * c.width / 100;
+      const w = p * c.width / 100;
+      seg.style.left = left + '%';
+      seg.style.width = `calc(${w}% - 2px)`;
+      seg.style.borderRadius = '5px';
+      seg.style.background = `linear-gradient(90deg, ${SERIES_COLORS[CITY_SEG_KEYS[i]][0]}, ${SERIES_COLORS[CITY_SEG_KEYS[i]][1]})`;
+      barBox.appendChild(seg);
+      acc += p;
+    });
+    list.appendChild(row);
+  });
+})();
+
+/* ================= 图例渲染 ================= */
+function renderLegend(id, keys) {
+  const box = document.getElementById(id);
+  keys.forEach(k => {
+    const item = document.createElement('span');
+    item.className = 'item';
+    const sw = document.createElement('i');
+    sw.className = 'swatch';
+    sw.style.background = `linear-gradient(90deg, ${SERIES_COLORS[k][0]}, ${SERIES_COLORS[k][1]})`;
+    item.appendChild(sw);
+    item.appendChild(document.createTextNode('图例')); // 截图原文
+    box.appendChild(item);
+  });
+}
+renderLegend('legend1', ['blue']);
+renderLegend('legend2', STACK_ORDER);
+renderLegend('legend3', CITY_SEG_KEYS);
+</script>
+</body>
+</html>

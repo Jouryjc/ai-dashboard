@@ -143,7 +143,9 @@ async function main() {
   const tsxBin = path.join(SERVER_DIR, 'node_modules', '.bin', 'tsx')
   startProc('server', tsxBin, [path.join(SERVER_DIR, 'src/index.ts')], {
     PORT: String(serverPort),
-    DATA_DIR
+    DATA_DIR,
+    // 冒烟里把 20 分钟看门狗压到 3 秒，用于演练"超时 → 拆分步骤"
+    AGENT_STEP_MAX_MS: '3000'
   })
 
   await waitFor(async () => (await fetch(`${BASE}/healthz`).catch(() => null))?.ok, 30_000, '服务端启动')
@@ -207,6 +209,13 @@ async function main() {
   const buildingHtml = await (await fetch(`${BASE}${buildingEvt.data.url}`)).text()
   if (buildingHtml.length < 500) fail('实时预览页有实际内容', `仅 ${buildingHtml.length} 字节`)
   ok('实时预览页可访问且有内容', `${buildingHtml.length} 字节`)
+  const matchMsg = await sse.waitFor(
+    'message',
+    (e) => e.data?.message?.kind === 'agent' && /模板匹配好了/.test(e.data?.message?.text ?? ''),
+    90_000,
+    '模板匹配结果'
+  )
+  ok('模板匹配环节 → 命中消息', matchMsg.data.message.text.slice(0, 50) + '…')
   const ready = await sse.waitFor('previewReady', null, 90_000, 'previewReady(v1)')
   ok('回答澄清 → previewReady', ready.data.url)
   const vAdded = sse.events.find((e) => e.event === 'versionAdded')
@@ -246,7 +255,7 @@ async function main() {
 
   // 8.5 阶段时间线：新建流程必须是 6 步，含「视觉检查」「修复问题」
   const titles = [...new Set(sse.events.filter((e) => e.event === 'stage').map((e) => e.data?.stage?.title).filter(Boolean))]
-  for (const t of ['视觉检查', '修复问题']) {
+  for (const t of ['匹配模板', '视觉检查', '修复问题']) {
     if (!titles.includes(t)) fail(`阶段时间线含「${t}」`, `实际阶段：${titles.join(' → ')}`)
   }
   ok('阶段时间线含「视觉检查」「修复问题」', titles.join(' → '))
@@ -272,6 +281,90 @@ async function main() {
   if (!repairStage) fail('「修复问题」阶段完成')
   ok('「修复问题」阶段走完 → previewReady')
   sse2.close()
+
+  // 8.7 超时拆分：慢编码触发 20 分钟看门狗（冒烟压到 3s）→ 自动拆分步骤（骨架 → 面板）→ previewReady
+  const dash3 = (await api('POST', '/dashboards', { name: '拆分演示大屏' })).json
+  const sse3 = openSse(dash3.id)
+  await api('POST', `/dashboards/${dash3.id}/messages`, { text: 'SLOWCODER 做一个监控大屏' })
+  const clar3 = await sse3.waitFor('message', (e) => e.data?.message?.kind === 'clarification', 60_000, '大屏3 澄清卡片')
+  await api('POST', `/dashboards/${dash3.id}/messages/${clar3.data.message.id}/answers`, {
+    answers: clar3.data.message.questions.map((q) => ({
+      questionId: q.id,
+      optionId: q.options.find((o) => o.recommended).id,
+      customText: ''
+    }))
+  })
+  const splitMsg = await sse3.waitFor(
+    'message',
+    (e) => e.data?.message?.kind === 'agent' && /拆成几步/.test(e.data?.message?.text ?? ''),
+    60_000,
+    '超时拆分提示'
+  )
+  ok('编码超时 → 自动拆分步骤', splitMsg.data.message.text)
+  await sse3.waitFor('previewReady', null, 90_000, '大屏3 previewReady')
+  const splitReadyUrl = sse3.events.find((e) => e.event === 'previewReady').data.url
+  const splitHtml = await (await fetch(`${BASE}${splitReadyUrl}`)).text()
+  if (!/核心指标|趋势图表/.test(splitHtml)) fail('拆分生成的页面包含面板内容', `仅 ${splitHtml.length} 字节`)
+  ok('拆分步骤完成（骨架+面板拼装）→ previewReady', `${splitHtml.length} 字节`)
+  sse3.close()
+
+  // 8.8 模板匹配不上 → 确认卡片（★自定义生成）→ 选择后继续 → previewReady
+  const dash4 = (await api('POST', '/dashboards', { name: '自定义演示大屏' })).json
+  const sse4 = openSse(dash4.id)
+  await api('POST', `/dashboards/${dash4.id}/messages`, { text: '完全自定义需求：做一个 3D 地球主视觉的大屏' })
+  const clar4 = await sse4.waitFor('message', (e) => e.data?.message?.kind === 'clarification', 60_000, '大屏4 澄清卡片')
+  await api('POST', `/dashboards/${dash4.id}/messages/${clar4.data.message.id}/answers`, {
+    answers: clar4.data.message.questions.map((q) => ({
+      questionId: q.id,
+      optionId: q.options.find((o) => o.recommended).id,
+      customText: ''
+    }))
+  })
+  const confirmCard = await sse4.waitFor(
+    'message',
+    (e) => e.data?.message?.kind === 'problem' && e.data?.message?.options?.some((o) => o.id === 'opt-custom-generate'),
+    90_000,
+    '模板无匹配确认卡片'
+  )
+  const rec = confirmCard.data.message.options.filter((o) => o.recommended)
+  if (rec.length !== 1 || rec[0].id !== 'opt-custom-generate') fail('★推荐恰为「自定义生成组件」', JSON.stringify(rec))
+  ok('模板匹配不上 → 确认卡片（★自定义生成）', confirmCard.data.message.title)
+  await api('POST', `/dashboards/${dash4.id}/options/opt-custom-generate`)
+  await sse4.waitFor('previewReady', null, 90_000, '大屏4 previewReady')
+  ok('选「自定义生成组件」→ 流程继续 → previewReady')
+  sse4.close()
+
+  // 8.9 封面上传：合法 1×1 PNG → 204 → coverUrl 带时间戳 → 可访问且是 PNG；垃圾数据 → 400
+  const coverRes = await api('POST', `/dashboards/${dash.id}/cover`, { image: PIXEL })
+  if (coverRes.status !== 204) fail('POST /cover 返回 204', `HTTP ${coverRes.status}: ${JSON.stringify(coverRes.json)}`)
+  ok('上传 1×1 PNG 封面 → 204')
+  const dashAfterCover = (await api('GET', '/dashboards')).json.find((d) => d.id === dash.id)
+  const coverUrl = dashAfterCover?.coverUrl ?? ''
+  if (!new RegExp(`^/covers/${dash.id}\\.png\\?t=\\d+$`).test(coverUrl)) fail('coverUrl 变为 /covers/<id>.png?t=...', coverUrl)
+  ok('GET /dashboards 里 coverUrl 已更新', coverUrl)
+  const coverFetch = await fetch(`${BASE}${coverUrl}`)
+  const coverBuf = Buffer.from(await coverFetch.arrayBuffer())
+  if (coverFetch.status !== 200 || coverBuf[0] !== 0x89 || coverBuf[1] !== 0x50 || coverBuf[2] !== 0x4e || coverBuf[3] !== 0x47) {
+    fail('GET coverUrl → 200 且是 PNG', `HTTP ${coverFetch.status}`)
+  }
+  ok('GET coverUrl → 200 且是 PNG', `${coverBuf.length} 字节`)
+  const badCover = await api('POST', `/dashboards/${dash.id}/cover`, { image: 'data:image/png;base64,aGVsbG8gd29ybGQ=' })
+  if (badCover.status !== 400) fail('垃圾封面 → 400', `HTTP ${badCover.status}`)
+  ok('上传垃圾数据 → 400（大白话报错）', badCover.json?.error)
+
+  // 8.10 导出代码：export → 200 + filename* + 内容与预览一致；不存在的版本 → 404
+  const exportRes = await fetch(`${BASE}/api/v1/dashboards/${dash.id}/versions/${v1.id}/export`)
+  const exportHtml = await exportRes.text()
+  if (exportRes.status !== 200) fail('GET export → 200', `HTTP ${exportRes.status}`)
+  if (!(exportRes.headers.get('content-type') ?? '').includes('text/html')) fail('export Content-Type 是 text/html', exportRes.headers.get('content-type'))
+  const cd = exportRes.headers.get('content-disposition') ?? ''
+  if (!cd.includes("filename*=UTF-8''")) fail('Content-Disposition 含 filename*', cd)
+  const expectHtml = await (await fetch(`${BASE}/preview/${dash.id}/${v1.id}/index.html`)).text()
+  if (exportHtml !== expectHtml) fail('导出内容与预览 HTML 一致', `导出 ${exportHtml.length} 字节 / 预览 ${expectHtml.length} 字节`)
+  ok('GET export → 200，Content-Disposition 含 filename*，内容与预览一致', cd)
+  const export404 = await api('GET', `/dashboards/${dash.id}/versions/ver-not-exist/export`)
+  if (export404.status !== 404) fail('导出不存在的版本 → 404', `HTTP ${export404.status}`)
+  ok('导出不存在的版本 → 404')
 
   // 9. Last-Event-ID 补发抽查
   const replay = openSse(dash.id, { 'Last-Event-ID': '1' })

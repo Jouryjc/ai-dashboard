@@ -1,0 +1,394 @@
+<!-- source: 1.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>组合型指标组件</title>
+<style>
+  /* ===== 基础 ===== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #151a2c;            /* 截图底色：深蓝黑 */
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    color: #e6e9f2;
+    padding: 24px;
+  }
+  .stage { width: 1470px; margin: 0 auto; }
+
+  /* 通用布局行 */
+  .row { display: flex; gap: 120px; margin-bottom: 120px; }
+  .row:last-child { margin-bottom: 0; }
+  .col { display: flex; flex-direction: column; }
+
+  /* ===== 变体一：横向进度条 ===== */
+  .bar-group { gap: 56px; }
+  .bar-item { width: 600px; }
+  .bar-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 10px;
+  }
+  .bar-title { font-size: 22px; font-weight: 600; color: #f2f4fa; }
+  .bar-value { font-size: 26px; font-weight: 700; color: #f2f4fa; }
+  .bar-value small { font-size: 16px; font-weight: 500; margin-left: 2px; }
+  .bar-track {
+    height: 38px;
+    border: 1px solid rgba(120, 140, 190, .35);
+    /* 四角彩色括号（--cc 由 JS 按进度条颜色注入），贴近截图的科技风边框 */
+    background:
+      linear-gradient(var(--cc, transparent), var(--cc, transparent)) left 0 top 0 / 14px 2px,
+      linear-gradient(var(--cc, transparent), var(--cc, transparent)) left 0 top 0 / 2px 14px,
+      linear-gradient(var(--cc, transparent), var(--cc, transparent)) right 0 top 0 / 14px 2px,
+      linear-gradient(var(--cc, transparent), var(--cc, transparent)) right 0 top 0 / 2px 14px,
+      linear-gradient(var(--cc, transparent), var(--cc, transparent)) left 0 bottom 0 / 14px 2px,
+      linear-gradient(var(--cc, transparent), var(--cc, transparent)) left 0 bottom 0 / 2px 14px,
+      linear-gradient(var(--cc, transparent), var(--cc, transparent)) right 0 bottom 0 / 14px 2px,
+      linear-gradient(var(--cc, transparent), var(--cc, transparent)) right 0 bottom 0 / 2px 14px,
+      linear-gradient(180deg, rgba(30,38,66,.9), rgba(20,26,48,.9));
+    background-repeat: no-repeat;
+    box-shadow: inset 0 0 12px rgba(0,0,0,.5);
+    padding: 5px;
+  }
+  .bar-fill {
+    height: 100%;
+    position: relative;
+    transition: width .6s ease;
+  }
+  .bar-fill::after {                     /* 右侧端头高光 */
+    content: "";
+    position: absolute; right: 0; top: 0; bottom: 0; width: 4px;
+    background: rgba(255,255,255,.55);
+    filter: blur(1px);
+  }
+
+  /* ===== 变体二：指标文本行 ===== */
+  .stat-group { gap: 56px; padding-top: 4px; }
+  .stat-item { display: flex; align-items: baseline; gap: 28px; }
+  .stat-name { font-size: 22px; font-weight: 700; color: #f2f4fa; }
+  .stat-rate { font-size: 22px; font-weight: 700; }
+  .stat-meta { font-size: 18px; color: #c8cddf; }
+  .stat-meta b { color: #f2f4fa; font-weight: 600; margin-left: 4px; }
+
+  /* ===== 变体三 / 四：圆环 & 水波球 ===== */
+  .circle-group { flex-direction: row; gap: 80px; }
+  .circle-item { width: 190px; height: 190px; position: relative; }
+  .circle-item svg { display: block; }
+  .circle-center {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .circle-value { font-size: 34px; font-weight: 700; color: #f2f4fa; line-height: 1.1; }
+  .circle-value small { font-size: 18px; font-weight: 500; }
+  .circle-label { font-size: 18px; color: #e6e9f2; margin-top: 6px; }
+
+  /* ===== 变体五：电池形柱状 ===== */
+  .battery-group { flex-direction: row; gap: 130px; margin-left: 60px; }
+  .battery-item { display: flex; flex-direction: column; align-items: center; }
+  .battery-body {
+    width: 88px; height: 160px;
+    border: 2px solid rgba(150, 165, 210, .55);
+    border-radius: 8px;
+    position: relative;
+    overflow: hidden;
+    background: rgba(22, 28, 50, .6);
+  }
+  .battery-value {
+    position: absolute; top: 14px; left: 0; right: 0;
+    text-align: center; z-index: 2;
+    font-size: 26px; font-weight: 700; color: #f2f4fa;
+  }
+  .battery-value small { font-size: 14px; font-weight: 500; }
+  .battery-fill { position: absolute; left: 0; right: 0; bottom: 0; }
+  .battery-fill svg { display: block; width: 100%; }
+  .battery-label { margin-top: 16px; font-size: 18px; color: #e6e9f2; }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+
+<script>
+/* =====================================================================
+ * 参数区：颜色 / 数据集中在此，方便 LLM 拼装时替换
+ * =================================================================== */
+const THEME = {
+  bg:        '#151a2c',
+  text:      '#f2f4fa',
+  subText:   '#c8cddf',
+  trackRing: 'rgba(120,135,175,.28)',   // 圆环轨道色
+  trackCircleBorder: 'rgba(150,165,210,.4)',
+  colors: {
+    blue:   { main: '#3b8cff', light: '#6fb2ff', dark: '#1d5fd6' },
+    orange: { main: '#ffb545', light: '#ffd07a', dark: '#e08a1e' },
+    red:    { main: '#ff4d5e', light: '#ff8290', dark: '#d92b3f' },
+    green:  { main: '#2fd68c' }
+  }
+};
+
+/* 变体一：横向进度条数据 */
+const BARS = [
+  { name: '指标名称', value: 35, color: 'blue'   },
+  { name: '指标名称', value: 62, color: 'orange' },
+  { name: '指标名称', value: 80, color: 'red'    }
+];
+
+/* 变体二：指标文本行数据 */
+const STATS = [
+  { name: 'CPU使用率', rate: 45, rateColor: 'green',
+    metas: [ ['CPU数量', 10], ['CPU核数', 48] ] },
+  { name: '内存使用率', rate: 67, rateColor: 'orange',
+    metas: [ ['总内存', '627.86GB'], ['已使用', '199.35GB'] ] },
+  { name: '内存使用率', rate: 80, rateColor: 'red',
+    metas: [ ['总内存', '627.86GB'], ['已使用', '199.35GB'] ] }
+];
+
+/* 变体三：圆环仪表数据 */
+const RINGS = [
+  { name: '指标名称', value: 32, color: 'blue'   },
+  { name: '指标名称', value: 60, color: 'orange' },
+  { name: '指标名称', value: 80, color: 'red'    }
+];
+
+/* 变体四：水波球数据 */
+const WAVES = [
+  { name: '指标名称', value: 32, color: 'blue'   },
+  { name: '指标名称', value: 50, color: 'orange' },
+  { name: '指标名称', value: 75, color: 'red'    }
+];
+
+/* 变体五：电池柱数据 */
+const BATTERIES = [
+  { name: '指标名称', value: 40, color: 'blue'   },
+  { name: '指标名称', value: 68, color: 'orange' },
+  { name: '指标名称', value: 80, color: 'red'    }
+];
+
+/* =====================================================================
+ * 工具
+ * =================================================================== */
+const NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(NS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+function colorOf(key) { return THEME.colors[key]; }
+
+/* 生成波浪路径（正弦波，水线在 level 高度处） */
+function wavePath(width, height, level, amp, phase) {
+  const wl = width / 2;                 // 波长（两个周期）
+  let d = `M 0 ${height}`;
+  for (let x = 0; x <= width; x += 4) {
+    const y = level + Math.sin((x / wl) * Math.PI * 2 + phase) * amp;
+    d += ` L ${x} ${y.toFixed(1)}`;
+  }
+  d += ` L ${width} ${height} Z`;
+  return d;
+}
+
+/* =====================================================================
+ * 渲染
+ * =================================================================== */
+const stage = document.getElementById('stage');
+
+/* ---------- 第一行：进度条 + 指标文本 ---------- */
+const row1 = document.createElement('div');
+row1.className = 'row';
+
+/* 变体一：横向进度条 */
+const barGroup = document.createElement('div');
+barGroup.className = 'col bar-group';
+BARS.forEach(item => {
+  const c = colorOf(item.color);
+  const el = document.createElement('div');
+  el.className = 'bar-item';
+  el.innerHTML = `
+    <div class="bar-head">
+      <span class="bar-title">${item.name}</span>
+      <span class="bar-value">${item.value}<small>%</small></span>
+    </div>
+    <div class="bar-track" style="--cc:${c.main}">
+      <div class="bar-fill" style="
+        width:${item.value}%;
+        background:linear-gradient(90deg, ${c.dark} 0%, ${c.main} 70%, ${c.light} 100%);
+        box-shadow:0 0 10px ${c.main}66, inset 0 1px 0 rgba(255,255,255,.25);
+      "></div>
+    </div>`;
+  barGroup.appendChild(el);
+});
+row1.appendChild(barGroup);
+
+/* 变体二：指标文本行 */
+const statGroup = document.createElement('div');
+statGroup.className = 'col stat-group';
+STATS.forEach(item => {
+  const c = colorOf(item.rateColor);
+  const el = document.createElement('div');
+  el.className = 'stat-item';
+  el.innerHTML = `
+    <span class="stat-name">${item.name}</span>
+    <span class="stat-rate" style="color:${c.main}">${item.rate}%</span>
+    ${item.metas.map(([k, v]) => `<span class="stat-meta">${k}<b>${v}</b></span>`).join('')}
+  `;
+  statGroup.appendChild(el);
+});
+row1.appendChild(statGroup);
+stage.appendChild(row1);
+
+/* ---------- 第二行：圆环仪表 + 水波球 ---------- */
+const row2 = document.createElement('div');
+row2.className = 'row';
+
+/* 变体三：圆环仪表 */
+const ringGroup = document.createElement('div');
+ringGroup.className = 'col circle-group';
+RINGS.forEach(item => {
+  const c = colorOf(item.color);
+  const size = 190, stroke = 14;
+  const r = (size - stroke) / 2 - 4;
+  const cx = size / 2, cy = size / 2;
+  const len = 2 * Math.PI * r;
+  const dash = (item.value / 100) * len;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'circle-item';
+  const svg = svgEl('svg', { width: size, height: size, viewBox: `0 0 ${size} ${size}` });
+
+  // 轨道环
+  svg.appendChild(svgEl('circle', {
+    cx, cy, r, fill: 'none',
+    stroke: THEME.trackRing, 'stroke-width': stroke
+  }));
+  // 数值弧（从 12 点方向起）
+  const arc = svgEl('circle', {
+    cx, cy, r, fill: 'none',
+    stroke: c.main, 'stroke-width': stroke,
+    'stroke-linecap': 'round',
+    'stroke-dasharray': `${dash} ${len}`,
+    transform: `rotate(-90 ${cx} ${cy})`
+  });
+  arc.style.filter = `drop-shadow(0 0 6px ${c.main}aa)`;
+  svg.appendChild(arc);
+  wrap.appendChild(svg);
+
+  const center = document.createElement('div');
+  center.className = 'circle-center';
+  center.innerHTML = `
+    <span class="circle-value">${item.value}<small>%</small></span>
+    <span class="circle-label">${item.name}</span>`;
+  wrap.appendChild(center);
+  ringGroup.appendChild(wrap);
+});
+row2.appendChild(ringGroup);
+
+/* 变体四：水波球 */
+const waveGroup = document.createElement('div');
+waveGroup.className = 'col circle-group';
+WAVES.forEach((item, idx) => {
+  const c = colorOf(item.color);
+  const size = 190;
+  const r = size / 2 - 3;
+  const cx = size / 2, cy = size / 2;
+  const level = size - (item.value / 100) * size;   // 水面高度
+
+  const wrap = document.createElement('div');
+  wrap.className = 'circle-item';
+  const svg = svgEl('svg', { width: size, height: size, viewBox: `0 0 ${size} ${size}` });
+
+  // 渐变定义
+  const defs = svgEl('defs', {});
+  const gid = `wg${idx}`;
+  const grad = svgEl('linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
+  grad.appendChild(svgEl('stop', { offset: '0%',  'stop-color': c.light }));
+  grad.appendChild(svgEl('stop', { offset: '100%','stop-color': c.dark }));
+  defs.appendChild(grad);
+  // 圆形裁剪
+  const clip = svgEl('clipPath', { id: `wc${idx}` });
+  clip.appendChild(svgEl('circle', { cx, cy, r }));
+  defs.appendChild(clip);
+  svg.appendChild(defs);
+
+  // 水波组（裁剪到圆内）：后层浅波 + 前层主波
+  const g = svgEl('g', { 'clip-path': `url(#wc${idx})` });
+  g.appendChild(svgEl('path', {
+    d: wavePath(size, size, level + 4, 6, Math.PI / 2),
+    fill: c.light, opacity: .45
+  }));
+  g.appendChild(svgEl('path', {
+    d: wavePath(size, size, level + 2, 7, 0),
+    fill: `url(#${gid})`
+  }));
+  svg.appendChild(g);
+
+  // 外圈描边 + 发光
+  const ring = svgEl('circle', {
+    cx, cy, r, fill: 'none',
+    stroke: THEME.trackCircleBorder, 'stroke-width': 2
+  });
+  ring.style.filter = `drop-shadow(0 0 8px ${c.main}55)`;
+  svg.appendChild(ring);
+
+  wrap.appendChild(svg);
+  const center = document.createElement('div');
+  center.className = 'circle-center';
+  center.innerHTML = `
+    <span class="circle-value">${item.value}<small>%</small></span>
+    <span class="circle-label">${item.name}</span>`;
+  wrap.appendChild(center);
+  waveGroup.appendChild(wrap);
+});
+row2.appendChild(waveGroup);
+stage.appendChild(row2);
+
+/* ---------- 第三行：电池柱 ---------- */
+const row3 = document.createElement('div');
+row3.className = 'row';
+
+const battGroup = document.createElement('div');
+battGroup.className = 'col battery-group';
+BATTERIES.forEach((item, idx) => {
+  const c = colorOf(item.color);
+  const w = 88, h = 160;
+  const fillH = (item.value / 100) * h;
+  const level = h - fillH;
+  const gid = `bg${idx}`;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'battery-item';
+
+  const body = document.createElement('div');
+  body.className = 'battery-body';
+  // 描边与微光随配色变化（截图中电池外框带同色色调）
+  body.style.borderColor = c.main + 'aa';
+  body.style.boxShadow = `0 0 10px ${c.main}44, inset 0 0 8px rgba(0,0,0,.4)`;
+  body.innerHTML = `<span class="battery-value">${item.value}<small>%</small></span>`;
+
+  const fill = document.createElement('div');
+  fill.className = 'battery-fill';
+  fill.style.height = '100%';
+  const svg = svgEl('svg', { width: '100%', height: '100%', viewBox: `0 0 ${w} ${h}`, preserveAspectRatio: 'none' });
+  const defs = svgEl('defs', {});
+  const grad = svgEl('linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
+  grad.appendChild(svgEl('stop', { offset: '0%',  'stop-color': c.light }));
+  grad.appendChild(svgEl('stop', { offset: '100%','stop-color': c.dark }));
+  defs.appendChild(grad);
+  svg.appendChild(defs);
+  svg.appendChild(svgEl('path', {
+    d: wavePath(w, h, level + 3, 4, 0),
+    fill: `url(#${gid})`
+  }));
+  fill.appendChild(svg);
+  body.appendChild(fill);
+
+  wrap.appendChild(body);
+  const label = document.createElement('span');
+  label.className = 'battery-label';
+  label.textContent = item.name;
+  wrap.appendChild(label);
+  battGroup.appendChild(wrap);
+});
+row3.appendChild(battGroup);
+stage.appendChild(row3);
+</script>
+</body>
+</html>

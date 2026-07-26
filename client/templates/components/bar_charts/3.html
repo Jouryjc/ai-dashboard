@@ -1,0 +1,179 @@
+<!-- source: 3.png · 由截图还原 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>进度条 / TOP 榜组件</title>
+<style>
+  /* ===== 深色大屏基础样式 ===== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #131a2c; /* 页面底色，取自截图 */
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+  /* 两个变体横向排布，总宽按原图 1444px */
+  .stage {
+    width: 1444px;
+    height: 399px;
+    display: flex;
+    gap: 40px;
+    padding: 12px 16px;
+  }
+  .panel { flex: 1; display: flex; flex-direction: column; }
+  .panel svg { flex: 1; width: 100%; display: block; }
+
+  /* ===== 变体二：TOP 榜单 ===== */
+  .top-list {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 4px 2px;
+  }
+  .top-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: 62px;
+    padding: 0 20px 0 12px;
+    background: #1a2140;               /* 行卡片底 */
+    border: 1px solid #27305a;         /* 行卡片描边 */
+    border-radius: 6px;
+  }
+  .top-badge {
+    flex: 0 0 auto;
+    min-width: 64px;
+    height: 30px;
+    line-height: 30px;
+    text-align: center;
+    border-radius: 6px;
+    font-size: 15px;
+    font-weight: bold;
+    color: #fff;
+    background: linear-gradient(180deg, #4a9dff, #1e5ae0); /* 前三名：蓝色渐变 */
+  }
+  .top-badge.normal {
+    background: #dfe6f2;                /* 四五名：浅色底深字 */
+    color: #1b2440;
+  }
+  .top-name { flex: 1; color: #e8ecf5; font-size: 16px; }
+  .top-value { color: #ffffff; font-size: 24px; font-weight: bold; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <!-- 变体一：棒棒糖式进度条 -->
+  <div class="panel">
+    <svg id="lollipop" viewBox="0 0 660 375" preserveAspectRatio="none"></svg>
+  </div>
+  <!-- 变体二：TOP 榜单 -->
+  <div class="panel">
+    <div class="top-list" id="topList"></div>
+  </div>
+</div>
+
+<script>
+/* ================= 样式与数据常量（参数化配置区） ================= */
+const THEME = {
+  labelText: '#c6cddb',  // 「数据标题」
+  valueText: '#8a93a8',  // 右侧数值
+  track:     '#202840',  // 进度槽底色
+};
+
+/* 进度条渐变（左 → 右） */
+const BAR_COLORS = {
+  green: ['#15a37a', '#3fe3b0'],  // 第一行（最高值）为青绿色
+  blue:  ['#1e5ae0', '#4a9dff'],  // 其余为蓝色
+};
+
+/* 行数据：标签、填充比例（0~1）、右侧数值（照抄截图） */
+const ROWS = [
+  { label: '数据标题', ratio: 0.80, value: '3402', color: 'green' },
+  { label: '数据标题', ratio: 0.59, value: '3402', color: 'blue'  },
+  { label: '数据标题', ratio: 0.33, value: '3402', color: 'blue'  },
+  { label: '数据标题', ratio: 0.26, value: '3402', color: 'blue'  },
+  { label: '数据标题', ratio: 0.11, value: '3402', color: 'blue'  },
+];
+
+/* TOP 榜数据（照抄截图） */
+const TOP_LIST = [
+  { rank: 'TOP.1', name: '广西（桂林一区）', value: 134 },
+  { rank: 'TOP.2', name: '广东（顺德八区）', value: 96  },
+  { rank: 'TOP.3', name: '山东（青岛五区）', value: 64  },
+  { rank: 'TOP.4', name: '福建（福州一区）', value: 53  },
+  { rank: 'TOP.5', name: '湖南（长沙二区）', value: 42  },
+];
+
+/* ================= 变体一：棒棒糖进度条 ================= */
+(function renderLollipop() {
+  const svg = document.getElementById('lollipop');
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, parent) => {
+    const n = document.createElementNS(NS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    (parent || svg).appendChild(n);
+    return n;
+  };
+
+  // 渐变与发光定义
+  const defs = el('defs', {});
+  Object.keys(BAR_COLORS).forEach(k => {
+    const g = el('linearGradient', { id: 'bar-' + k, x1: 0, y1: 0, x2: 1, y2: 0 }, defs);
+    el('stop', { offset: '0%',  'stop-color': BAR_COLORS[k][0] }, g);
+    el('stop', { offset: '100%', 'stop-color': BAR_COLORS[k][1] }, g);
+    // 端点光晕（径向渐变）
+    const r = el('radialGradient', { id: 'halo-' + k }, defs);
+    el('stop', { offset: '0%',  'stop-color': BAR_COLORS[k][1], 'stop-opacity': 0.9 }, r);
+    el('stop', { offset: '100%', 'stop-color': BAR_COLORS[k][1], 'stop-opacity': 0 }, r);
+  });
+
+  const W = 660, H = 375;
+  const padL = 86, padR = 64;               // 左侧标签 / 右侧数值占位
+  const trackW = W - padL - padR;
+  const rowH = H / ROWS.length;
+
+  ROWS.forEach((row, i) => {
+    const cy = rowH * (i + 0.5);
+
+    // 左标签
+    const label = el('text', { x: padL - 14, y: cy + 5, 'text-anchor': 'end', 'font-size': 14, fill: THEME.labelText });
+    label.textContent = row.label;
+
+    // 进度槽
+    el('line', { x1: padL, y1: cy, x2: padL + trackW, y2: cy, stroke: THEME.track, 'stroke-width': 4, 'stroke-linecap': 'round' });
+
+    // 填充条
+    const fillW = trackW * row.ratio;
+    el('line', { x1: padL, y1: cy, x2: padL + fillW, y2: cy, stroke: `url(#bar-${row.color})`, 'stroke-width': 5, 'stroke-linecap': 'round' });
+
+    // 端点光点：外圈光晕 + 亮核（原图首行绿点更大更亮，其余为小圆点）
+    const tipX = padL + fillW;
+    const big = row.color === 'green';
+    el('circle', { cx: tipX, cy, r: big ? 15 : 9, fill: `url(#halo-${row.color})` });
+    el('circle', { cx: tipX, cy, r: big ? 6 : 5, fill: BAR_COLORS[row.color][1] });
+    el('circle', { cx: tipX, cy, r: big ? 3 : 2, fill: '#ffffff' });
+
+    // 右侧数值
+    const val = el('text', { x: padL + trackW + 16, y: cy + 6, 'font-size': 16, fill: THEME.valueText, 'font-weight': 'bold' });
+    val.textContent = row.value;
+  });
+})();
+
+/* ================= 变体二：TOP 榜单 ================= */
+(function renderTopList() {
+  const box = document.getElementById('topList');
+  TOP_LIST.forEach((item, i) => {
+    const row = document.createElement('div');
+    row.className = 'top-row';
+    row.innerHTML = `
+      <span class="top-badge ${i >= 3 ? 'normal' : ''}">${item.rank}</span>
+      <span class="top-name">${item.name}</span>
+      <span class="top-value">${item.value}</span>`;
+    box.appendChild(row);
+  });
+})();
+</script>
+</body>
+</html>

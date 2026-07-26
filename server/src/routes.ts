@@ -15,15 +15,19 @@ export const router = Router()
 
 function wrap(handler: (req: Request, res: Response) => void | Promise<void>) {
   return (req: Request, res: Response): void => {
-    Promise.resolve(handler(req, res)).catch((err) => {
-      if (err instanceof HttpError) {
-        res.status(err.status).json({ error: err.message })
-      } else {
-        res.status(500).json({ error: '服务器出了点问题，请稍后再试' })
-        // eslint-disable-next-line no-console
-        console.error('[route error]', err)
-      }
-    })
+    // 注意：必须包一层 .then，否则 handler 同步抛错时会在参数求值阶段直接穿透，
+    // 落到 Express 默认错误页（HTML + 堆栈），而不是契约要求的 { error: "大白话" }。
+    Promise.resolve()
+      .then(() => handler(req, res))
+      .catch((err) => {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message })
+        } else {
+          res.status(500).json({ error: '服务器出了点问题，请稍后再试' })
+          // eslint-disable-next-line no-console
+          console.error('[route error]', err)
+        }
+      })
   }
 }
 
@@ -57,6 +61,14 @@ router.delete(
   '/dashboards/:id',
   wrap((req, res) => {
     orch.deleteDashboard(req.params.id)
+    res.status(204).end()
+  })
+)
+
+router.post(
+  '/dashboards/:id/cover',
+  wrap((req, res) => {
+    orch.uploadCover(req.params.id, req.body?.image)
     res.status(204).end()
   })
 )
@@ -121,6 +133,16 @@ router.get(
   '/dashboards/:id/versions',
   wrap((req, res) => {
     res.json(orch.listVersions(req.params.id))
+  })
+)
+
+router.get(
+  '/dashboards/:id/versions/:versionId/export',
+  wrap((req, res) => {
+    const { filename, html } = orch.exportVersion(req.params.id, req.params.versionId)
+    res.setHeader('Content-Type', 'text/html; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
+    res.status(200).send(html)
   })
 )
 

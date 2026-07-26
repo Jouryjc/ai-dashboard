@@ -60,6 +60,8 @@ interface ChatOptions {
   messages: LlmMessage[]
   maxTokens?: number
   temperature?: number
+  /** 外部中止信号（20 分钟看门狗拆分任务时中断当前调用） */
+  signal?: AbortSignal
 }
 
 interface RawChatResponse {
@@ -120,7 +122,7 @@ export async function chatCompletion(settings: ModelSettings, opts: ChatOptions)
           Authorization: `Bearer ${settings.apiKey}`
         },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(timeoutMs)
+        signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(opts.signal ? [opts.signal] : [])])
       })
       if (!res.ok) {
         const text = await res.text().catch(() => '')
@@ -194,7 +196,7 @@ export async function chatCompletionStream(
           Authorization: `Bearer ${settings.apiKey}`
         },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(timeoutMs)
+        signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(opts.signal ? [opts.signal] : [])])
       })
       if (!res.ok) {
         const text = await res.text().catch(() => '')

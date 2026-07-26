@@ -62,6 +62,30 @@ function plannerJson(hasImage) {
   })
 }
 
+function skeletonHtml() {
+  // 带两个 PANEL 占位注释的骨架（>2KB，无外部引用）
+  const pad = '/* 骨架样式 */\n'.repeat(120)
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>骨架</title>
+<style>
+${pad}
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: #070d1f; color: #dbe4ff; margin: 0; }
+main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 24px; height: 100%; box-sizing: border-box; }
+.panel { background: rgba(20,32,66,.9); border: 1px solid rgba(80,120,255,.22); border-radius: 12px; padding: 16px; }
+</style>
+</head>
+<body>
+<main>
+<!--PANEL:核心指标-->
+<!--PANEL:趋势图表-->
+</main>
+</body>
+</html>`
+}
+
 function dashboardHtml(userText) {
   const title = (userText.match(/请做这样一个大屏：([^\n]+)/)?.[1] ?? '数据大屏').slice(0, 30)
   // 联调标记：用户需求含「演示视觉修复」时埋一个视觉问题，供「视觉检查 → 修复问题」链路演练；
@@ -167,7 +191,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url?.replace(/\/+$/, '').endsWith('/chat/completions')) {
     let body = ''
     req.on('data', (c) => (body += c))
-    req.on('end', () => {
+    req.on('end', async () => {
       let payload
       try {
         payload = JSON.parse(body)
@@ -184,16 +208,37 @@ const server = http.createServer((req, res) => {
         return
       }
       const sys = systemText(messages)
+      // 慢编码标记：人为拖延 6 秒，用于演练"执行超时 → 拆分步骤"
+      if (sys.includes('大屏开发') && userText(messages).includes('SLOWCODER') && !userText(messages).includes('占位注释') && !userText(messages).includes('只写「')) {
+        await new Promise((r) => setTimeout(r, 6000))
+      }
       let content
       if (payload.max_tokens === 1) {
         content = image ? '一个小点。' : 'ok'
       } else if (sys.includes('大屏规划师')) {
         content = plannerJson(image)
+      } else if (sys.includes('模板匹配师')) {
+        // 模板匹配：默认命中 U 型布局 + 3 类组件；文本含「完全自定义需求」时模拟匹配不上
+        content = userText(messages).includes('完全自定义需求')
+          ? JSON.stringify({ layoutId: null, layoutReason: '', componentIds: [], unmatched: ['特殊的 3D 地球主视觉'] })
+          : JSON.stringify({
+              layoutId: 'layoutU',
+              layoutReason: '中央放主视觉、四周环绕指标面板，最适合监控类大屏',
+              componentIds: ['bar_charts', 'numerical_indicators', 'line_charts'],
+              unmatched: []
+            })
       } else if (sys.includes('布局检查员')) {
         // 视觉检查：HTML 里埋了 STUB_VISUAL_ISSUE 标记才报一个问题，否则放行
         content = userText(messages).includes('STUB_VISUAL_ISSUE')
           ? JSON.stringify({ issues: [{ title: '表格内容可能超出屏幕边界', detail: '给表格区域加上自动换行，并把总宽度收窄到画面内' }] })
           : JSON.stringify({ issues: [] })
+      } else if (sys.includes('大屏开发') && userText(messages).includes('占位注释')) {
+        // 拆分步骤第 1 步：骨架（带 PANEL 占位注释）
+        content = skeletonHtml()
+      } else if (sys.includes('大屏开发') && userText(messages).includes('只写「')) {
+        // 拆分步骤第 2..N 步：单个面板片段（标题带面板名，模拟按名生成）
+        const panelName = userText(messages).match(/只写「([^」]+)」/)?.[1] ?? '面板'
+        content = `<div class="panel"><h2>${panelName}</h2><div style="font-size:40px;color:#22d3ee">88.6%</div><svg viewBox="0 0 200 60"><polyline points="0,50 40,30 80,40 120,15 160,25 200,8" fill="none" stroke="#22d3ee" stroke-width="2"/></svg></div>`
       } else if (sys.includes('大屏开发')) {
         content = dashboardHtml(userText(messages))
       } else {
