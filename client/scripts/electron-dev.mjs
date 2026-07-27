@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 
 const PORT = 5173
-const URL = `http://localhost:${PORT}`
+const DEV_URL = `http://localhost:${PORT}`
 
 const vite = spawn('npx', ['vite'], { stdio: 'inherit', shell: true })
 
@@ -30,7 +30,7 @@ try {
   const bin = new URL(`../node_modules/.bin/${electronBin}`, import.meta.url).pathname
   const child = spawn(bin, ['.'], {
     stdio: 'inherit',
-    env: { ...process.env, VITE_DEV_SERVER_URL: URL }
+    env: { ...process.env, VITE_DEV_SERVER_URL: DEV_URL }
   })
   child.on('close', () => { vite.kill(); process.exit(0) })
 } catch (err) {
