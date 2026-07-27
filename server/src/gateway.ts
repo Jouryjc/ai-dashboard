@@ -1,11 +1,14 @@
 /**
- * 模型网关（Model Gateway）—— 所有 LLM 调用的唯一入口。
+ * 模型网关（Model Gateway）-- 所有 LLM 调用的唯一入口。
  *
  * - OpenAI 兼容 chat/completions 协议，Bearer Key
  * - 超时：planner 60s / coder 600s；网络错误与 5xx 重试 1 次
  * - probe(settings)：真实探测（最小 chat 请求验证连通；1×1 像素 base64 PNG
  *   的 image_url 请求验证 vision），文案一律大白话，细节收 detail
  * - extractJson / extractHtml：从 LLM 回复中容错提取（```json 包裹、首尾杂质）
+ * - 思考型模型（kimi-k2、deepseek-r1 等）兼容：思考过程走 reasoning_content，
+ *   正文走 content；流式时两者都计入"已生成字数"进度，但最终返回只用 content
+ *   （思考过程是推理链路，不是结构化答案），content 为空才兜底 reasoning_content。
  */
 import type { ModelSettings, ProbeResult } from './wire'
 
@@ -78,11 +81,63 @@ interface ChatOptions {
 }
 
 interface RawChatResponse {
-  choices?: Array<{ message?: { content?: string | Array<{ type: string; text?: string }> } }>
+  choices?: Array<{
+    message?: {
+      content?: string | Array<{ type: string; text?: string }>
+      // 思考型模型（kimi-k2、deepseek-r1 等）正文可能为空，思考过程在此字段
+      reasoning_content?: string
+    }
+  }>
+}
+
+/** 非流式响应里单个 message 的形态（从 RawChatResponse 派生） */
+type RawMessage = NonNullable<NonNullable<RawChatResponse['choices']>[number]['message']>
+
+/**
+ * 从非流式响应的 message 里提取正文：优先 content，兜底 reasoning_content。
+ * 思考型模型部分端点不单独输出正文，思考过程即全部输出。
+ */
+function pickMessageContent(msg: RawMessage | undefined): string {
+  if (!msg) return ''
+  if (typeof msg.content === 'string' && msg.content) return msg.content
+  if (Array.isArray(msg.content)) {
+    const joined = msg.content.map((c: { type: string; text?: string }) => c.text ?? '').join('')
+    if (joined) return joined
+  }
+  if (typeof msg.reasoning_content === 'string' && msg.reasoning_content) return msg.reasoning_content
+  return ''
 }
 
 /**
- * HTTP 错误 → 大白话提示。优先读服务商返回的 error.code/type（比状态码准）：
+ * 剥离消息里的图片（image_url），只留文本。用于"图发给了不支持图片的模型"时降级重试：
+ * 例如 vision 探测基于主模型(kimi 支持图)，但 Coder 实际用 glm-5.2(不支持图)，
+ * 模板截图塞给 glm 会 400 "Model only support text input" -- 剥掉图重试，至少能出 HTML。
+ * 返回 true 表示确实剥掉了图片（值得重试）。
+ */
+function stripImagesFromPayload(payload: Record<string, unknown>): boolean {
+  const messages = Array.isArray(payload.messages) ? payload.messages : []
+  let stripped = false
+  for (const msg of messages) {
+    if (msg && typeof msg === 'object' && 'content' in msg) {
+      const m = msg as { content: unknown }
+      if (Array.isArray(m.content)) {
+        const textParts = m.content.filter(
+          (c): c is { type: 'text'; text: string } =>
+            typeof c === 'object' && c !== null && (c as { type: string }).type === 'text'
+        )
+        if (textParts.length < m.content.length) {
+          // 有非 text 部分（图片）被滤掉 -> 退化成纯文本（拼接或单条）
+          m.content = textParts.length === 1 ? textParts[0].text : textParts.map((t) => t.text).join('\n')
+          stripped = true
+        }
+      }
+    }
+  }
+  return stripped
+}
+
+/**
+ * HTTP 错误 -> 大白话提示。优先读服务商返回的 error.code/type（比状态码准）：
  * insufficient_quota 是"额度用完"不是"Key 无效"（阿里 MaaS 免费额度耗尽返回 403 + 此 code）。
  */
 function hintForHttpError(status: number, snippet: string): string {
@@ -122,11 +177,18 @@ export async function chatCompletion(settings: ModelSettings, opts: ChatOptions)
     model,
     messages: opts.messages,
     temperature: opts.temperature ?? 0.4,
+    // 思考型模型（kimi-k2、deepseek-r1 等）在结构化任务（Planner 要 JSON、Coder 要 HTML）上
+    // 思考过程无价值且极慢（实测 Planner 思考 80s+ 触发 60s 超时）。关闭 thinking：
+    // 火山方舟/豆包系用 thinking:{type:"disabled"}；不支持该参数的模型会在 400 里报错，
+    // 由下方 droppedThinking 降级去掉该参数重试，不占用重试额度。
+    thinking: { type: 'disabled' },
     ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {})
   }
 
   let lastErr: unknown = null
   let droppedTemp = false
+  let droppedThinking = false
+  let droppedImages = false
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetch(url, {
@@ -141,14 +203,31 @@ export async function chatCompletion(settings: ModelSettings, opts: ChatOptions)
       if (!res.ok) {
         const text = await res.text().catch(() => '')
         const snippet = text.slice(0, 500)
-        // 思考型模型可能锁定 temperature（如 kimi-k3 只允许 1）：去掉该参数重试，不占用重试额度
+        // 思考型模型可能锁定 temperature：去掉该参数重试，不占用重试额度
         if (res.status === 400 && /temperature/i.test(snippet) && !droppedTemp) {
           droppedTemp = true
           delete payload.temperature
           attempt--
           continue
         }
-        // 5xx 重试一次；4xx 直接失败
+        // 不支持 thinking 参数的模型：去掉该参数重试，不占用重试额度
+        if (res.status === 400 && /thinking/i.test(snippet) && !droppedThinking) {
+          droppedThinking = true
+          delete payload.thinking
+          attempt--
+          continue
+        }
+        // 图发给了不支持图片的模型：剥离 image_url 重试，不占用重试额度
+        if (
+          res.status === 400 &&
+          /only support text input|not support.*image|image.*not support|不支持.*图/i.test(snippet) &&
+          !droppedImages &&
+          stripImagesFromPayload(payload)
+        ) {
+          droppedImages = true
+          attempt--
+          continue
+        }
         if (res.status >= 500 && attempt === 0) {
           lastErr = new Error(`HTTP ${res.status}: ${snippet}`)
           continue
@@ -159,9 +238,8 @@ export async function chatCompletion(settings: ModelSettings, opts: ChatOptions)
         )
       }
       const data = (await res.json()) as RawChatResponse
-      const content = data.choices?.[0]?.message?.content
-      if (typeof content === 'string') return content
-      if (Array.isArray(content)) return content.map((c) => c.text ?? '').join('')
+      const content = pickMessageContent(data.choices?.[0]?.message)
+      if (content) return content
       throw new GatewayError('AI 这次没说出内容', `POST ${url} 返回里没有 choices[0].message.content`)
     } catch (err) {
       if (err instanceof GatewayError) throw err
@@ -197,11 +275,15 @@ export async function chatCompletionStream(
     messages: opts.messages,
     temperature: opts.temperature ?? 0.4,
     stream: true,
+    // 关闭思考型模型的思考过程（同 chatCompletion，详见其注释）
+    thinking: { type: 'disabled' },
     ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {})
   }
 
   let lastErr: unknown = null
   let droppedTemp = false
+  let droppedThinking = false
+  let droppedImages = false
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetch(url, {
@@ -223,6 +305,25 @@ export async function chatCompletionStream(
           attempt--
           continue
         }
+        // 不支持 thinking 参数的模型：去掉该参数重试，不占用重试额度
+        if (res.status === 400 && /thinking/i.test(snippet) && !droppedThinking) {
+          droppedThinking = true
+          delete payload.thinking
+          attempt--
+          continue
+        }
+        // 图发给了不支持图片的模型（如 Coder 用 glm-5.2，但 vision 探测基于主模型带了图）：
+        // 剥离消息里的 image_url 重试，不占用重试额度
+        if (
+          res.status === 400 &&
+          /only support text input|not support.*image|image.*not support|不支持.*图/i.test(snippet) &&
+          !droppedImages &&
+          stripImagesFromPayload(payload)
+        ) {
+          droppedImages = true
+          attempt--
+          continue
+        }
         if (res.status >= 500 && attempt === 0) {
           lastErr = new Error(`HTTP ${res.status}: ${snippet}`)
           continue
@@ -237,9 +338,8 @@ export async function chatCompletionStream(
       const contentType = res.headers.get('content-type') ?? ''
       if (!contentType.includes('text/event-stream')) {
         const data = (await res.json()) as RawChatResponse
-        const content = data.choices?.[0]?.message?.content
-        if (typeof content === 'string') return content
-        if (Array.isArray(content)) return content.map((c) => c.text ?? '').join('')
+        const content = pickMessageContent(data.choices?.[0]?.message)
+        if (content) return content
         throw new GatewayError('AI 这次没说出内容', `POST ${url} 返回里没有 choices[0].message.content`)
       }
 
@@ -248,7 +348,11 @@ export async function chatCompletionStream(
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
+      // 思考型模型：正文 content 与思考过程 reasoning_content 分开累计。
+      // 进度汇报用两者之和（让用户看到在动，不卡"正在等大模型开口"）；
+      // 最终返回只用 content（结构化答案），content 为空才兜底 reasoning_content。
       let content = ''
+      let reasoning = ''
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
@@ -262,13 +366,16 @@ export async function chatCompletionStream(
             if (!payload || payload === '[DONE]') continue
             try {
               const j = JSON.parse(payload) as {
-                choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }>
+                choices?: Array<{
+                  delta?: { content?: string; reasoning_content?: string }
+                  message?: { content?: string; reasoning_content?: string }
+                }>
               }
-              const piece = j.choices?.[0]?.delta?.content ?? j.choices?.[0]?.message?.content
-              if (typeof piece === 'string' && piece) {
-                content += piece
-                onProgress(content.length, content)
-              }
+              const d = j.choices?.[0]?.delta ?? j.choices?.[0]?.message
+              if (typeof d?.content === 'string' && d.content) content += d.content
+              if (typeof d?.reasoning_content === 'string' && d.reasoning_content) reasoning += d.reasoning_content
+              const total = content + reasoning
+              if (total) onProgress(total.length, total)
             } catch {
               /* 半包/保活帧，忽略 */
             }
@@ -276,6 +383,8 @@ export async function chatCompletionStream(
         }
       }
       if (content) return content
+      // content 全程为空（部分端点思考型模型不单独输出正文）-> 兜底用思考过程，至少不报"没说出内容"
+      if (reasoning) return reasoning
       throw new GatewayError('AI 这次没说出内容', `POST ${url} 流式响应结束但没有任何内容`)
     } catch (err) {
       if (err instanceof GatewayError) throw err
@@ -307,7 +416,7 @@ export async function probe(settings: ModelSettings): Promise<ProbeResult> {
       detail: 'apiBase 或 apiKey 为空。'
     }
   }
-  // 第一步：连通性（测主设置本身——顶栏状态和提示文案都指主模型；角色独立配置在实际调用时解析）
+  // 第一步：连通性（测主设置本身--顶栏状态和提示文案都指主模型；角色独立配置在实际调用时解析）
   const EMPTY_ROLE = { model: '', apiBase: '', apiKey: '' }
   try {
     await chatCompletion({ ...settings, planner: EMPTY_ROLE, coder: EMPTY_ROLE, vision: EMPTY_ROLE }, {
@@ -354,8 +463,8 @@ export async function probe(settings: ModelSettings): Promise<ProbeResult> {
 
 /**
  * vision 探测（独立实现，容错三条已知歧路）：
- * 1) max_tokens=16 而非 1 —— omni/思考型模型在 1 个 token 预算下可能返回空内容，空 ≠ 不支持；
- * 2) 端点明确报错才判"不支持"（4xx / error 字段）；HTTP 200 即使内容为空也算支持——
+ * 1) max_tokens=16 而非 1 -- omni/思考型模型在 1 个 token 预算下可能返回空内容，空 ≠ 不支持；
+ * 2) 端点明确报错才判"不支持"（4xx / error 字段）；HTTP 200 即使内容为空也算支持--
  *    服务方没有拒绝图片输入；
  * 3) 报"only support stream"类错误自动改用流式重试（qwen omni 部分端点只支持流式）。
  */

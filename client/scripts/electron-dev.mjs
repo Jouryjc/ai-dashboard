@@ -3,10 +3,12 @@
  * 用法：npm run electron:dev
  */
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import net from 'node:net'
+import path from 'node:path'
 
 const PORT = 5173
-const URL = `http://localhost:${PORT}`
+const DEV_URL = `http://localhost:${PORT}`
 
 const vite = spawn('npx', ['vite'], { stdio: 'inherit', shell: true })
 
@@ -26,11 +28,16 @@ function waitForPort(port, retries = 120) {
 
 try {
   await waitForPort(PORT)
-  const electronBin = process.platform === 'win32' ? 'electron.cmd' : 'electron'
-  const bin = new URL(`../node_modules/.bin/${electronBin}`, import.meta.url).pathname
+  // Windows 下 .bin/electron.cmd 经 spawn 直接拉起会触发 EINVAL（Node 20+ 对 .cmd 的安全限制），
+  // 直接指向 electron 包内置的真实可执行文件最稳；其他平台沿用 .bin/electron。
+  const here = fileURLToPath(new URL('.', import.meta.url))
+  const bin =
+    process.platform === 'win32'
+      ? path.join(here, '..', 'node_modules', 'electron', 'dist', 'electron.exe')
+      : path.join(here, '..', 'node_modules', '.bin', 'electron')
   const child = spawn(bin, ['.'], {
     stdio: 'inherit',
-    env: { ...process.env, VITE_DEV_SERVER_URL: URL }
+    env: { ...process.env, VITE_DEV_SERVER_URL: DEV_URL }
   })
   child.on('close', () => { vite.kill(); process.exit(0) })
 } catch (err) {

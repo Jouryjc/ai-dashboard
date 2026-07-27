@@ -900,6 +900,7 @@ async function splitCodingFlow(rt: Runtime, run: ActiveRun, stageId: string): Pr
             { role: 'system', content: prompt('coder.system') },
             { role: 'user', content: userContent }
           ],
+          maxTokens: CODER_MAX_TOKENS,
           signal: ctl.signal
         },
         (chars, partial) => {
@@ -1243,6 +1244,7 @@ async function callCoderCreate(
         { role: 'system', content: `${prompt('coder.system')}\n\n${prompt('coder.replica.system')}` },
         { role: 'user', content }
       ],
+      maxTokens: CODER_MAX_TOKENS,
       signal
     }, onProgress ?? (() => {}))
     return gw.extractHtml(reply)
@@ -1267,6 +1269,7 @@ async function callCoderCreate(
       { role: 'system', content: prompt('coder.system') },
       { role: 'user', content }
     ],
+    maxTokens: CODER_MAX_TOKENS,
     signal
   }, onProgress ?? (() => {}))
   return gw.extractHtml(reply)
@@ -1282,6 +1285,7 @@ async function callCoderEdit(currentHtml: string, instruction: string, dataBlock
         content: prompt('coder.edit.user', { currentHtml, instruction, dataBlock })
       }
     ],
+    maxTokens: CODER_MAX_TOKENS,
     signal
   }, onProgress ?? (() => {}))
   return gw.extractHtml(reply)
@@ -1297,6 +1301,7 @@ async function callCoderRepair(html: string, problems: string[], onProgress?: (c
         content: prompt('coder.repair.user', { problems: problems.map((p) => `- ${p}`).join('\n'), html })
       }
     ],
+    maxTokens: CODER_MAX_TOKENS,
     signal
   }, onProgress ?? (() => {}))
   return gw.extractHtml(reply)
@@ -1401,6 +1406,14 @@ interface DataFetchCall {
 /** 数据块截断上限（默认 8KB，环境变量可调）：防止取回的数据把 Coder prompt 撑爆 */
 const DATA_BLOCK_MAX_BYTES = Number(process.env.DATA_BLOCK_MAX_BYTES) || 8 * 1024
 
+/**
+ * Coder 单次生成的最大 token 数（环境变量可调）。
+ * 大屏 HTML 含内联 CSS/SVG/JS，较长；不传 max_tokens 时模型用默认值（glm-5.2 约 4K），
+ * 会写到一半被截断（只剩 CSS、body 没生成 -> 黑屏）。SVG 路径数据（折线图坐标）极耗 token，
+ * 32000 覆盖含多图表的复杂大屏。模型若不支持该上限会被自身 cap，不影响。
+ */
+const CODER_MAX_TOKENS = Number(process.env.CODER_MAX_TOKENS) || 32_000
+
 /** 注入 prompt 前剥掉 http(s):// 开头的网址（防止模型照抄进 HTML 后被 validateHtml 当外部资源引用拦截） */
 function stripUrls(text: string): string {
   return text.replace(/https?:\/\/[^\s"'<>)\]]+/gi, '（网址已省略）')
@@ -1419,7 +1432,7 @@ function normalizeDataFetchCalls(raw: unknown, whitelist: Map<string, Set<string
   const arr = Array.isArray(obj.calls) ? obj.calls : []
   const out: DataFetchCall[] = []
   for (const item of arr) {
-    if (out.length >= 3) break
+    if (out.length >= 6) break
     const c = (item ?? {}) as Record<string, unknown>
     if (typeof c.sourceId !== 'string' || typeof c.tool !== 'string') continue
     const tools = whitelist.get(c.sourceId)
@@ -1440,7 +1453,9 @@ async function callDataFetchPlan(
   answersSummary: string,
   toolsCatalog: string,
   onProgress?: (chars: number, partial: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 纠错轮用：上一轮各 callTool 的执行结果原文（含错误+hint）。首轮不传，行为不变。 */
+  previousAttempts?: string
 ): Promise<unknown> {
   const reply = await gw.chatCompletionStream(
     cachedSettings,
@@ -1453,7 +1468,8 @@ async function callDataFetchPlan(
           content: prompt('datasource.plan.user', {
             text: text || '（用户只发了图片，没有文字）',
             answersBlock: answersSummary ? prompt('coder.create.answers-block', { answersSummary }) : '',
-            toolsCatalog
+            toolsCatalog,
+            previousAttempts: previousAttempts ?? ''
           })
         }
       ],
@@ -1476,7 +1492,50 @@ function buildDataBlock(results: Array<{ purpose: string; text: string }>): stri
     return { 用途: r.purpose, 数据: data }
   })
   const body = truncateBytes(stripUrls(JSON.stringify(items, null, 2)), DATA_BLOCK_MAX_BYTES)
-  return `以下是真实数据（从已配置的数据源取回，编写页面时必须使用其中的数值，不要自己编造；数据里不会出现网址）：\n${body}`
+  return `以下是从数据源取回的真实数据，编写页面时必须直接使用其中的数值，不要自己编造：
+- 每条数据是一个 JSON 对象，"用途"字段说明这块数据画什么，"数据"字段是实际内容。
+- 指标类数据（query_metric 返回）：数值在"数据.rows"数组里，每行一个对象，字段名见"数据.schema"；"数据.meta.default_chart"提示该画什么图（stat_card 指标卡/gauge 仪表/bar 柱图/line 折线/pie 饼图），"数据.meta.unit"是单位。
+- 明细类数据（query_records 返回）：每行一条记录在"数据.rows"里，字段含义见"数据.schema"的 display。
+- 拓扑类数据（query_topology_data 返回）：分层结构在"数据.layers"里，每层有 nodes，每个 node 带 status。
+- 把 rows 里的真实数值直接写进 HTML（如 rows[0].avg_cpu_usage=51.4 就在指标卡里显示 51.4），不要换成别的数字。数据里不会出现网址。
+${body}`
+}
+
+/**
+ * 把上一轮取数的执行记录拼成反馈文本，喂给取数规划 LLM 做纠错轮。
+ * 原样保留每条 callTool 的返回文本（含数据源返回的 error+hint），不判别错误--
+ * 由 LLM 自己识别 error 并用 available_hints 纠正。截断防 prompt 过长。
+ */
+function formatAttempts(attempts: Array<{ call: DataFetchCall; result: string }>): string {
+  if (attempts.length === 0) return ''
+  const lines = attempts.map((a, i) => {
+    const argsText = JSON.stringify(a.call.args)
+    const resultText = a.result.length > 600 ? `${a.result.slice(0, 600)}…（已截断）` : a.result
+    return `第 ${i + 1} 条：工具=${a.call.tool}，参数=${argsText}，用途=${a.call.purpose}\n返回结果：${resultText}`
+  })
+  return `\n上一轮取数结果（请据此纠正失败项的参数重新规划，全部成功则输出空 calls）：\n${lines.join('\n\n')}`
+}
+
+/**
+ * 解析 list_metrics / list_models 等发现类工具返回的 JSON，提取 {id, name, description} 列表。
+ * 容错：返回可能是数组、也可能是 {items:[...]} / {metrics:[...]} 等包装；非 JSON 返回空。
+ * 不认识任何具体业务字段，只认通用的 id/name/description 三件套。
+ */
+function parseListItems(text: string): Array<{ id: string; name?: string; description?: string }> {
+  let data: unknown
+  try { data = JSON.parse(text) } catch { return [] }
+  const arr = Array.isArray(data) ? data
+    : Array.isArray((data as { items?: unknown[] })?.items) ? (data as { items: unknown[] }).items
+    : Array.isArray((data as { metrics?: unknown[] })?.metrics) ? (data as { metrics: unknown[] }).metrics
+    : Array.isArray((data as { models?: unknown[] })?.models) ? (data as { models: unknown[] }).models
+    : []
+  return arr
+    .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string')
+    .map((x) => ({
+      id: String(x.id),
+      name: typeof x.name === 'string' ? x.name : undefined,
+      description: typeof x.description === 'string' ? x.description : undefined
+    }))
 }
 
 /* ============================== LLM：视觉检查（结构化布局审查，设计 §4.1 非多模态路径） ============================== */
@@ -1543,6 +1602,11 @@ async function callShotReview(
 function validateHtml(html: string): string[] {
   const problems: string[] = []
   if (!/<html[\s>]/i.test(html)) problems.push('不是完整的网页（缺少 html 标签）')
+  // 闭合标签检查：大屏 HTML 较长，模型可能被 max_tokens 截断，只剩开头 CSS 而 body 没生成。
+  // 缺少 </body> 或 </html> 几乎必然是截断，必须拦下触发修复。
+  if (!/<\/body>/i.test(html)) problems.push('页面没写完（缺少 </body>，可能生成时被长度限制截断）')
+  if (!/<\/html>/i.test(html)) problems.push('页面没写完（缺少 </html>，可能生成时被长度限制截断）')
+  if (!/<body[\s>]/i.test(html)) problems.push('页面没有正文内容（缺少 body 标签）')
   if (html.length < 2048) problems.push('内容太少，不像一个完整的大屏页面')
   if (/(?:src|href)\s*=\s*["']\s*https?:\/\//i.test(html) || /url\(\s*["']?\s*https?:\/\//i.test(html))
     problems.push('引用了外部资源（大屏要求所有内容都写在一个文件里）')
@@ -1587,7 +1651,13 @@ function armAutoExec(rt: Runtime, options: CardOption[]): void {
   const delay = Math.max(0, (auto.autoExecuteAt as number) - Date.now())
   rt.autoTimer = setTimeout(() => {
     rt.autoTimer = null
-    handleChooseOption(rt.s.dashboard.id, auto.id, true)
+    // 倒计时到点时大屏可能已被删除、或 option 已失效（用户手动选过 / 状态已变）。
+    // 这里是定时器回调，没有 HTTP wrap 兜底，必须自己接住，否则未捕获异常会崩整个进程。
+    try {
+      handleChooseOption(rt.s.dashboard.id, auto.id, true)
+    } catch {
+      // 大屏不存在 / option 已失效 -> 静默忽略（autoTimer 已在 handleChooseOption 内清理）
+    }
   }, delay)
 }
 
@@ -1933,6 +2003,45 @@ async function fetchDataForCreate(rt: Runtime, run: ActiveRun, stageId: string):
       listErrors.push(err instanceof McpError ? `「${s.name || s.url}」${err.message}` : `「${s.name || s.url}」连不上`)
     }
   }
+
+  // 1.5) 主动预取指标与模型清单，拼进工具目录，让 LLM 直接看到具体 id 去 query 取数，
+  // 不必浪费规划额度自己调 list_metrics/list_models 发现。预取失败不阻塞（LLM 仍可自己发现）。
+  // 调的是数据源自己暴露的发现类工具（动态），不是硬编码任何指标名。
+  setStageDetail(rt, stageId, '正在浏览数据源有哪些指标和数据表…')
+  for (const s of sources) {
+    const tools = whitelist.get(s.id)
+    if (!tools) continue
+    const previewLines: string[] = []
+    // 指标清单（list_metrics）
+    if (tools.has('list_metrics')) {
+      try {
+        const text = await mcpCallTool(s, 'list_metrics', {})
+        const items = parseListItems(text)
+        if (items.length > 0) {
+          previewLines.push(`该数据源已注册的指标（直接用 id 调 query_metric 取数，不必再调 list_metrics）：`)
+          for (const it of items.slice(0, 20)) {
+            previewLines.push(`  - 指标 id="${it.id}"${it.name ? `（${it.name}）` : ''}${it.description ? `：${it.description}` : ''}`)
+          }
+          if (items.length > 20) previewLines.push(`  …共 ${items.length} 个，已列前 20 个`)
+        }
+      } catch { /* 预取失败不阻塞 */ }
+    }
+    // 数据模型清单（list_models，供 query_records 用）
+    if (tools.has('list_models')) {
+      try {
+        const text = await mcpCallTool(s, 'list_models', {})
+        const items = parseListItems(text)
+        if (items.length > 0) {
+          previewLines.push(`该数据源可查明细的数据模型（直接用 id 调 query_records 取明细）：`)
+          for (const it of items.slice(0, 15)) {
+            previewLines.push(`  - 模型 id="${it.id}"${it.description ? `：${it.description}` : ''}`)
+          }
+          if (items.length > 15) previewLines.push(`  …共 ${items.length} 个，已列前 15 个`)
+        }
+      } catch { /* 预取失败不阻塞 */ }
+    }
+    if (previewLines.length > 0) catalogLines.push(previewLines.join('\n'))
+  }
   if (whitelist.size === 0) {
     raiseDatasourceDownCard(rt, run, stageId, listErrors.join('；') || '配置的数据源都连不上')
     return false
@@ -1979,20 +2088,79 @@ async function fetchDataForCreate(rt: Runtime, run: ActiveRun, stageId: string):
   }
 
   // 4) 逐个执行取数调用（单个失败不致命，记下来继续；callTool 自带 15 秒超时 + 重试 1 次）
+  //    闭环：首轮规划执行后，若有失败，把执行结果（含数据源返回的错误+hint）反馈给取数规划 LLM，
+  //    让它基于 hint 纠正参数重新规划，最多再试 1 轮。判别"是不是失败"不靠代码硬编码错误格式，
+  //    而是把每条 callTool 的原始返回原样喂给 LLM，由 LLM 自己识别 error 并用 available_hints 纠正。
   const results: Array<{ purpose: string; text: string }> = []
   const callErrors: string[] = []
-  for (const [i, call] of calls.entries()) {
-    const source = sourceById.get(call.sourceId) as McpDataSource
-    setStageDetail(rt, stageId, `正在取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}…`)
-    const fetchStep = startStep(rt, stageId, `取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}`)
-    try {
-      const text = await mcpCallTool(source, call.tool, call.args)
-      results.push({ purpose: call.purpose || call.tool, text })
-      finishStep(rt, fetchStep, '拿到了')
-    } catch (err) {
-      callErrors.push(err instanceof McpError ? err.message : `取「${call.purpose || call.tool}」失败了`)
-      finishStep(rt, fetchStep, '没取到')
+  /** 本轮每条调用的原文记录，用于反馈给规划 LLM（call + 返回文本，不判别错误） */
+  let attemptsLog: Array<{ call: DataFetchCall; result: string }> = []
+  const MAX_ROUNDS = 2
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    if (round > 0) {
+      // 纠错轮：把上一轮执行结果反馈给规划 LLM，让它输出需要重试的 calls
+      setStageDetail(rt, stageId, round === 1 ? '有些数据没取到，正在按数据源的提示重新取…' : '再次尝试取数…')
+      const retryStep = startStep(rt, stageId, round === 1 ? '按提示纠正后重新取数' : `第 ${round + 1} 轮取数`)
+      const wdRetry = armAgentWatchdog(rt, run, stageId, 'other')
+      const ctlRetry = new AbortController()
+      run.abort = ctlRetry
+      let retryCalls: DataFetchCall[] = []
+      try {
+        const raw = await callDataFetchPlan(
+          run.pending.text,
+          run.pending.answersSummary,
+          catalogLines.join('\n'),
+          llmProgress(rt, stageId, '正在规划重新取数'),
+          ctlRetry.signal,
+          formatAttempts(attemptsLog)
+        )
+        retryCalls = normalizeDataFetchCalls(raw, whitelist)
+      } catch (err) {
+        if (run.watchdogAborted === ctlRetry) return false
+        finishStep(rt, retryStep, '没规划完，用已有的继续', 'failed')
+      } finally {
+        if (run.abort === ctlRetry) run.abort = null
+        disarmAgentWatchdog(rt, run, wdRetry)
+      }
+      if (retryCalls.length === 0) {
+        finishStep(rt, retryStep, '没有需要重试的了')
+        break // LLM 说不用再试（都成功或无纠正线索），结束闭环
+      }
+      finishStep(rt, retryStep, `要重新取 ${retryCalls.length} 批`)
+      calls = retryCalls
+      attemptsLog = [] // 新一轮重新记录
     }
+
+    for (const [i, call] of calls.entries()) {
+      const source = sourceById.get(call.sourceId) as McpDataSource
+      setStageDetail(rt, stageId, `正在取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}…`)
+      const fetchStep = startStep(rt, stageId, `取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}`)
+      try {
+        const text = await mcpCallTool(source, call.tool, call.args)
+        attemptsLog.push({ call, result: text })
+        results.push({ purpose: call.purpose || call.tool, text })
+        finishStep(rt, fetchStep, '拿到了')
+      } catch (err) {
+        const msg = err instanceof McpError ? err.message : `取「${call.purpose || call.tool}」失败了`
+        callErrors.push(msg)
+        attemptsLog.push({ call, result: msg })
+        finishStep(rt, fetchStep, '没取到')
+      }
+    }
+
+    // 首轮执行后判断要不要进纠错轮。
+    // 不靠 callErrors（业务错误 HTTP 200 不会抛异常，callErrors 捕获不到），
+    // 而是看本轮返回里有没有"值得让 LLM 再看一眼"的迹象--启发式（不判别具体格式），
+    // 只用于决定"要不要打扰 LLM"，权威判断交给 LLM 自己读 attemptsLog。
+    // 触发条件：含 error 字样（取数报错）、或返回空数组 [] / 空对象（发现不到东西）。
+    if (round === 0) {
+      const needsRetry = attemptsLog.some((a) => {
+        const head = a.result.slice(0, 800)
+        return /"error"\s*:/.test(head) || /\[\s*\]/.test(head) || /^\s*\{\s*\}\s*$/.test(a.result.trim())
+      })
+      if (!needsRetry) break // 都成功且非空，不必进纠错轮
+    }
+    // 纠错轮后不再继续（已用尽 MAX_ROUNDS）
   }
 
   // 5) 全部失败 → 数据源卡点卡等用户选
