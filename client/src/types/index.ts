@@ -39,6 +39,28 @@ export interface Dashboard {
 
 /* ==================== 版本（版本时间线节点） ==================== */
 
+/**
+ * 单条取数明细：记录这个版本生成时，从哪个数据源、用哪个工具、取了什么、结果如何。
+ * 由 fetchDataForCreate 捕获，commitVersion 时随版本落盘（previews/<dashId>/<verId>/data-used.json）
+ * 并塞进 Version.dataSourcesUsed，供版本抽屉展示「数据来源」。
+ */
+export interface DataUseEntry {
+  /** 数据源名称（McpDataSource.name） */
+  source: string
+  /** 工具名（白名单校验过的真实工具，如 query_metric） */
+  tool: string
+  /** 取数规划 LLM 给的大白话用途（可能为空） */
+  purpose: string
+  /** 归一后的数据结构类型，复用 normalizeToolResult 的判定 */
+  kind: 'metric' | 'records' | 'topology' | 'catalog' | 'raw'
+  /** 取到的行数（metric/records=rows.length；topology=各层节点总和；catalog=清单项数；raw=0） */
+  rows: number
+  /** 结果状态：ok=正常取到 / fallback_raw=形状异常降级原文 / failed=取数抛异常 */
+  status: 'ok' | 'fallback_raw' | 'failed'
+  /** 失败时的错误摘要（status=failed 才有） */
+  error?: string
+}
+
 /** 一个版本节点：回退 = 生成新节点，历史永不删除（UX §5.3） */
 export interface Version {
   /** 版本 ID */
@@ -55,6 +77,8 @@ export interface Version {
   published: boolean
   /** 是否为当前正在查看/使用的版本 */
   isCurrent: boolean
+  /** 本版本生成时用到的数据源明细（演示数据/无数据源时为 undefined） */
+  dataSourcesUsed?: DataUseEntry[]
 }
 
 /* ==================== 运行状态（工作台全局状态机，UX §7.1） ==================== */

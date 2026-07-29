@@ -90,6 +90,26 @@ function exportVersion(v: Version): void {
             <p class="mt-0.5 text-xs leading-5 text-ink-secondary">{{ v.summary }}</p>
             <p class="text-xs text-ink-faint">{{ formatRelativeTime(v.createdAt) }}</p>
 
+            <!-- 数据来源明细（演示数据/无数据源时不显示） -->
+            <div v-if="v.dataSourcesUsed?.length" class="mt-1.5 space-y-0.5">
+              <p class="text-[11px] leading-none text-ink-faint">数据来源</p>
+              <ul class="space-y-0.5">
+                <li
+                  v-for="(d, di) in v.dataSourcesUsed"
+                  :key="di"
+                  class="flex items-center gap-1 text-[11px] leading-4 text-ink-secondary"
+                  :title="d.status === 'failed' ? d.error : `${d.source} / ${d.tool}`"
+                >
+                  <span
+                    class="h-1.5 w-1.5 shrink-0 rounded-full"
+                    :class="d.status === 'ok' ? 'bg-status-done' : 'bg-status-attention'"
+                  />
+                  <span class="truncate">{{ d.purpose || d.tool }}</span>
+                  <span class="shrink-0 text-ink-faint">{{ d.rows > 0 ? `${d.rows} 行` : (d.status === 'failed' ? '失败' : '降级') }}</span>
+                </li>
+              </ul>
+            </div>
+
             <!-- 操作：当前版本不给回退/预览（就是它本身） -->
             <div v-if="!v.isCurrent" class="mt-1.5 hidden gap-2 group-hover:flex">
               <button

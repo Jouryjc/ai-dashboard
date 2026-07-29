@@ -220,6 +220,27 @@ export class Store {
     }
   }
 
+  /* ---------- 版本数据来源元数据（与 index.html 同目录的 data-used.json） ---------- */
+
+  /** 数据来源元数据文件名（与 index.html 同目录，removeDashboardFiles 删整棵树自动带走） */
+  private static readonly META_FILE = 'data-used.json'
+
+  writeVersionMeta(dashId: string, versionId: string, meta: unknown): void {
+    const dir = this.previewDir(dashId, versionId)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, Store.META_FILE), JSON.stringify(meta, null, 2), 'utf8')
+  }
+
+  readVersionMeta<T = unknown>(dashId: string, versionId: string): T | null {
+    try {
+      return JSON.parse(
+        fs.readFileSync(path.join(this.previewDir(dashId, versionId), Store.META_FILE), 'utf8')
+      ) as T
+    } catch {
+      return null
+    }
+  }
+
   /* ---------- 删除大屏 ---------- */
 
   removeDashboardFiles(dashId: string): void {

@@ -19,6 +19,7 @@ export type {
   Dashboard,
   DashboardStatus,
   DataSourceProbeResult,
+  DataUseEntry,
   Issue,
   IssueStatus,
   McpAuthType,
