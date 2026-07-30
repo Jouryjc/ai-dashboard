@@ -21,6 +21,7 @@ import type {
   ModelSettings,
   PreviewResolution,
   ProbeResult,
+  PublishConfig,
   Version
 } from '../../types'
 import type {
@@ -32,11 +33,13 @@ import type {
 
 type AnyHandler = (payload: never) => void
 
-/** SSE 帧里会出现的 10 种事件（契约 SSE 节：event: <type>，data = ClientEventMap[type]） */
+/** SSE 帧里会出现的事件（契约 SSE 节：event: <type>，data = ClientEventMap[type]）。
+ *  必须与 ClientEventMap 的 key 一一对应，漏写会导致该事件在真实后端 SSE 收不到。 */
 const EVENT_TYPES = [
   'message',
   'messageUpdated',
   'stage',
+  'step',
   'issue',
   'blocker',
   'previewReady',
@@ -44,7 +47,9 @@ const EVENT_TYPES = [
   'versionAdded',
   'runStatus',
   'dashboardUpdated',
-  'assist'
+  'assist',
+  'graph',
+  'publishProgress'
 ] as const satisfies ReadonlyArray<keyof ClientEventMap>
 
 /** 连接状态广播事件名（WorkbenchPage 监听它驱动 ReconnectBar） */
@@ -329,6 +334,14 @@ export function createHttpClient(baseUrl: string): ClientApi {
           detail: null
         }
       }
+    },
+
+    // ---- 发布配置 ----
+    async getPublishConfig(): Promise<PublishConfig> {
+      return request<PublishConfig>('GET', '/api/v1/publish-config')
+    },
+    async savePublishConfig(config: PublishConfig): Promise<void> {
+      await request<void>('PUT', '/api/v1/publish-config', config)
     },
 
     // ---- 事件订阅 ----

@@ -9,9 +9,11 @@
  * 则逐行解析 data: 取最后一个 JSON-RPC 消息。
  *
  * 认证按 authType 组头：bearer → Authorization: Bearer <令牌>；
- * header → <headerName>: <值>；none → 不带。
+ * header → <headerName>: <值>；none → 不带；
+ * hmac → 每请求按 METHOD\nPATH\nTIMESTAMP\nBODY 算 HMAC-SHA256，带 X-AK/X-Timestamp/X-Signature。
  * URL 只放行 http/https；错误一律大白话（detail 收技术细节）。
  */
+import crypto from 'node:crypto'
 import type { McpDataSource } from './wire'
 
 /** MCP 调用失败时抛出的错误（message 为大白话，detail 收技术细节） */
@@ -44,7 +46,7 @@ const toolsCache = new Map<string, ToolsCacheEntry>()
 
 /** 缓存键：连接字段变 → 视为另一个源（避免改了地址/令牌还命中旧缓存） */
 function cacheKeyOf(source: McpDataSource): string {
-  return JSON.stringify([source.url, source.authType, source.token, source.headerName])
+  return JSON.stringify([source.url, source.authType, source.token, source.headerName, source.accessKey, source.secretKey])
 }
 
 /** 缓存失效：probe 成功或保存数据源列表时调用（不传 source 则全清） */
@@ -67,10 +69,24 @@ function assertHttpUrl(url: string): void {
   }
 }
 
-function authHeaders(source: McpDataSource): Record<string, string> {
+/** HMAC-SHA256 签名：用 SK 对签名串算，返回 hex。
+ * 签名串 4 段 \n 拼接：METHOD\nPATH\nTIMESTAMP\nBODY（PATH 不含 query）。 */
+function hmacSignature(secretKey: string, method: string, pathName: string, ts: string, body: string): string {
+  const signStr = `${method}\n${pathName}\n${ts}\n${body}`
+  return crypto.createHmac('sha256', secretKey).update(signStr, 'utf8').digest('hex')
+}
+
+/** 按认证方式组请求头。hmac 需要逐请求算签名，因此带 method/pathName/body 参数；其它认证方式忽略这些参数。
+ * ts 由调用方在签名时一并生成（保证时间戳与签名严格对应、防重放）。 */
+function authHeaders(source: McpDataSource, method: string, pathName: string, body: string): Record<string, string> {
   if (source.authType === 'bearer' && source.token) return { Authorization: `Bearer ${source.token}` }
   if (source.authType === 'header' && source.headerName && source.token) {
     return { [source.headerName]: source.token }
+  }
+  if (source.authType === 'hmac' && source.accessKey && source.secretKey) {
+    const ts = Math.floor(Date.now() / 1000).toString()
+    const sig = hmacSignature(source.secretKey, method, pathName, ts, body)
+    return { 'X-AK': source.accessKey, 'X-Timestamp': ts, 'X-Signature': sig }
   }
   return {}
 }
@@ -119,10 +135,13 @@ async function readJsonRpc(res: Response): Promise<JsonRpcMessage> {
 /* ------------------------------ 会话内一次请求 ------------------------------ */
 
 async function post(source: McpDataSource, sessionId: string | null, body: unknown): Promise<JsonRpcMessage | null> {
+  // ★ 只序列化一次 body：签名串里的 body 必须与实际发送的 body 逐字节一致
+  const bodyStr = JSON.stringify(body)
+  const pathName = new URL(source.url).pathname // 签名只取 pathname（不含 query）
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json, text/event-stream',
-    ...authHeaders(source),
+    ...authHeaders(source, 'POST', pathName, bodyStr),
     ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {})
   }
   let res: Response
@@ -130,7 +149,7 @@ async function post(source: McpDataSource, sessionId: string | null, body: unkno
     res = await fetch(source.url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: bodyStr,
       signal: AbortSignal.timeout(CALL_TIMEOUT_MS)
     })
   } catch (err) {

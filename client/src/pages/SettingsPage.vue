@@ -10,13 +10,14 @@ import { onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import ModelSettingsPanel from '../components/settings/ModelSettingsPanel.vue'
 import DataSourcePanel from '../components/settings/DataSourcePanel.vue'
+import PublishConfigPanel from '../components/settings/PublishConfigPanel.vue'
 import PlaceholderPanel from '../components/settings/PlaceholderPanel.vue'
 import ShortcutTable from '../components/settings/ShortcutTable.vue'
 import AppIcon from '../components/common/AppIcon.vue'
 
 const router = useRouter()
 
-type NavKey = 'model' | 'datasource' | 'notification' | 'account'
+type NavKey = 'model' | 'datasource' | 'publish' | 'notification' | 'account'
 interface NavItem {
   key: NavKey
   label: string
@@ -27,6 +28,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { key: 'model', label: '模型', icon: 'neurology' },
   { key: 'datasource', label: '数据源', icon: 'database' },
+  { key: 'publish', label: '发布配置', icon: 'publish' },
   { key: 'notification', label: '通知', icon: 'notifications' },
   { key: 'account', label: '账户与关于', icon: 'account-circle' }
 ]
@@ -95,6 +97,8 @@ onBeforeUnmount(() => {
           <ModelSettingsPanel v-if="active === 'model'" @saved="onSaved" />
 
           <DataSourcePanel v-else-if="active === 'datasource'" @saved="onSaved" />
+
+          <PublishConfigPanel v-else-if="active === 'publish'" @saved="onSaved" />
 
           <PlaceholderPanel
             v-else-if="active === 'notification'"

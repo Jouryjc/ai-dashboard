@@ -19,6 +19,7 @@ export type {
   Dashboard,
   DashboardStatus,
   DataSourceProbeResult,
+  DataUseEntry,
   Issue,
   IssueStatus,
   McpAuthType,
@@ -28,6 +29,9 @@ export type {
   PreviewState,
   ProbeResult,
   ProblemMessage,
+  PublishConfig,
+  PublishPhase,
+  PublishProgress,
   RiskLevel,
   RoleModelConfig,
   RunStatus,
@@ -36,7 +40,11 @@ export type {
   StepState,
   SystemMessage,
   UserMessage,
-  Version
+  Version,
+  GraphSnapshot,
+  GraphNodeSnapshot,
+  GraphEdge,
+  GraphNodeStatus
 } from '../../client/src/types/index'
 
 export type { ClientEventMap, WorkbenchSnapshot } from '../../client/src/api/client'

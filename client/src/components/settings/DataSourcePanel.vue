@@ -17,16 +17,18 @@ const store = useSettingsStore()
 
 onMounted(() => store.loadDataSources())
 
-/* ---------- 认证方式（三选一，大白话解释） ---------- */
+/* ---------- 认证方式（四选一，大白话解释） ---------- */
 const AUTH_OPTIONS: Array<{ value: McpAuthType; label: string; hint: string }> = [
   { value: 'none', label: '不用认证', hint: '这个地址谁都能访问，直接连就行' },
   { value: 'bearer', label: '令牌认证', hint: '对方给了一串令牌，连接时自动带上' },
-  { value: 'header', label: '自定义请求头', hint: '对方要求填专门的请求头名和值，比如 X-Api-Key' }
+  { value: 'header', label: '自定义请求头', hint: '对方要求填专门的请求头名和值，比如 X-Api-Key' },
+  { value: 'hmac', label: 'AK/SK 签名认证', hint: '对方给了一对 AccessKey/SecretKey，每次请求自动按内容算签名（如大屏数据服务）' }
 ]
 const AUTH_LABEL: Record<McpAuthType, string> = {
   none: '不用认证',
   bearer: '令牌认证',
-  header: '自定义请求头'
+  header: '自定义请求头',
+  hmac: 'AK/SK 签名'
 }
 
 /* ---------- 编辑表单（本地草稿，保存才落库） ---------- */
@@ -49,6 +51,8 @@ function makeDraft(): McpDataSource {
     authType: 'none',
     token: '',
     headerName: '',
+    accessKey: '',
+    secretKey: '',
     enabled: true
   }
 }
@@ -120,7 +124,11 @@ async function onSave(): Promise<void> {
   const d: McpDataSource = { ...draft.value, name: draft.value.name.trim() || '未命名数据源' }
   // 认证方式用不到的字段清空，避免残留误导
   if (d.authType !== 'header') d.headerName = ''
-  if (d.authType === 'none') d.token = ''
+  if (d.authType !== 'bearer' && d.authType !== 'header') d.token = ''
+  if (d.authType !== 'hmac') {
+    d.accessKey = ''
+    d.secretKey = ''
+  }
   const list = store.dataSources.map((s) => ({ ...s }))
   const i = list.findIndex((s) => s.id === d.id)
   if (i >= 0) list[i] = d
@@ -301,13 +309,40 @@ const statusLine = computed(() => {
           />
         </template>
 
-        <template v-if="draft.authType !== 'none'">
+        <template v-if="draft.authType !== 'none' && draft.authType !== 'hmac'">
           <label class="text-sm text-ink-secondary">{{ draft.authType === 'bearer' ? '令牌' : '请求头的值' }}</label>
           <div class="flex items-center gap-2">
             <input
               v-model="draft.token"
               :type="showToken ? 'text' : 'password'"
               placeholder="粘贴对方给你的值"
+              class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-primary focus:outline-none"
+            />
+            <button
+              type="button"
+              class="flex shrink-0 items-center gap-1 rounded-control border border-line px-3 py-2 text-sm text-ink-secondary hover:bg-card"
+              @click="showToken = !showToken"
+            >
+              <AppIcon :name="showToken ? 'visibility-off' : 'visibility'" :size="14" />
+              {{ showToken ? '隐藏' : '显示' }}
+            </button>
+          </div>
+        </template>
+
+        <template v-if="draft.authType === 'hmac'">
+          <label class="text-sm text-ink-secondary">AccessKey</label>
+          <input
+            v-model="draft.accessKey"
+            type="text"
+            placeholder="对方给的 AccessKey ID（明文，作为 X-AK 发送）"
+            class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-primary focus:outline-none"
+          />
+          <label class="text-sm text-ink-secondary">SecretKey</label>
+          <div class="flex items-center gap-2">
+            <input
+              v-model="draft.secretKey"
+              :type="showToken ? 'text' : 'password'"
+              placeholder="对方给的 SecretKey（仅用于本地算签名，不发送出去）"
               class="w-full rounded-control border border-line bg-card px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-primary focus:outline-none"
             />
             <button

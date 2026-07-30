@@ -1,0 +1,17 @@
+{
+  "name": "loop-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "通用循环引擎：状态机推进、挂起恢复、记忆机制（零业务知识）",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx tests/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

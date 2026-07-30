@@ -13,7 +13,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '../api'
-import type { DataSourceProbeResult, McpDataSource, ModelSettings, ProbeResult, RoleModelConfig } from '../types'
+import type { DataSourceProbeResult, McpDataSource, ModelSettings, ProbeResult, PublishConfig, RoleModelConfig } from '../types'
 
 /** 空白角色配置（留空 = 跟随主设置） */
 const EMPTY_ROLE: RoleModelConfig = { model: '', apiBase: '', apiKey: '' }
@@ -129,11 +129,39 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
+  /* ---------- 发布配置（云配置，与模型设置同风格的 load/save） ---------- */
+  /** 发布配置表单（直接 v-model 绑定） */
+  const publishConfig = ref<PublishConfig>({ endpoint: '', accessKey: '', secretKey: '' })
+  /** 发布配置是否已加载 */
+  const publishConfigLoaded = ref(false)
+  /** 发布配置保存中 */
+  const publishConfigSaving = ref(false)
+
+  /** 读取发布配置（幂等） */
+  async function loadPublishConfig(): Promise<void> {
+    publishConfig.value = await api.getPublishConfig()
+    publishConfigLoaded.value = true
+  }
+
+  /** 保存当前发布配置 */
+  async function savePublishConfig(): Promise<void> {
+    publishConfigSaving.value = true
+    try {
+      const snapshot = { ...publishConfig.value }
+      await api.savePublishConfig(snapshot)
+      publishConfig.value = snapshot
+    } finally {
+      publishConfigSaving.value = false
+    }
+  }
+
   return {
     settings, loaded, saving, testing, probe,
     isMultimodal, statusLine,
     load, save, testConnection,
     dataSources, dataSourcesLoaded, dataSourcesSaving, probing,
-    loadDataSources, saveDataSources, probeDataSource
+    loadDataSources, saveDataSources, probeDataSource,
+    publishConfig, publishConfigLoaded, publishConfigSaving,
+    loadPublishConfig, savePublishConfig
   }
 })

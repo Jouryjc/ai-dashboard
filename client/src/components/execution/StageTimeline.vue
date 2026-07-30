@@ -91,12 +91,17 @@ function elapsedOf(s: Stage): string {
           </span>
         </div>
 
-        <!-- 进行中阶段的实时进展（服务端流式推送："正在编写页面…已生成 2,340 字"） -->
+        <!-- 进行中阶段的实时进展（服务端流式推送："正在编写页面…已生成 2,340 字"）；
+             完成后也保留最后一条进展文案，让用户看到"这一步最后在干啥" -->
         <p
-          v-if="s.state === 'active' && s.detail"
-          class="mt-1 flex items-center gap-1.5 text-xs text-status-generating"
+          v-if="s.detail"
+          class="mt-1 flex items-center gap-1.5 text-xs"
+          :class="s.state === 'active' ? 'text-status-generating' : 'text-ink-faint'"
         >
-          <span class="inline-block h-1 w-1 shrink-0 rounded-full bg-status-generating animate-pulse-blue" />
+          <span
+            v-if="s.state === 'active'"
+            class="inline-block h-1 w-1 shrink-0 rounded-full bg-status-generating animate-pulse-blue"
+          />
           <span class="truncate">{{ s.detail }}</span>
         </p>
 

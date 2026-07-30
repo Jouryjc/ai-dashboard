@@ -5,9 +5,10 @@
 import { Router, type Request, type Response } from 'express'
 import * as orch from './orchestrator'
 import { HttpError } from './orchestrator'
+import { getOrCreateAdapter } from './loop-adapter/adapter'
 import { store, type StoredEvent } from './store'
 import { probe } from './gateway'
-import type { ClarificationAnswer, ModelSettings, PreviewResolution } from './wire'
+import type { ClarificationAnswer, ModelSettings, PreviewResolution, PublishConfig } from './wire'
 
 export const router = Router()
 
@@ -97,7 +98,7 @@ router.post(
     const attachments = Array.isArray(req.body?.attachments)
       ? (req.body.attachments as unknown[]).filter((a): a is string => typeof a === 'string')
       : []
-    orch.handleSendMessage(req.params.id, text, attachments)
+    getOrCreateAdapter(req.params.id).handleMessage(text, attachments)
     res.status(202).end()
   })
 )
@@ -106,7 +107,7 @@ router.post(
   '/dashboards/:id/messages/:messageId/answers',
   wrap((req, res) => {
     const answers = (Array.isArray(req.body?.answers) ? req.body.answers : []) as ClarificationAnswer[]
-    orch.handleAnswerClarification(req.params.id, req.params.messageId, answers)
+    getOrCreateAdapter(req.params.id).answerClarification(req.params.messageId, answers)
     res.status(202).end()
   })
 )
@@ -114,7 +115,7 @@ router.post(
 router.post(
   '/dashboards/:id/options/:optionId',
   wrap((req, res) => {
-    orch.handleChooseOption(req.params.id, req.params.optionId)
+    getOrCreateAdapter(req.params.id).chooseOption(req.params.optionId)
     res.status(202).end()
   })
 )
@@ -165,7 +166,7 @@ router.post(
 router.post(
   '/dashboards/:id/versions/:versionId/rollback',
   wrap((req, res) => {
-    orch.handleRollback(req.params.id, req.params.versionId)
+    getOrCreateAdapter(req.params.id).rollback(req.params.versionId)
     res.status(202).end()
   })
 )
@@ -240,6 +241,20 @@ router.post(
       detail: err instanceof Error ? err.message : String(err)
     }))
     res.json(result)
+  })
+)
+
+/* ------------------------------ 发布配置 ------------------------------ */
+
+router.get('/publish-config', (_req, res) => {
+  res.json(orch.getPublishConfig())
+})
+
+router.put(
+  '/publish-config',
+  wrap((req, res) => {
+    orch.savePublishConfig(req.body as PublishConfig)
+    res.status(204).end()
   })
 )
 

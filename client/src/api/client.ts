@@ -21,9 +21,12 @@ import type {
   ModelSettings,
   PreviewResolution,
   ProbeResult,
+  PublishConfig,
+  PublishProgress,
   RunStatus,
   Stage,
-  Version
+  Version,
+  GraphSnapshot
 } from '../types'
 
 /** 事件载荷表：事件名 -> 载荷 */
@@ -55,6 +58,10 @@ export interface ClientEventMap {
   dashboardUpdated: { dashboard: Dashboard }
   /** 人工协助进展：客服的每个代办动作；null = 协助结束 */
   assist: { dashboardId: string; session: AssistSession | null }
+  /** LoopEngine 流程图快照：每个节点完成时推送（调试面板用，含脱敏决策摘要） */
+  graph: { dashboardId: string; graph: GraphSnapshot }
+  /** 发布进度（发布弹窗独占订阅：确认→上传→起服务→成功/失败；不进对话区/右栏，避免重复） */
+  publishProgress: PublishProgress
 }
 
 /** 事件回调 */
@@ -143,6 +150,12 @@ export interface ClientApi {
   /** 测试数据源连接（真实探测；永不抛错，失败体现在 ok=false） */
   probeDataSource(source: McpDataSource): Promise<DataSourceProbeResult>
 
+  /* ---------- 发布配置（云配置，同步 REST 风格，不进 SSE 事件流） ---------- */
+  /** 读取发布配置（云配置） */
+  getPublishConfig(): Promise<PublishConfig>
+  /** 保存发布配置（云配置） */
+  savePublishConfig(config: PublishConfig): Promise<void>
+
   /* ---------- 事件订阅 ---------- */
   /**
    * 订阅事件，返回退订函数。
@@ -176,4 +189,6 @@ export interface WorkbenchSnapshot {
   }
   /** 人工协助会话（无 = null） */
   assistSession: AssistSession | null
+  /** LoopEngine 流程图快照（调试面板用，刷新恢复；无流程时为 null） */
+  graph: GraphSnapshot | null
 }

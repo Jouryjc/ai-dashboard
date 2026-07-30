@@ -17,6 +17,7 @@
   "include": [
     "src/**/*.ts",
     "../client/src/types/index.ts",
-    "../client/src/api/client.ts"
+    "../client/src/api/client.ts",
+    "../loop-engine/src/**/*.ts"
   ]
 }
