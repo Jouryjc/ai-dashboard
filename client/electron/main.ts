@@ -16,6 +16,8 @@ function createWindow(): void {
     minHeight: 720,
     title: 'AI 大屏工作台',
     backgroundColor: '#F5F6FA',
+    // 开发态窗口图标（打包态图标由 electron-builder 从 build/icon.png 生成 icns/ico）
+    icon: path.join(__dirname, '../build/icon.png'),
     // 原生标题栏（UX §8 / C13），不做 frame: false
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
