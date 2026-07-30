@@ -11,6 +11,7 @@ import type { Version } from '../../types'
 import { api } from '../../api'
 import { useSessionStore } from '../../stores/session'
 import { fetchTextAsDownload, sanitizeFilename } from '../../utils/download'
+import { openExternal } from '../../utils/open-external'
 import { formatRelativeTime } from './utils'
 import AppIcon from '../common/AppIcon.vue'
 
@@ -78,6 +79,15 @@ function exportVersion(v: Version): void {
               <p class="text-sm font-medium text-ink">{{ v.label }}</p>
               <span v-if="v.isCurrent" class="rounded-control bg-primary-soft px-1 py-0.5 text-[11px] leading-none text-primary">当前</span>
               <span v-if="v.published" class="inline-flex items-center gap-0.5 rounded-control bg-primary-soft px-1 py-0.5 text-[11px] leading-none text-status-published"><AppIcon name="star" :size="11" /> 已发布</span>
+              <!-- 已发布且有公网地址：打开公网大屏 -->
+              <button
+                v-if="v.published && v.publicUrl"
+                type="button"
+                class="flex h-6 w-6 items-center justify-center rounded-control text-ink-faint hover:bg-panel hover:text-primary"
+                :title="`在新窗口打开 ${v.label} 的公网大屏`"
+                :aria-label="`在新窗口打开 ${v.label} 的公网大屏`"
+                @click="v.publicUrl && openExternal(v.publicUrl)"
+              ><AppIcon name="open-in-new" :size="13" /></button>
               <!-- 导出该版本代码 -->
               <button
                 type="button"
@@ -89,6 +99,26 @@ function exportVersion(v: Version): void {
             </div>
             <p class="mt-0.5 text-xs leading-5 text-ink-secondary">{{ v.summary }}</p>
             <p class="text-xs text-ink-faint">{{ formatRelativeTime(v.createdAt) }}</p>
+
+            <!-- 数据来源明细（演示数据/无数据源时不显示） -->
+            <div v-if="v.dataSourcesUsed?.length" class="mt-1.5 space-y-0.5">
+              <p class="text-[11px] leading-none text-ink-faint">数据来源</p>
+              <ul class="space-y-0.5">
+                <li
+                  v-for="(d, di) in v.dataSourcesUsed"
+                  :key="di"
+                  class="flex items-center gap-1 text-[11px] leading-4 text-ink-secondary"
+                  :title="d.status === 'failed' ? d.error : `${d.source} / ${d.tool}`"
+                >
+                  <span
+                    class="h-1.5 w-1.5 shrink-0 rounded-full"
+                    :class="d.status === 'ok' ? 'bg-status-done' : 'bg-status-attention'"
+                  />
+                  <span class="truncate">{{ d.purpose || d.tool }}</span>
+                  <span class="shrink-0 text-ink-faint">{{ d.rows > 0 ? `${d.rows} 行` : (d.status === 'failed' ? '失败' : '降级') }}</span>
+                </li>
+              </ul>
+            </div>
 
             <!-- 操作：当前版本不给回退/预览（就是它本身） -->
             <div v-if="!v.isCurrent" class="mt-1.5 hidden gap-2 group-hover:flex">

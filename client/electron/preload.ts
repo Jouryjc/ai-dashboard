@@ -14,5 +14,11 @@ contextBridge.exposeInMainWorld('electronApp', {
    * 返回 PNG dataURL；失败（加载出错/超时等）返回 null。
    */
   captureUrl: (url: string): Promise<string | null> =>
-    ipcRenderer.invoke('capture-url', url) as Promise<string | null>
+    ipcRenderer.invoke('capture-url', url) as Promise<string | null>,
+  /**
+   * 用系统默认浏览器打开一个 http(s) 外链（主进程 'open-external' 通道）。
+   * 用于发布后打开公网大屏地址；仅 http(s) 生效，其它协议静默忽略。
+   */
+  openExternal: (url: string): Promise<void> =>
+    ipcRenderer.invoke('open-external', url) as Promise<void>
 })

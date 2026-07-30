@@ -22,6 +22,7 @@ import type {
   ModelSettings,
   PreviewResolution,
   ProbeResult,
+  PublishConfig,
   Version
 } from '../../types'
 import type {
@@ -76,9 +77,18 @@ const DEFAULT_DATA_SOURCES: McpDataSource[] = [
     authType: 'none',
     token: '',
     headerName: '',
+    accessKey: '',
+    secretKey: '',
     enabled: true
   }
 ]
+
+/** 默认发布配置（云配置，演示用空值，鼓励用户去填） */
+const DEFAULT_PUBLISH_CONFIG: PublishConfig = {
+  endpoint: '',
+  accessKey: '',
+  secretKey: ''
+}
 
 /** 每个大屏的运行时（状态 + 定时器 + 队列） */
 interface Runtime {
@@ -98,6 +108,7 @@ export function createMockClient(): ClientApi {
   const sessions = new Map<string, Runtime>()
   let settings: ModelSettings = { ...DEFAULT_SETTINGS }
   let dataSources: McpDataSource[] = DEFAULT_DATA_SOURCES.map((s) => ({ ...s }))
+  let publishConfig: PublishConfig = { ...DEFAULT_PUBLISH_CONFIG }
 
   /* ---------- 断线模拟（UX §7.3）：断线期间事件进缓冲，重连后按序补齐 ---------- */
   let disconnected = false
@@ -335,6 +346,7 @@ export function createMockClient(): ClientApi {
       blocker: state.blocker,
       versions: [...state.versions],
       preview: { ...state.preview },
+      graph: null,
       assistSession: state.assistSession
     }
   }
@@ -463,9 +475,20 @@ export function createMockClient(): ClientApi {
     // ---- 发布 ----
     async publish(dashboardId: string): Promise<void> {
       const rt = getRuntime(dashboardId)
-      if (rt.state.runStatus === 'idle' && rt.state.versions.length > 0) {
-        scripts.startPublishFlow(rt.ctx)
-      }
+      if (rt.state.runStatus !== 'idle' || rt.state.versions.length === 0) return
+      const cur = rt.state.versions.find((v) => v.isCurrent)
+      if (!cur) return
+      // mock 模式模拟真实发布进度（uploading → serving → success），推 publishProgress 事件给发布弹窗
+      emit('publishProgress', { dashboardId, phase: 'uploading', message: '正在准备云端环境（创建/复用 CodeBox）…' })
+      setTimeout(() => emit('publishProgress', { dashboardId, phase: 'uploading', message: '正在把大屏上传到云端…' }), 800)
+      setTimeout(() => emit('publishProgress', { dashboardId, phase: 'serving', message: '正在云端启动服务并发布到公网…' }), 1800)
+      setTimeout(() => {
+        const publicUrl = `http://59.37.133.154:20000`
+        // 成功：写 publicUrl + 标记已发布（复用 ctx 的 upsertVersion + updateDashboard）
+        rt.ctx.upsertVersion({ ...cur, published: true, publicUrl })
+        rt.ctx.updateDashboard({ status: 'published' })
+        emit('publishProgress', { dashboardId, phase: 'success', message: `大屏已发布，公网访问地址：${publicUrl}`, publicUrl })
+      }, 2800)
     },
 
     // ---- 人工协助 ----
@@ -559,6 +582,15 @@ export function createMockClient(): ClientApi {
         message: `连接成功，发现 ${tools.length} 个可用工具`,
         detail: null
       }
+    },
+
+    // ---- 发布配置 ----
+    async getPublishConfig(): Promise<PublishConfig> {
+      // 返回拷贝，避免表单 v-model 直接改到引擎里的存档
+      return { ...publishConfig }
+    },
+    async savePublishConfig(config: PublishConfig): Promise<void> {
+      publishConfig = { ...config }
     },
 
     // ---- 事件订阅 ----

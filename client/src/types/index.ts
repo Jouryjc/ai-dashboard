@@ -39,6 +39,28 @@ export interface Dashboard {
 
 /* ==================== 版本（版本时间线节点） ==================== */
 
+/**
+ * 单条取数明细：记录这个版本生成时，从哪个数据源、用哪个工具、取了什么、结果如何。
+ * 由 fetchDataForCreate 捕获，commitVersion 时随版本落盘（previews/<dashId>/<verId>/data-used.json）
+ * 并塞进 Version.dataSourcesUsed，供版本抽屉展示「数据来源」。
+ */
+export interface DataUseEntry {
+  /** 数据源名称（McpDataSource.name） */
+  source: string
+  /** 工具名（白名单校验过的真实工具，如 query_metric） */
+  tool: string
+  /** 取数规划 LLM 给的大白话用途（可能为空） */
+  purpose: string
+  /** 归一后的数据结构类型，复用 normalizeToolResult 的判定 */
+  kind: 'metric' | 'records' | 'topology' | 'catalog' | 'raw'
+  /** 取到的行数（metric/records=rows.length；topology=各层节点总和；catalog=清单项数；raw=0） */
+  rows: number
+  /** 结果状态：ok=正常取到 / fallback_raw=形状异常降级原文 / failed=取数抛异常 */
+  status: 'ok' | 'fallback_raw' | 'failed'
+  /** 失败时的错误摘要（status=failed 才有） */
+  error?: string
+}
+
 /** 一个版本节点：回退 = 生成新节点，历史永不删除（UX §5.3） */
 export interface Version {
   /** 版本 ID */
@@ -55,6 +77,10 @@ export interface Version {
   published: boolean
   /** 是否为当前正在查看/使用的版本 */
   isCurrent: boolean
+  /** 发布后的公网访问地址（如 http://59.37.133.154:20012）；未发布时为 undefined */
+  publicUrl?: string
+  /** 本版本生成时用到的数据源明细（演示数据/无数据源时为 undefined） */
+  dataSourcesUsed?: DataUseEntry[]
 }
 
 /* ==================== 运行状态（工作台全局状态机，UX §7.1） ==================== */
@@ -373,6 +399,8 @@ export type McpAuthType =
   | 'bearer'
   /** 自定义请求头（用户自己填请求头名和值，如 X-Api-Key） */
   | 'header'
+  /** AK/SK + HMAC 签名（每请求按 METHOD\nPATH\nTIMESTAMP\nBODY 算 HMAC-SHA256，带 X-AK/X-Timestamp/X-Signature 三个头） */
+  | 'hmac'
 
 /** 一个 MCP 数据源（生成大屏时从它取真实数据，数据在生成期烤进 HTML） */
 export interface McpDataSource {
@@ -388,6 +416,10 @@ export interface McpDataSource {
   token: string
   /** 自定义请求头名（仅 authType='header' 时用，如 "X-Api-Key"） */
   headerName: string
+  /** 访问密钥 ID（仅 authType='hmac' 时用，作为 X-AK 头的值） */
+  accessKey: string
+  /** 访问密钥 Secret（仅 authType='hmac' 时用，用于算 HMAC-SHA256 签名，不随请求发送） */
+  secretKey: string
   /** 是否启用（关掉后生成大屏时不从这个源取数） */
   enabled: boolean
 }
@@ -404,6 +436,41 @@ export interface DataSourceProbeResult {
   detail: string | null
 }
 
+/**
+ * 发布配置（生成好的大屏要发布到哪个云上，需要先在这里填好云的接入信息）。
+ * 三个字段：endpoint 访问地址 / accessKey 访问密钥 ID / secretKey 访问密钥（界面默认打码）。
+ */
+export interface PublishConfig {
+  /** 对象存储 / 云服务的访问地址，如 "https://oss-cn-hangzhou.aliyuncs.com" */
+  endpoint: string
+  /** 访问密钥 ID（Access Key ID） */
+  accessKey: string
+  /** 访问密钥（Secret Access Key，界面默认打码显示） */
+  secretKey: string
+}
+
+/** 发布进度阶段（驱动发布弹窗的视图切换） */
+export type PublishPhase =
+  | 'idle'       // 未发布（确认页）
+  | 'uploading'  // 准备云环境 + 上传大屏
+  | 'serving'    // 起服务 + 暴露公网
+  | 'success'    // 发布成功
+  | 'failed'     // 发布失败
+
+/** 发布进度事件（publishProgress，发布弹窗独占订阅，不进对话区/右栏） */
+export interface PublishProgress {
+  /** 大屏 ID */
+  dashboardId: string
+  /** 当前阶段 */
+  phase: PublishPhase
+  /** 大白话进度文本，如 "正在把大屏上传到云端…" */
+  message: string
+  /** 成功时的公网访问地址（phase='success' 才有） */
+  publicUrl?: string
+  /** 失败原因（phase='failed' 才有） */
+  error?: string
+}
+
 /* ==================== 其它 ==================== */
 
 /** 回答澄清卡片时回传的答案 */
@@ -414,4 +481,47 @@ export interface ClarificationAnswer {
   optionId: string
   /** 自定义输入文本（点选项时为空串） */
   customText: string
+}
+
+/* ==================== LoopEngine 流程图快照（调试面板用） ==================== */
+
+/** 节点状态（引擎态，与 StageState 业务态不同：含 failed/skipped） */
+export type GraphNodeStatus = 'pending' | 'active' | 'done' | 'failed' | 'skipped'
+
+/**
+ * 节点快照（脱敏后）：summary 是从 output/refs 白名单提取的决策摘要，
+ * 大字段（HTML/dataBlock/dataURL）已转成长度，前端展开只看关键字段值。
+ */
+export interface GraphNodeSnapshot {
+  /** 节点 ID（planner/match/fetch/coder/check/repair/finish） */
+  id: string
+  /** 节点中文名（理解需求/匹配模板/…） */
+  name: string
+  /** 引擎态 */
+  status: GraphNodeStatus
+  /** 决策摘要：key=字段名，value=已脱敏的值（字符串/数字/布尔/null） */
+  summary: Record<string, string | number | boolean | null>
+}
+
+/** 流程图的边（含 guard 名，前端可展示"为什么走这条边"） */
+export interface GraphEdge {
+  from: string
+  to: string
+  /** 守卫名（如 isPassed），无则无条件兜底 */
+  guard?: string
+}
+
+/**
+ * 流程图整体快照（可序列化，不含 guards 函数）。
+ * 由服务端 adapter 在每个节点完成时摘取推送，调试面板渲染用。
+ */
+export interface GraphSnapshot {
+  /** 全部节点（按定义顺序） */
+  nodes: GraphNodeSnapshot[]
+  /** 全部边（拓扑） */
+  edges: GraphEdge[]
+  /** 当前执行指针（高亮用） */
+  current: string | null
+  /** 挂起标记（非 null 时流程在等人/等恢复） */
+  awaiting: string | null
 }

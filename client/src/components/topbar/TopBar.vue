@@ -14,7 +14,9 @@ import { api } from '../../api'
 import { useSessionStore } from '../../stores/session'
 import { useDashboardsStore } from '../../stores/dashboards'
 import { fetchTextAsDownload, sanitizeFilename } from '../../utils/download'
+import { openExternal } from '../../utils/open-external'
 import PresentationOverlay from '../preview/PresentationOverlay.vue'
+import PublishModal from './PublishModal.vue'
 import AppIcon from '../common/AppIcon.vue'
 
 const emit = defineEmits<{
@@ -70,6 +72,12 @@ const versionView = computed<VersionView>(() => {
     : { kind: 'unpublished', label: cur.label }
 })
 
+/** 当前版本的公网访问地址（已发布且有 publicUrl 才有值，用于「打开预览」按钮） */
+const publishedUrl = computed(() => {
+  const cur = session.versions.find((v) => v.isCurrent)
+  return cur?.published ? cur.publicUrl : undefined
+})
+
 /* ---------- 历史版本横幅 ---------- */
 const viewingLabel = computed(
   () => session.versions.find((v) => v.id === session.viewingVersionId)?.label ?? ''
@@ -88,14 +96,15 @@ function goSettings(): void {
   void router.push('/settings')
 }
 
-/* ---------- 发布（F6：非管理员 = 提交发布申请，先弹确认） ---------- */
-const publishConfirmOpen = ref(false)
-/** 当前版本（确认弹窗里展示截图预览 + 变更摘要，UX §5.6） */
+/* ---------- 发布（全流程托管在 PublishModal 弹窗） ---------- */
+/** 当前版本（导出代码 + 发布弹窗确认页都用） */
 const currentVersion = computed(() => session.versions.find((v) => v.isCurrent) ?? null)
+/** 发布弹窗是否打开（idle/进度/成功/失败 全在弹窗内） */
+const publishModalOpen = ref(false)
 
 function askPublish(): void {
   menuOpen.value = false
-  publishConfirmOpen.value = true
+  publishModalOpen.value = true
 }
 
 /* ---------- 导出当前版本代码 ---------- */
@@ -110,13 +119,6 @@ function exportCurrentVersion(): void {
   void fetchTextAsDownload(url, filename).catch(() => {
     /* 静默失败：导出失败不打断使用 */
   })
-}
-
-async function confirmPublish(): Promise<void> {
-  publishConfirmOpen.value = false
-  await session.publish()
-  // 等待审批期间展开右栏执行面板，让用户看到「等待审批」阶段
-  session.togglePanel(false)
 }
 </script>
 
@@ -170,6 +172,17 @@ async function confirmPublish(): Promise<void> {
           <span class="h-1.5 w-1.5 rounded-full bg-status-done" aria-hidden="true"></span>
           {{ versionView.label }} · 已保存
         </span>
+        <!-- 已发布且有公网地址：打开预览（系统默认浏览器） -->
+        <button
+          v-if="publishedUrl"
+          type="button"
+          class="flex items-center gap-1 rounded-control px-1.5 py-0.5 text-xs text-primary hover:bg-primary-soft"
+          :title="`在新窗口打开公网大屏：${publishedUrl}`"
+          @click="openExternal(publishedUrl)"
+        >
+          <AppIcon name="open-in-new" :size="13" />
+          打开预览
+        </button>
       </div>
 
       <div class="flex-1"></div>
@@ -233,7 +246,7 @@ async function confirmPublish(): Promise<void> {
             class="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-card border border-line bg-card py-1 shadow-pop"
           >
             <li>
-              <!-- 提交发布申请（F6）：空闲且有可用版本时才能点 -->
+              <!-- 发布（F6）：空闲且有可用版本时才能点；点开发布弹窗全流程托管 -->
               <button
                 type="button"
                 class="flex w-full items-center justify-between px-3 py-1.5 text-left text-xs"
@@ -242,7 +255,7 @@ async function confirmPublish(): Promise<void> {
                 :title="session.canPublish ? '' : '做好一版并且空闲时才能发布'"
                 @click="askPublish"
               >
-                提交发布申请
+                发布
               </button>
             </li>
             <li>
@@ -294,45 +307,7 @@ async function confirmPublish(): Promise<void> {
     <!-- 全屏演示模式（覆盖全窗口，Esc 退出） -->
     <PresentationOverlay v-if="presenting" @exit="presenting = false" />
 
-    <!-- 发布确认（F6：提交发布申请，管理员审批后正式发布） -->
-    <Teleport to="body">
-      <div
-        v-if="publishConfirmOpen"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-ink/40"
-        role="dialog"
-        aria-label="提交发布申请"
-        @click.self="publishConfirmOpen = false"
-      >
-        <div class="w-80 rounded-card bg-card p-5 shadow-pop">
-          <p class="text-sm font-medium text-ink">提交发布申请？</p>
-          <!-- 截图预览（UX §5.6） -->
-          <img
-            v-if="currentVersion?.screenshotUrl"
-            :src="currentVersion.screenshotUrl"
-            alt="当前版本截图"
-            class="mt-3 aspect-video w-full rounded-control border border-line object-cover"
-          />
-          <div class="mt-3 rounded-control bg-panel px-3 py-2 text-xs leading-5 text-ink-secondary">
-            <p>大屏：「{{ session.dashboardName }}」{{ currentVersion?.label ?? '' }}</p>
-            <p class="mt-0.5">本次改动：{{ currentVersion?.summary || '无说明' }}</p>
-          </div>
-          <p class="mt-2 text-xs leading-5 text-ink-secondary">
-            提交给管理员审批，通过后正式发布，审批结果会第一时间通知你。
-          </p>
-          <div class="mt-4 flex justify-end gap-2">
-            <button
-              type="button"
-              class="rounded-control border border-line bg-card px-3 py-1.5 text-sm text-ink-secondary hover:bg-panel"
-              @click="publishConfirmOpen = false"
-            >再想想</button>
-            <button
-              type="button"
-              class="rounded-control bg-primary px-3 py-1.5 text-sm text-white hover:bg-primary-hover active:bg-primary-active"
-              @click="confirmPublish"
-            >提交申请</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <!-- 发布弹窗（全流程托管：确认 → 进度 → 成功/失败） -->
+    <PublishModal v-if="publishModalOpen" @close="publishModalOpen = false" />
   </header>
 </template>

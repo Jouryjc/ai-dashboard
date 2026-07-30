@@ -2,9 +2,10 @@
 
 硬约束（必须全部满足，否则检查不通过）：
 1. 输出一个完整的 HTML 文件（从 <!DOCTYPE html> 到 </html>），1920×1080 的数据大屏，深色科技风。
-2. 所有图表用内联 SVG / CSS / JavaScript 手写实现（柱状图、折线图、饼图、仪表盘等）：提供了真实数据块时，必须用其中的数值写死进 HTML；没提供时才用写死的演示数据。数据块里禁止出现任何网址。
-3. 绝对禁止引用任何外部资源：不能有 src="http..."、href="http..."、url(http...)，不能用 CDN、外部字体、外部图片。所有内容必须写在这一个文件里。
+2. 所有图表用内联 SVG / CSS / JavaScript 手写实现（柱状图、折线图、饼图、仪表盘等）。提供了真实数据块时，页面必须在运行时读取 data.json 里的数值来渲染（见下方「数据读取范式」），禁止把数据块里的数值写死进 HTML；没提供数据块时才用写死的演示数据。数据块里不会出现网址。
+3. 禁止引用任何外部网络资源：不能有 src="http(s)..."、href="http(s)..."、url(http(s)...)，不能用 CDN、外部字体、外部图片。所有样式与脚本写在这一个文件里。唯一允许的外部读取是同源相对路径 fetch('./data.json')（仅当提供了数据块时）--它和发布时内联的 <script type="application/json" id="dashboard-data"> 是同一个数据来源，不要写成别的 URL。
 4. 只输出 HTML 本身，不要输出任何解释文字。
+5. ★模板与真数据的关系★：如果提供了模板 HTML（布局模板 + 组件模板），照模板的 CSS/结构/配色/图表形态还原样式，但模板 HTML 里的所有数字都是占位演示数据，禁止照抄！页面上显示的每个数值都必须来自 data.json（运行时读取），用真数据替换模板里的占位数字。模板里出现的指标名/设备名/告警内容也只是示例，要用真数据里的真实名称替换。
 
 页面骨架（固定设计稿舞台，必须照做）：
 1. 写死一个 1920×1080 的舞台元素（.stage { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }），所有内容都摆在舞台里，不做流式重排。
@@ -54,5 +55,28 @@
 - 数字时钟（1s 刷新）、节点呼吸（opacity 2.4s）、飞线流动（stroke-dashoffset 1.6s）。
 - 不加入场动画、不加悬浮缩放；全部包 @media (prefers-reduced-motion: reduce) 静态降级：用户系统开了减弱动态效果时动画静止，但内容完整可读。
 
+数据读取范式（提供了真实数据块时必须照做，禁止把数值写死）：
+- 页面所有真实数值都必须在运行时从数据源读取，不要把数据块里看到的数字直接写进 HTML。
+- 数据源有两个等价入口，用一个加载器优先取内联块（发布/下载场景，单文件自包含），取不到再 fetch 同源 data.json（本地预览场景）。照抄下面这段加载器，放在 `<script type="module">` 最前面（★必须用 type="module"★，因为加载器用了顶层 await，普通 `<script>` 不支持顶层 await 会报 SyntaxError 导致整页脚本不执行、页面黑屏）：
+  ```js
+  const D = await (async () => {
+    const el = document.getElementById('dashboard-data')
+    if (el) return JSON.parse(el.textContent)
+    const res = await fetch('./data.json')
+    return await res.json()
+  })()
+  ```
+- D 是一个数组，每项形如 { source, 用途, kind, 数据 }，与下方「真实数据」块里的结构完全一致。按 D[i].kind 取值渲染（取数方式见下方「数据纪律」）。例如 D[0].数据.rows[0].avg_cpu_usage 就是要显示的数，写进图表/卡片，不要换成别的数。
+- 加载失败（fetch 报错或返回非数组）时，各面板降级显示「数据加载失败」并保留布局，不要整页空白。
+- 没提供数据块时（数据块为空）不要写这段加载器，直接用写死的演示数据。
+
 数据纪律：
-- 用户没给数据时用示例数据，并在面板标题或旁边标注「示例数据」；不编造看似真实的业务指标名。
+- 页面里出现的每个数值都必须来自运行时读取的数据（D 数组），不要自己编数字、也不要把数据块里的数写死进 HTML。先看每条数据的"kind"字段，按类型取数：
+  - kind=metric：数值在"数据.rows"数组里，每行对象的字段值就是你要显示的数（字段名见"数据.schema"）。例如 D 里某条 rows[0].avg_cpu_usage=51.4，就在指标卡里用 D[i].数据.rows[0].avg_cpu_usage 渲染 51.4，不要写成 45 或 120，也不要把 51.4 写死。
+  - kind=records：每行一条记录在"数据.rows"里，字段含义见"数据.schema"的 display。表格里的每行都必须来自 D 里这条的真实记录，用循环渲染 D[i].数据.rows，不要编造设备名/告警内容、不要写死行。
+  - kind=topology：分层结构在"数据.layers"里，每层 layer.nodes 是该层节点。每个节点必须照抄：node.name 写在拓扑节点上（不要编别的名字）、node.status 决定节点颜色（normal=正常色/warning=警示色/critical=危险色）、node.metrics 数组里每项的 value 是实时指标值（如"99.2%""156"），照抄标在节点旁边，不要换成别的数。渲染时遍历 D[i].数据.layers，按节点画。
+  - kind=catalog：这是可用指标清单（list_metrics/suggest_metrics 返回），不是画图数据。里面的 id/name/description 供你理解有哪些指标可查，不要把清单内容当数值写进大屏；需要数值的去找 kind=metric 的数据条。
+  - kind=raw：用途带⚠️"非标准结构"标记，原文在"数据.raw"里。能提取数值就提取并标注，提取不出来就这块改用示例数据（标题旁标注「示例数据」），不要编造。
+- kind=metric 时，"数据.meta.default_chart"已经告诉你该画什么图（stat_card/gauge/bar/line/pie），按它选图表类型，不要自己决定。
+- kind=metric 时，"数据.meta.unit"是单位，跟在数字后面。
+- 用户没给数据时（数据块为空）才用示例数据，并在面板标题或旁边标注「示例数据」；不编造看似真实的业务指标名、设备名、告警内容。
