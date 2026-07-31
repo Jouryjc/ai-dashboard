@@ -28,7 +28,13 @@ import type {
   Stage,
   Version
 } from '../../types'
-import { nextId, previewUrl, type SessionState } from './data'
+import {
+  dashboardManifest,
+  nextId,
+  passedValidationReport,
+  previewUrl,
+  type SessionState
+} from './data'
 
 /* ============================== Ctx：engine 提供的能力 ============================== */
 
@@ -819,7 +825,9 @@ function commitVersion(ctx: Ctx, summary: string, variant: 1 | 2): void {
     createdAt: ctx.now(),
     screenshotUrl: ctx.s.dashboard.coverUrl,
     published: false,
-    isCurrent: true
+    isCurrent: true,
+    manifest: dashboardManifest(),
+    validationReport: passedValidationReport()
   }
   ctx.addVersion(v, url)
   ctx.previewReady(v.id, url)
@@ -921,7 +929,9 @@ export function doRollback(ctx: Ctx, versionId: string): void {
     createdAt: ctx.now(),
     screenshotUrl: target.screenshotUrl,
     published: false,
-    isCurrent: true
+    isCurrent: true,
+    manifest: target.manifest,
+    validationReport: target.validationReport
   }
   ctx.addVersion(v, url)
   ctx.previewReady(v.id, url)

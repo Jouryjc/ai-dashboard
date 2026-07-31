@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "skill": "idux-style",
+  "profile": "management-list",
+  "iduxVersion": "2.11.0",
+  "source": {
+    "repository": "https://github.com/IDuxFE/idux",
+    "website": "https://idux.site/",
+    "commit": "7047b9c1d6b640b79252c1aaca6ac4c656873aa2"
+  },
+  "themes": ["light", "dark"],
+  "viewports": [
+    { "name": "large", "width": 1920, "height": 1080 },
+    { "name": "small", "width": 1366, "height": 768 }
+  ]
+}

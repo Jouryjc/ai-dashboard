@@ -15,6 +15,8 @@
  *   - system 含「大屏读图精读专家」→ 返回一份固定的参考图内容清单 JSON（无地图，避免联网备料）
  *   - system 含「大屏验收员」→ 返回截图审查 JSON：需求文本带「演示视觉修复」时
  *     同一需求首次报一个问题（之后的复查放行），否则空清单
+ *   - system 含「IDux 普通业务页面的参考图分析器」→ 返回受控管理列表视觉清单
+ *   - system 含「IDux 企业级业务页面的产品分析器」→ 返回包含呈现规格的云主机列表 JSON
  */
 import http from 'node:http'
 
@@ -70,7 +72,7 @@ function plannerJson(hasImage) {
   })
 }
 
-function skeletonHtml() {
+function skeletonHtml(userText = '') {
   // 带两个 PANEL 占位注释的骨架（>2KB，无外部引用）
   const pad = '/* 骨架样式 */\n'.repeat(120)
   return `<!DOCTYPE html>
@@ -90,12 +92,20 @@ main { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 24px; 
 <!--PANEL:核心指标-->
 <!--PANEL:趋势图表-->
 </main>
+${/真实数据/.test(userText) && /data\.json/.test(userText)
+  ? `<script type="module">
+const inline = document.getElementById('dashboard-data')
+const D = inline ? JSON.parse(inline.textContent || '[]') : await fetch('./data.json').then((res) => res.json())
+window.__SMOKE_DASHBOARD_DATA__ = D
+</script>`
+  : ''}
 </body>
 </html>`
 }
 
 function dashboardHtml(userText) {
   const title = (userText.match(/请做这样一个大屏：([^\n]+)/)?.[1] ?? '数据大屏').slice(0, 30)
+  const hasRealData = /真实数据/.test(userText) && /data\.json/.test(userText)
   // 联调标记：用户需求含「演示视觉修复」时埋一个视觉问题，供「视觉检查 → 修复问题」链路演练；
   // 修复请求（含"检查没通过"）返回干净 HTML，模拟修复成功
   const marker = userText.includes('演示视觉修复') && !userText.includes('检查没通过')
@@ -103,8 +113,18 @@ function dashboardHtml(userText) {
     : ''
   // 真实数据标记：user 文本含「以下是真实数据」说明编排层注入了取数快照，
   // 把特征数值 88.8% 回声进页面，冒烟据此验证 MCP 数据真的烤进了 HTML
-  const dataKpi = userText.includes('以下是真实数据')
-    ? '<div class="kpi">88.8%<small>目标完成率（真实数据）</small></div>\n      '
+  const dataKpi = hasRealData
+    ? '<div class="kpi"><span id="completion-rate">--</span><small>目标完成率（真实数据）</small></div>\n      '
+    : ''
+  const dataLoader = hasRealData
+    ? `<script type="module">
+    const inline = document.getElementById('dashboard-data')
+    const D = inline ? JSON.parse(inline.textContent || '[]') : await fetch('./data.json').then((res) => res.json())
+    const raw = D?.[0]?.数据?.raw
+    const metrics = typeof raw === 'string' ? JSON.parse(raw) : (D?.[0]?.数据?.rows?.[0] ?? {})
+    const completion = document.getElementById('completion-rate')
+    if (completion) completion.textContent = String(metrics.completionRate ?? '--')
+  </script>`
     : ''
   // 用重复的内联柱图把内容撑到 2KB 以上，全程无外部引用
   const bars = Array.from({ length: 12 }, (_, i) => {
@@ -166,6 +186,7 @@ ${marker}<html lang="zh-CN">
     </section>
   </main>
   <footer>本页面为完整自包含文件，未引用任何外部资源 · 1920×1080</footer>
+  ${dataLoader}
   <script>
     // 纯演示：让 KPI 数字轻微跳动，模拟实时刷新
     setInterval(() => {
@@ -228,6 +249,73 @@ const server = http.createServer((req, res) => {
       let content
       if (payload.max_tokens === 1) {
         content = image ? '一个小点。' : 'ok'
+      } else if (sys.includes('IDux 普通业务页面的参考图分析器')) {
+        content = JSON.stringify({
+          pagePattern: 'management-list',
+          title: '云主机管理',
+          description: '集中查看云主机的状态、规格、地域和创建时间。',
+          entityName: '云主机',
+          primaryAction: '创建云主机',
+          navigation: 'side',
+          navigationItems: ['实例管理', '镜像', '安全组'],
+          summaryCards: [
+            { label: '实例总数', value: '6', helper: '当前演示数据', tone: 'normal' },
+            { label: '运行中', value: '4', helper: '状态正常', tone: 'success' }
+          ],
+          columns: [
+            { label: '实例 ID', type: 'text' },
+            { label: '实例名称', type: 'text' },
+            { label: '状态', type: 'status' },
+            { label: '地域', type: 'text' },
+            { label: '规格', type: 'text' },
+            { label: '公网 IP', type: 'text' },
+            { label: '创建时间', type: 'datetime' }
+          ],
+          density: 'compact',
+          surface: 'flat',
+          toolbar: 'inline',
+          theme: 'light',
+          visibleTexts: ['云主机列表', '刷新'],
+          unreadable: [],
+          redactions: [],
+          confidence: 'high'
+        })
+      } else if (sys.includes('IDux 企业级业务页面的产品分析器')) {
+        content = JSON.stringify({
+          title: '云主机管理',
+          description: '集中查看演示实例的运行状态、地域、规格、公网地址和创建时间。',
+          entityName: '云主机',
+          primaryAction: '创建云主机',
+          presentation: {
+            navigation: 'side',
+            navigationItems: ['实例管理', '镜像', '安全组'],
+            density: 'compact',
+            surface: 'flat',
+            toolbar: 'inline',
+            theme: 'light'
+          },
+          summaryCards: [
+            { label: '实例总数', value: '6', helper: '当前演示数据', tone: 'normal' },
+            { label: '运行中', value: '4', helper: '状态正常', tone: 'success' }
+          ],
+          columns: [
+            { key: 'instanceId', label: '实例 ID', type: 'text' },
+            { key: 'name', label: '实例名称', type: 'text' },
+            { key: 'status', label: '状态', type: 'status' },
+            { key: 'region', label: '地域', type: 'text' },
+            { key: 'specification', label: '规格', type: 'text' },
+            { key: 'publicIp', label: '公网 IP', type: 'text' },
+            { key: 'createdAt', label: '创建时间', type: 'datetime' }
+          ],
+          rows: [
+            { instanceId: 'ecs-demo-01', name: '生产网关-01', status: '运行中', region: '华东 1', specification: '4 核 8 GB', publicIp: '203.0.113.12', createdAt: '2026-07-28 09:12:00' },
+            { instanceId: 'ecs-demo-02', name: '订单服务-02', status: '运行中', region: '华东 1', specification: '8 核 16 GB', publicIp: '203.0.113.27', createdAt: '2026-07-26 14:38:00' },
+            { instanceId: 'ecs-demo-03', name: '数据分析-01', status: '需关注', region: '华北 2', specification: '16 核 32 GB', publicIp: '198.51.100.41', createdAt: '2026-07-21 11:05:00' },
+            { instanceId: 'ecs-demo-04', name: '测试环境-03', status: '已停止', region: '华南 1', specification: '2 核 4 GB', publicIp: '198.51.100.73', createdAt: '2026-07-18 16:44:00' }
+          ]
+        })
+      } else if (sys.includes('IDux 业务页面视觉验收员')) {
+        content = JSON.stringify({ verdict: 'pass', issues: [] })
       } else if (sys.includes('大屏规划师')) {
         content = plannerJson(image)
       } else if (sys.includes('模板匹配师')) {
@@ -282,7 +370,7 @@ const server = http.createServer((req, res) => {
           : JSON.stringify({ issues: [] })
       } else if (sys.includes('大屏开发') && userText(messages).includes('占位注释')) {
         // 拆分步骤第 1 步：骨架（带 PANEL 占位注释）
-        content = skeletonHtml()
+        content = skeletonHtml(userText(messages))
       } else if (sys.includes('大屏开发') && userText(messages).includes('只写「')) {
         // 拆分步骤第 2..N 步：单个面板片段（标题带面板名，模拟按名生成）
         const panelName = userText(messages).match(/只写「([^」]+)」/)?.[1] ?? '面板'

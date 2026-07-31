@@ -15,6 +15,7 @@
  */
 import type {
   AgentStep,
+  ArtifactManifest,
   AssistSession,
   Blocker,
   ChatMessage,
@@ -23,6 +24,8 @@ import type {
   PreviewState,
   RunStatus,
   Stage,
+  TargetProfile,
+  ValidationReport,
   Version
 } from '../../types'
 
@@ -35,6 +38,32 @@ export function nextId(prefix: string): string {
 
 /** 预览产物主题（决定增量修改时 iframe 用哪个 HTML） */
 export type PreviewTheme = 'k8s' | 'sales'
+
+export function dashboardTargetProfile(): TargetProfile {
+  return {
+    framework: 'static-html',
+    uiLibrary: 'none',
+    uiLibraryVersion: null,
+    viewportProfiles: ['1920x1080', '2560x1440']
+  }
+}
+
+export function dashboardManifest(): ArtifactManifest {
+  return {
+    schemaVersion: 1,
+    kind: 'dashboard',
+    entryFile: 'index.html',
+    files: ['index.html'],
+    exportFormat: 'html'
+  }
+}
+
+export function passedValidationReport(): ValidationReport {
+  return {
+    status: 'passed',
+    gates: [{ id: 'mock-validation', title: '产物检查', status: 'passed', detail: '演示产物已登记' }]
+  }
+}
 
 /** 每个大屏在 mock 引擎里的完整状态（enterDashboard 快照的来源） */
 export interface SessionState {
@@ -88,7 +117,17 @@ function step(id: string, stageId: string, title: string, detail: string | null,
 }
 
 function version(dashId: string, label: string, summary: string, createdAt: number, screenshotUrl: string, published: boolean, isCurrent: boolean): Version {
-  return { id: `${dashId}-${label}`, label, summary, createdAt, screenshotUrl, published, isCurrent }
+  return {
+    id: `${dashId}-${label}`,
+    label,
+    summary,
+    createdAt,
+    screenshotUrl,
+    published,
+    isCurrent,
+    manifest: dashboardManifest(),
+    validationReport: passedValidationReport()
+  }
 }
 
 /* ------------------------------ 预置数据 ------------------------------ */
@@ -105,9 +144,12 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
     dashboard: {
       id: 'dash-k8s',
       name: 'K8s 集群监控大屏',
+      artifactKind: 'dashboard',
+      targetProfile: dashboardTargetProfile(),
       status: 'generating',
       coverUrl: k8sCover,
       currentVersionLabel: null,
+      currentRevisionId: null,
       updatedAt: now - 2 * MIN
     },
     runStatus: 'generating',
@@ -210,9 +252,12 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
     dashboard: {
       id: 'dash-sales',
       name: '销售日报大屏',
+      artifactKind: 'dashboard',
+      targetProfile: dashboardTargetProfile(),
       status: 'published',
       coverUrl: salesCover,
       currentVersionLabel: 'v3',
+      currentRevisionId: 'dash-sales-v3',
       updatedAt: now - DAY
     },
     runStatus: 'idle',
@@ -245,9 +290,12 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
     dashboard: {
       id: 'dash-logistics',
       name: '物流追踪大屏',
+      artifactKind: 'dashboard',
+      targetProfile: dashboardTargetProfile(),
       status: 'needs_attention',
       coverUrl: logisticsCover,
       currentVersionLabel: 'v1',
+      currentRevisionId: 'dash-logistics-v1',
       updatedAt: now - 3 * DAY
     },
     runStatus: 'blocked',
@@ -274,9 +322,12 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
     dashboard: {
       id: 'dash-energy',
       name: '能耗分析大屏',
+      artifactKind: 'dashboard',
+      targetProfile: dashboardTargetProfile(),
       status: 'completed',
       coverUrl: energyCover,
       currentVersionLabel: 'v2',
+      currentRevisionId: 'dash-energy-v2',
       updatedAt: now - 5 * HOUR
     },
     runStatus: 'idle',
@@ -307,9 +358,12 @@ export function buildSeedSessions(now = Date.now()): SessionState[] {
     dashboard: {
       id: 'dash-retail',
       name: '门店经营看板',
+      artifactKind: 'dashboard',
+      targetProfile: dashboardTargetProfile(),
       status: 'completed',
       coverUrl: retailCover,
       currentVersionLabel: 'v1',
+      currentRevisionId: 'dash-retail-v1',
       updatedAt: now - DAY - HOUR
     },
     runStatus: 'idle',

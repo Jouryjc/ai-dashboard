@@ -19,6 +19,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { strFromU8, unzipSync } from 'fflate'
 
 const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const DATA_DIR = path.join(SERVER_DIR, 'data-smoke')
@@ -38,7 +39,9 @@ function freePort() {
 }
 
 let BASE = ''
+let PREVIEW_BASE = ''
 let STUB_PORT = 0
+const MASKED_SECRET = '••••••••'
 
 let passed = 0
 function ok(name, extra = '') {
@@ -75,7 +78,7 @@ process.on('SIGINT', () => { cleanup(); process.exit(130) })
 async function api(method, p, body) {
   const res = await fetch(`${BASE}/api/v1${p}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-AI-Dashboard-Client': '1' },
     body: body === undefined ? undefined : JSON.stringify(body)
   })
   const text = await res.text()
@@ -139,24 +142,34 @@ async function main() {
   console.log('== 冒烟开始 ==')
   fs.rmSync(DATA_DIR, { recursive: true, force: true })
   STUB_PORT = Number(process.env.STUB_PORT ?? (await freePort()))
+  const noVisionPort = await freePort()
   const serverPort = Number(process.env.SMOKE_PORT ?? (await freePort()))
+  const previewPort = await freePort()
   BASE = `http://127.0.0.1:${serverPort}`
+  PREVIEW_BASE = `http://127.0.0.1:${previewPort}`
 
   startProc('stub', process.execPath, [path.join(SERVER_DIR, 'scripts/stub-llm.mjs'), String(STUB_PORT)])
+  startProc('stub-no-vision', process.execPath, [
+    path.join(SERVER_DIR, 'scripts/stub-llm.mjs'),
+    String(noVisionPort),
+    '--no-vision'
+  ])
   const MCP_PORT = await freePort()
   const MCP_DOWN_PORT = await freePort()
   startProc('stub-mcp', process.execPath, [path.join(SERVER_DIR, 'scripts/stub-mcp.mjs'), String(MCP_PORT), '--token=mcp-smoke-token'])
   startProc('stub-mcp-down', process.execPath, [path.join(SERVER_DIR, 'scripts/stub-mcp.mjs'), String(MCP_DOWN_PORT), '--down'])
-  const tsxBin = path.join(SERVER_DIR, 'node_modules', '.bin', 'tsx')
+  const tsxCli = path.join(SERVER_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs')
   const serverEnv = {
     PORT: String(serverPort),
+    PREVIEW_PORT: String(previewPort),
+    PREVIEW_ORIGIN: PREVIEW_BASE,
     DATA_DIR,
     // 冒烟里把 20 分钟看门狗压到 3 秒，用于演练"超时 → 拆分步骤"
     AGENT_STEP_MAX_MS: '3000',
     // MCP 调用 15 秒超时压到 2 秒（与看门狗同款压缩），断源链路不用干等
     MCP_CALL_TIMEOUT_MS: '2000'
   }
-  let serverProc = startProc('server', tsxBin, [path.join(SERVER_DIR, 'src/index.ts')], serverEnv)
+  let serverProc = startProc('server', process.execPath, [tsxCli, path.join(SERVER_DIR, 'src/index.ts')], serverEnv)
 
   await waitFor(async () => (await fetch(`${BASE}/healthz`).catch(() => null))?.ok, 30_000, '服务端启动')
   ok(`stub(${STUB_PORT}) + stub-mcp(${MCP_PORT}) + 服务端(${serverPort}) 已启动`)
@@ -180,6 +193,186 @@ async function main() {
   if (!probe.json?.supportsVision) fail('probe vision', probe.json?.message)
   ok('POST /model-gateway/probe', probe.json.message)
 
+  // 1.25 通用项目模型：IDux 页面项目能创建、回读并通过兼容 API 删除
+  const iduxProjectRes = await api('POST', '/projects', {
+    name: '云主机管理页',
+    artifactKind: 'idux-page'
+  })
+  const iduxProject = iduxProjectRes.json
+  if (
+    iduxProjectRes.status !== 200 ||
+    iduxProject?.artifactKind !== 'idux-page' ||
+    iduxProject?.targetProfile?.framework !== 'vue3' ||
+    iduxProject?.targetProfile?.uiLibrary !== 'idux'
+  ) {
+    fail('POST /projects 创建 IDux 页面项目', JSON.stringify(iduxProject))
+  }
+  const projects = (await api('GET', '/projects')).json
+  if (!Array.isArray(projects) || !projects.some((project) => project.id === iduxProject.id)) {
+    fail('GET /projects 回读项目', JSON.stringify(projects))
+  }
+  ok('Project/ArtifactKind/TargetProfile 兼容 API', iduxProject.id)
+  const capabilities = (await api('GET', '/generation-capabilities')).json
+  const iduxCapability = capabilities?.find?.((item) => item.artifactKind === 'idux-page')
+  const iduxSkillIds = iduxCapability?.skills?.map?.((skill) => skill.id) ?? []
+  if (!iduxSkillIds.includes('idux-cli') || !iduxSkillIds.includes('idux-style')) {
+    fail('Skill Registry 暴露 IDux 页面能力', JSON.stringify(capabilities))
+  }
+  ok('Artifact Registry + Skill Registry 能力发现', iduxCapability.skills.map((skill) => skill.id).join('、'))
+  const tableIntent = await api('POST', '/generation-intent', {
+    text: '生成一个包含云主机相关信息的表格'
+  })
+  if (
+    tableIntent.json?.artifactKind !== 'idux-page' ||
+    tableIntent.json?.requiresClarification !== false
+  ) {
+    fail('云主机表格意图路由到 IDux 普通页面', JSON.stringify(tableIntent.json))
+  }
+  const ambiguousIntent = await api('POST', '/generation-intent', { text: '帮我做个页面' })
+  if (
+    ambiguousIntent.json?.artifactKind !== null ||
+    ambiguousIntent.json?.requiresClarification !== true ||
+    ambiguousIntent.json?.candidates?.length !== 2
+  ) {
+    fail('模糊意图要求用户澄清产物类型', JSON.stringify(ambiguousIntent.json))
+  }
+  const missingKind = await api('POST', '/projects', { name: '不应静默创建' })
+  if (missingKind.status !== 400) {
+    fail('项目创建不允许静默默认成大屏', `HTTP ${missingKind.status}`)
+  }
+  ok('意图路由：云主机表格 → IDux；模糊需求 → 澄清；创建不静默默认')
+
+  // 1.3 IDux 普通页面闭环：技能证据 → 受控构建 → 浏览器门禁 → 独立预览 → ZIP 源码
+  const iduxSse = openSse(iduxProject.id)
+  await api('POST', `/dashboards/${iduxProject.id}/messages`, {
+    text: '根据参考图生成一个包含云主机相关信息的表格页面',
+    attachments: [PIXEL]
+  })
+  const iduxReady = await waitFor(() => {
+    const failed = iduxSse.events.find(
+      (event) => event.event === 'issue' && event.data?.issue?.status === 'failed'
+    )
+    if (failed) throw new Error(`IDux 页面门禁失败：${failed.data.issue.title}`)
+    return iduxSse.events.find(event => event.event === 'previewReady')
+  }, 150_000, 'IDux 页面 previewReady')
+  const iduxVersions = (await api('GET', `/dashboards/${iduxProject.id}/versions`)).json
+  const iduxVersion = iduxVersions?.[0]
+  if (
+    iduxVersion?.manifest?.kind !== 'idux-page' ||
+    iduxVersion?.manifest?.exportFormat !== 'zip' ||
+    iduxVersion?.validationReport?.status !== 'passed' ||
+    iduxVersion.validationReport.gates.some((gate) => gate.status !== 'passed')
+  ) {
+    fail('IDux 页面版本通过全部质量门禁', JSON.stringify(iduxVersion))
+  }
+  ok('idux-cli + idux-style 证据 → IDux 页面构建 → 双视口门禁', `${iduxVersion.validationReport.gates.length} 项通过`)
+  const iduxPreview = await fetch(iduxReady.data.url)
+  const iduxPreviewHtml = await iduxPreview.text()
+  if (
+    iduxPreview.status !== 200 ||
+    new URL(iduxPreview.url).origin !== PREVIEW_BASE ||
+    !iduxPreviewHtml.includes('./assets/')
+  ) {
+    fail('IDux 页面在独立预览 origin 加载构建产物', iduxPreview.url)
+  }
+  ok('IDux 构建产物在独立 origin 预览', iduxPreview.url)
+  const iduxExport = await fetch(
+    `${BASE}/api/v1/dashboards/${iduxProject.id}/versions/${iduxVersion.id}/export`
+  )
+  const iduxZip = new Uint8Array(await iduxExport.arrayBuffer())
+  if (
+    iduxExport.status !== 200 ||
+    !(iduxExport.headers.get('content-type') ?? '').includes('application/zip') ||
+    iduxZip[0] !== 0x50 ||
+    iduxZip[1] !== 0x4b
+  ) {
+    fail('IDux 页面导出 ZIP', `HTTP ${iduxExport.status}`)
+  }
+  const iduxFiles = unzipSync(iduxZip)
+  const iduxPackage = JSON.parse(strFromU8(iduxFiles['package.json']))
+  const iduxApp = strFromU8(iduxFiles['src/App.vue'])
+  const iduxEvidence = JSON.parse(strFromU8(iduxFiles['generation-evidence.json']))
+  if (
+    iduxPackage.dependencies?.['@idux/components'] !== '2.11.0' ||
+    !iduxApp.includes('<IxTable') ||
+    !iduxFiles['src/page-shell.css'] ||
+    !iduxEvidence.skills?.includes('idux-cli') ||
+    !iduxEvidence.skills?.includes('idux-style') ||
+    JSON.stringify(iduxEvidence.style?.viewports) !== JSON.stringify(['1920x1080', '1366x768']) ||
+    iduxEvidence.reference?.mode !== 'vision-structured-spec' ||
+    iduxEvidence.reference?.analyzer !== 'idux-page-reference-v1' ||
+    !/^[0-9a-f]{64}$/.test(iduxEvidence.reference?.imageSha256 ?? '') ||
+    !iduxApp.includes('"navigation": "side"') ||
+    /data:image\//i.test(strFromU8(iduxFiles['generation-evidence.json']))
+  ) {
+    fail('IDux ZIP 含可复现源码与精确依赖', Object.keys(iduxFiles).join('、'))
+  }
+  ok('IDux 参考图 → 结构化规格 → 双视口源码 ZIP', Object.keys(iduxFiles).join('、'))
+  await api('POST', `/dashboards/${iduxProject.id}/versions/${iduxVersion.id}/rollback`)
+  const iduxRollback = await iduxSse.waitFor(
+    'versionAdded',
+    event => /回退到/.test(event.data?.version?.summary ?? ''),
+    30_000,
+    'IDux 多文件版本回退'
+  )
+  const rolledPreview = await fetch(iduxRollback.data.version
+    ? `${PREVIEW_BASE}/preview/${iduxProject.id}/${iduxRollback.data.version.id}/index.html`
+    : '')
+  const rolledExport = await fetch(
+    `${BASE}/api/v1/dashboards/${iduxProject.id}/versions/${iduxRollback.data.version.id}/export`
+  )
+  const rolledZip = new Uint8Array(await rolledExport.arrayBuffer())
+  if (!rolledPreview.ok || rolledZip[0] !== 0x50 || rolledZip[1] !== 0x4b) {
+    fail('IDux 回退保留构建资源与源码 ZIP')
+  }
+  ok('IDux 回退复制多文件构建产物与源码，不破坏历史版本')
+  iduxSse.close()
+  await api('DELETE', `/projects/${iduxProject.id}`)
+
+  // 1.4 图片复刻不能静默降级：模型不支持看图时明确失败，不生成无关通用页面
+  await api('PUT', '/settings', {
+    provider: '无视觉冒烟测试',
+    apiBase: `http://127.0.0.1:${noVisionPort}/v1`,
+    apiKey: 'sk-smoke',
+    model: 'stub-no-vision',
+    planner: { ...emptyRole },
+    coder: { ...emptyRole },
+    vision: { ...emptyRole }
+  })
+  const noVisionProject = (await api('POST', '/projects', {
+    name: '不应忽略参考图',
+    artifactKind: 'idux-page'
+  })).json
+  const noVisionSse = openSse(noVisionProject.id)
+  await api('POST', `/dashboards/${noVisionProject.id}/messages`, {
+    text: '根据这张参考图生成页面',
+    attachments: [PIXEL]
+  })
+  const noVisionIssue = await noVisionSse.waitFor(
+    'issue',
+    event => event.data?.issue?.status === 'failed',
+    30_000,
+    'IDux 无视觉能力明确失败'
+  )
+  if (
+    !/不支持图片理解/.test(noVisionIssue.data?.issue?.title ?? '') ||
+    noVisionSse.events.some(event => event.event === 'previewReady')
+  ) {
+    fail('IDux 图片复刻不允许静默降级', JSON.stringify(noVisionIssue.data))
+  }
+  ok('IDux 模型不支持看图时明确失败，不产出无关页面')
+  noVisionSse.close()
+  await api('DELETE', `/projects/${noVisionProject.id}`)
+  await api('PUT', '/settings', {
+    provider: '冒烟测试',
+    apiBase: `http://127.0.0.1:${STUB_PORT}/v1`,
+    apiKey: 'sk-smoke',
+    model: 'stub-1',
+    planner: { ...emptyRole },
+    coder: { ...emptyRole },
+    vision: { ...emptyRole }
+  })
+
   // 1.5 MCP 数据源：PUT 全量列表（自动补 id）→ GET 回读一致 → probe 发现 get_metrics；错令牌 → ok=false 大白话
   const goodSource = {
     name: '经营指标库',
@@ -196,10 +389,10 @@ async function main() {
   const dsSaved = putDs.json[0]
   if (!dsSaved.id) fail('PUT 自动补 id', JSON.stringify(dsSaved))
   const dsBack = (await api('GET', '/data-sources')).json?.[0]
-  if (!dsBack || dsBack.id !== dsSaved.id || dsBack.url !== goodSource.url || dsBack.token !== goodSource.token || dsBack.enabled !== true) {
+  if (!dsBack || dsBack.id !== dsSaved.id || dsBack.url !== goodSource.url || dsBack.token !== MASKED_SECRET || dsBack.enabled !== true) {
     fail('GET /data-sources 回读一致', JSON.stringify(dsBack))
   }
-  ok('PUT /data-sources → GET 回读一致（自动补 id）', dsSaved.id)
+  ok('PUT /data-sources → GET 回读脱敏（自动补 id）', dsSaved.id)
   const dsProbe = await api('POST', '/data-sources/probe', { source: dsBack })
   if (!dsProbe.json?.ok) fail('数据源 probe 连通', JSON.stringify(dsProbe.json))
   if (!dsProbe.json.tools.includes('get_metrics')) fail('probe 发现 get_metrics 工具', JSON.stringify(dsProbe.json.tools))
@@ -247,7 +440,7 @@ async function main() {
   // 首次创建：编码过程中应有实时预览事件（部分 HTML 逐步刷新）
   const buildingEvt = await sse.waitFor('previewBuilding', null, 90_000, 'previewBuilding 实时预览')
   ok('编码中实时预览（previewBuilding）', buildingEvt.data.url)
-  const buildingHtml = await (await fetch(`${BASE}${buildingEvt.data.url}`)).text()
+  const buildingHtml = await (await fetch(new URL(buildingEvt.data.url, BASE))).text()
   if (buildingHtml.length < 500) fail('实时预览页有实际内容', `仅 ${buildingHtml.length} 字节`)
   ok('实时预览页可访问且有内容', `${buildingHtml.length} 字节`)
   const matchMsg = await sse.waitFor(
@@ -265,14 +458,28 @@ async function main() {
   await sse.waitFor('runStatus', (e) => e.data?.status === 'idle', 30_000, 'runStatus idle')
 
   // 5. 预览 HTML：200 且无外部引用
-  const htmlRes = await fetch(`${BASE}${ready.data.url}`)
+  const htmlRes = await fetch(new URL(ready.data.url, BASE))
   const html = await htmlRes.text()
   if (htmlRes.status !== 200) fail('GET 预览 HTML', `HTTP ${htmlRes.status}`)
+  if (new URL(htmlRes.url).origin !== PREVIEW_BASE) fail('预览运行在独立 origin', htmlRes.url)
+  if (!htmlRes.headers.get('content-security-policy')?.includes("connect-src 'none'")) {
+    fail('预览响应带严格 CSP', String(htmlRes.headers.get('content-security-policy')))
+  }
   if (!/<html[\s>]/i.test(html)) fail('预览是完整 HTML')
   if (/(?:src|href)\s*=\s*["']\s*https?:\/\//i.test(html)) fail('预览无外部资源引用')
   ok('GET 预览 HTML 200，自包含，无外部引用', `${html.length} 字节`)
-  if (!html.includes('88.8%')) fail('MCP 真实数据烤进预览 HTML（含 88.8%）')
-  ok('MCP 真实数据烤进预览 HTML', '含 88.8%（目标完成率）')
+  const dataRes = await fetch(new URL('./data.json', ready.data.url))
+  const previewData = await dataRes.text()
+  if (!dataRes.ok || !previewData.includes('88.8')) {
+    fail('MCP 真实数据独立落盘（data.json 含 88.8）', `HTTP ${dataRes.status}: ${previewData.slice(0, 200)}`)
+  }
+  if (!/fetch\(\s*['"]\.\/data\.json['"]\s*\)/.test(html)) {
+    fail('预览 HTML 保留 data.json 安全回退读取器')
+  }
+  if (!/id\s*=\s*["']dashboard-data["']/.test(html) || !html.includes('88.8')) {
+    fail('预览响应安全内联事实数据')
+  }
+  ok('MCP 真实数据与生成代码分离', 'data.json 独立落盘，响应时内联且 CSP 禁止联网')
 
   // 6. 再发一条不带图的修改消息 → v2
   await api('POST', `/dashboards/${dash.id}/messages`, { text: '把 CPU 的图放大一点' })
@@ -291,10 +498,32 @@ async function main() {
   const rb = await sse.waitFor('versionAdded', (e) => /回退到/.test(e.data?.version?.summary ?? ''), 30_000, '回退新节点')
   ok('rollback → 新节点', `${rb.data.version.label}「${rb.data.version.summary}」`)
 
-  // 8. 发布 → 5 秒后已发布
+  // 8. 发布安全：配置接口不回传密钥；缺少配置时明确失败，不能伪装成已发布
+  await api('PUT', '/publish-config', {
+    endpoint: '',
+    accessKey: 'ak-smoke-secret',
+    secretKey: 'smoke-secret-not-a-real-credential'
+  })
+  const maskedPublishConfig = (await api('GET', '/publish-config')).json
+  if (
+    maskedPublishConfig?.accessKey !== MASKED_SECRET ||
+    maskedPublishConfig?.secretKey !== MASKED_SECRET
+  ) {
+    fail('发布配置密钥回读脱敏', JSON.stringify(maskedPublishConfig))
+  }
+  await api('PUT', '/publish-config', { endpoint: '', accessKey: '', secretKey: '' })
   await api('POST', `/dashboards/${dash.id}/publish`)
-  const pub = await sse.waitFor('dashboardUpdated', (e) => e.data?.dashboard?.status === 'published', 30_000, '发布审批通过')
-  ok('publish → 审批通过', `徽标变为「已发布」(${pub.data.dashboard.name})`)
+  const publishFailed = await sse.waitFor(
+    'publishProgress',
+    (e) => e.data?.phase === 'failed',
+    30_000,
+    '缺少发布配置时失败'
+  )
+  const afterFailedPublish = (await api('GET', '/dashboards')).json.find((item) => item.id === dash.id)
+  if (afterFailedPublish?.status === 'published') {
+    fail('发布失败不能把项目标记为已发布')
+  }
+  ok('发布配置脱敏；缺少配置时安全失败', publishFailed.data.error)
 
   // 8.5 阶段时间线：新建流程必须是 7 步（含「获取数据」），含「视觉检查」「修复问题」
   const titles = [...new Set(sse.events.filter((e) => e.event === 'stage').map((e) => e.data?.stage?.title).filter(Boolean))]
@@ -366,7 +595,7 @@ async function main() {
   ok('编码超时 → 自动拆分步骤', splitMsg.data.message.text)
   await sse3.waitFor('previewReady', null, 90_000, '大屏3 previewReady')
   const splitReadyUrl = sse3.events.find((e) => e.event === 'previewReady').data.url
-  const splitHtml = await (await fetch(`${BASE}${splitReadyUrl}`)).text()
+  const splitHtml = await (await fetch(new URL(splitReadyUrl, BASE))).text()
   if (!/核心指标|趋势图表/.test(splitHtml)) fail('拆分生成的页面包含面板内容', `仅 ${splitHtml.length} 字节`)
   ok('拆分步骤完成（骨架+面板拼装）→ previewReady', `${splitHtml.length} 字节`)
   sse3.close()
@@ -422,9 +651,14 @@ async function main() {
   if (!(exportRes.headers.get('content-type') ?? '').includes('text/html')) fail('export Content-Type 是 text/html', exportRes.headers.get('content-type'))
   const cd = exportRes.headers.get('content-disposition') ?? ''
   if (!cd.includes("filename*=UTF-8''")) fail('Content-Disposition 含 filename*', cd)
-  const expectHtml = await (await fetch(`${BASE}/preview/${dash.id}/${v1.id}/index.html`)).text()
-  if (exportHtml !== expectHtml) fail('导出内容与预览 HTML 一致', `导出 ${exportHtml.length} 字节 / 预览 ${expectHtml.length} 字节`)
-  ok('GET export → 200，Content-Disposition 含 filename*，内容与预览一致', cd)
+  if (
+    !/id=["']dashboard-data["']/.test(exportHtml) ||
+    !exportHtml.includes('88.8') ||
+    /(?:src|href)\s*=\s*["']\s*https?:\/\//i.test(exportHtml)
+  ) {
+    fail('导出 HTML 自包含真实数据且无外部资源')
+  }
+  ok('GET export → 200，Content-Disposition 含 filename*，真实数据已安全内联', cd)
   const export404 = await api('GET', `/dashboards/${dash.id}/versions/ver-not-exist/export`)
   if (export404.status !== 404) fail('导出不存在的版本 → 404', `HTTP ${export404.status}`)
   ok('导出不存在的版本 → 404')
@@ -473,7 +707,7 @@ async function main() {
   ok('选「再试一次取数」→ 仍连不上 → 再次摆卡')
   await api('POST', `/dashboards/${dash5.id}/options/opt-demo-data`)
   const ready5 = await sse5.waitFor('previewReady', null, 90_000, '大屏5 previewReady')
-  const html5 = await (await fetch(`${BASE}${ready5.data.url}`)).text()
+  const html5 = await (await fetch(new URL(ready5.data.url, BASE))).text()
   if (html5.includes('88.8%')) fail('演示数据路径不烤真实数据')
   ok('选「改用演示数据继续」→ 预览照常 ready（演示数据）', ready5.data.url)
   sse5.close()
@@ -484,28 +718,32 @@ async function main() {
     oldServer.once('exit', resolve)
     oldServer.kill('SIGKILL')
   })
-  serverProc = startProc('server-restart', tsxBin, [path.join(SERVER_DIR, 'src/index.ts')], serverEnv)
+  serverProc = startProc('server-restart', process.execPath, [tsxCli, path.join(SERVER_DIR, 'src/index.ts')], serverEnv)
   await waitFor(async () => (await fetch(`${BASE}/healthz`).catch(() => null))?.ok, 30_000, '服务端重启')
   const dsAfterRestart = (await api('GET', '/data-sources')).json
   if (
     !Array.isArray(dsAfterRestart) ||
     dsAfterRestart.length !== 1 ||
     dsAfterRestart[0].url !== downSource.url ||
-    dsAfterRestart[0].token !== downSource.token
+    dsAfterRestart[0].token !== MASKED_SECRET
   ) {
     fail('重启后数据源配置恢复', JSON.stringify(dsAfterRestart))
   }
   ok('重启服务端 → data-sources.json 配置恢复', dsAfterRestart[0].url)
-  const sess1 = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'sessions', `${dash.id}.json`), 'utf8'))
-  if (!sess1.lastDataBlock?.includes('88.8%')) fail('数据快照落盘且含真实数据', String(sess1.lastDataBlock).slice(0, 120))
-  if (/https?:\/\//.test(sess1.lastDataBlock)) fail('数据快照注入前已剥除网址', sess1.lastDataBlock.slice(0, 200))
-  ok('数据快照落盘：含 88.8% 且网址已剥除', `${sess1.lastDataBlock.length} 字符`)
+  const persistedDataFile = path.join(DATA_DIR, 'previews', dash.id, v1.id, 'data.json')
+  const persistedData = fs.readFileSync(persistedDataFile, 'utf8')
+  if (!persistedData.includes('88.8')) fail('数据快照落盘且含真实数据', persistedData.slice(0, 120))
+  if (/https?:\/\//.test(persistedData)) fail('数据快照落盘前已剥除网址', persistedData.slice(0, 200))
+  ok('数据快照落盘：含 88.8 且网址已剥除', `${persistedData.length} 字符`)
   // 编辑流复用快照：数据源此刻仍指向挂掉的 stub，若重新取数必然摆卡；能出预览且含 88.8% 即证明沿用快照
   const sseR = openSse(dash.id)
   await api('POST', `/dashboards/${dash.id}/messages`, { text: '把标题改短一点' })
   const readyR = await sseR.waitFor('previewReady', null, 90_000, '重启后编辑 previewReady')
-  const htmlR = await (await fetch(`${BASE}${readyR.data.url}`)).text()
-  if (!htmlR.includes('88.8%')) fail('编辑流沿用数据快照（不重取数）')
+  const htmlR = await (await fetch(new URL(readyR.data.url, BASE))).text()
+  const dataR = await (await fetch(new URL('./data.json', readyR.data.url))).text()
+  if (!/fetch\(\s*["']\.\/data\.json["']\s*\)/.test(htmlR) || !dataR.includes('88.8')) {
+    fail('编辑流沿用 data.json 数据快照（不重取数）')
+  }
   ok('重启后编辑复用数据快照（不重取数）→ previewReady', readyR.data.url)
   sseR.close()
 

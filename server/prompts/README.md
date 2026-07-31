@@ -23,6 +23,12 @@
 | `coder.template-context.components-block.md` | 组件样式约束块 | `{{componentLines}}` |
 | `review.system.md` | 布局检查员：结构化视觉审查 | — |
 | `review.user.md` | 审查用户消息 | `{{requirement}}` `{{html}}` |
+| `idux-page-reference.system.md` | IDux 参考图分析：图片转受控页面蓝图 | — |
+| `idux-page-reference.user.md` | IDux 参考图分析用户消息 | `{{request}}` |
+| `idux-page-spec.system.md` | IDux 页面规格规划 | — |
+| `idux-page-spec.user.md` | IDux 页面规格用户消息 | `{{request}}` `{{referenceBlock}}` |
+| `idux-page-review.system.md` | IDux 参考图与双视口视觉复核 | — |
+| `idux-page-review.user.md` | IDux 视觉复核用户消息 | `{{request}}` `{{referenceNote}}` |
 | `split.skeleton.user.md` | 超时拆分第 1 步：页面骨架（PANEL 占位） | `{{requirement}}` |
 | `split.panel.user.md` | 超时拆分第 2..N 步：单个面板 | `{{requirement}}` `{{panelName}}` |
 
@@ -32,4 +38,4 @@
 2. **角色名不能改**：`你是「大屏规划师」/「模板匹配师」/「大屏开发」/「布局检查员」`——联调桩（`scripts/stub-llm.mjs`）靠角色名识别请求类型，改了 stub 会失效。
 3. 输出格式约束（JSON 结构、`<!--PANEL:...-->` 占位约定、自包含/禁外部引用）与代码里的解析器一一对应，改之前先看 orchestrator 的 `normalizePlan` / `extractJson` / `extractHtml` / 拆分拼装逻辑。
 4. 目录位置可用环境变量 `PROMPTS_DIR` 覆盖（默认 `server/prompts`）。
-5. 改完建议跑 `npm run smoke`（30 项断言）确认没有破坏流程。
+5. 改完建议跑 `npm run smoke` 确认没有破坏流程。

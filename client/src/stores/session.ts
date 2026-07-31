@@ -21,6 +21,7 @@ import { useChatStore } from './chat'
 import {
   RUN_STATUS_LABEL,
   type AgentStep,
+  type ArtifactKind,
   type AssistSession,
   type Blocker,
   type GraphSnapshot,
@@ -69,6 +70,8 @@ export const useSessionStore = defineStore('session', () => {
   const dashboardId = ref<string | null>(null)
   /** 大屏名称（顶栏标题） */
   const dashboardName = ref('')
+  /** 当前项目的产物类型；决定预览视口和界面文案。 */
+  const artifactKind = ref<ArtifactKind>('dashboard')
   /** 工作台运行状态（UX §7.1 五态） */
   const runStatus = ref<RunStatus>('idle')
   /** 阶段时间线 */
@@ -149,6 +152,8 @@ export const useSessionStore = defineStore('session', () => {
 
     const snap = await api.enterDashboard(id)
     dashboardName.value = snap.dashboard.name
+    artifactKind.value = snap.dashboard.artifactKind
+    resolution.value = '1920x1080'
     runStatus.value = snap.runStatus
     stages.value = snap.stages
     steps.value = snap.steps
@@ -255,6 +260,7 @@ export const useSessionStore = defineStore('session', () => {
     useChatStore().close()
     dashboardId.value = null
     dashboardName.value = ''
+    artifactKind.value = 'dashboard'
     runStatus.value = 'idle'
     stages.value = []
     steps.value = []
@@ -327,7 +333,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   return {
-    dashboardId, dashboardName, runStatus, stages, steps, issues, blocker,
+    dashboardId, dashboardName, artifactKind, runStatus, stages, steps, issues, blocker,
     versions, previewState, previewUrl, previewBuildingLive, viewingVersionId, resolution,
     assistSession, panelCollapsed, graph,
     publishPhase, publishMessage, publishError, publishUrl,

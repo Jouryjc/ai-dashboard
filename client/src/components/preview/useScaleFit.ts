@@ -1,7 +1,7 @@
 /**
  * 预览等比缩放（中区预览区 + 全屏演示模式共用）。
- * 逻辑分辨率固定（1920×1080 / 2560×1440），用 CSS transform scale 适配容器：
- * 缩放只影响眼睛看到的画面，不影响截图与视觉验证的 1920×1080 基准（UX §4.2 / §7.4）。
+ * 逻辑分辨率固定，用 CSS transform scale 适配容器。
+ * 大屏支持 1920×1080 / 2560×1440，IDux 页面支持 1920×1080 / 1366×768。
  *
  * 用法：
  *   const { containerRef, frameStyle } = useScaleFit(toRef(session, 'resolution'))
@@ -15,13 +15,15 @@ import type { PreviewResolution } from '../../types'
 /** 各分辨率的逻辑画布尺寸 */
 export const LOGICAL_SIZE: Record<PreviewResolution, { w: number; h: number }> = {
   '1920x1080': { w: 1920, h: 1080 },
-  '2560x1440': { w: 2560, h: 1440 }
+  '2560x1440': { w: 2560, h: 1440 },
+  '1366x768': { w: 1366, h: 768 }
 }
 
 /** 分辨率切换器的展示文案 */
 export const RESOLUTION_LABEL: Record<PreviewResolution, string> = {
   '1920x1080': '1920 × 1080',
-  '2560x1440': '2560 × 1440'
+  '2560x1440': '2560 × 1440',
+  '1366x768': '小屏 1366 × 768'
 }
 
 export function useScaleFit(resolution: Ref<PreviewResolution>): {

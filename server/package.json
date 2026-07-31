@@ -8,13 +8,20 @@
     "build": "tsc",
     "start": "node dist/server/src/index.js",
     "typecheck": "tsc --noEmit",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:idux": "tsx scripts/idux-page-smoke.ts"
   },
   "dependencies": {
+    "@idux/cdk": "2.11.0",
+    "@idux/components": "2.11.0",
+    "@vitejs/plugin-vue": "5.2.1",
     "express": "^4.21.2",
     "loop-engine": "file:../loop-engine",
+    "fflate": "0.8.2",
     "playwright": "^1.62.0",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "vite": "6.4.3",
+    "vue": "3.5.13"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

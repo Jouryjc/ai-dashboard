@@ -29,6 +29,30 @@ import { prompt } from './prompts'
 import { initAdapterSettings } from './loop-adapter/adapter'
 import { inlineDataIntoHtml } from './loop-adapter/shared-utils'
 import { projectSlug, publishToAilab, PublishError } from './ailab/publish'
+import { artifactPreviewUrl, normalizePreviewUrl } from './preview'
+import {
+  hydrateDataSourceSecrets,
+  hydratePublishConfigSecrets,
+  hydrateSettingsSecrets,
+  maskDataSources,
+  maskPublishConfig,
+  maskSettings
+} from './secrets'
+import { artifactRegistry } from './artifacts/registry'
+import { buildIduxPage, validateIduxBuildInput } from './artifacts/idux-page/builder'
+import { createIduxSourceArchive } from './artifacts/idux-page/exporter'
+import { generateIduxPage } from './artifacts/idux-page/generator'
+import { analyzeIduxPageReference } from './artifacts/idux-page/reference'
+import { repairIduxPageDraft } from './artifacts/idux-page/repairer'
+import { reviewIduxPageVisual } from './artifacts/idux-page/reviewer'
+import { validateBuiltIduxPage } from './artifacts/idux-page/validator'
+import { skillRegistry } from './skills/registry'
+import {
+  createLoop,
+  type FlowDefinition,
+  type GraphState,
+  type NodeExecutor
+} from '../../loop-engine/src'
 import {
   probeReplicaEnv,
   imageSize,
@@ -41,6 +65,8 @@ import {
 } from './replica'
 import type {
   AgentStep,
+  ArtifactKind,
+  ArtifactManifest,
   AssistSession,
   Blocker,
   CardOption,
@@ -65,6 +91,9 @@ import type {
   RunStatus,
   Stage,
   StepState,
+  TargetProfile,
+  ValidationGateResult,
+  ValidationReport,
   Version,
   WorkbenchSnapshot
 } from './wire'
@@ -212,6 +241,23 @@ function nextId(prefix: string): string {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
+function targetProfileFor(kind: ArtifactKind): TargetProfile {
+  return artifactRegistry.get(kind).createTargetProfile()
+}
+
+function manifestFor(kind: ArtifactKind): ArtifactManifest {
+  return artifactRegistry.get(kind).createManifest()
+}
+
+function passedValidationReport(detail = '已通过当前产物类型的全部门禁'): ValidationReport {
+  return {
+    status: 'passed',
+    gates: [
+      { id: 'legacy-validation', title: '产物检查', status: 'passed', detail }
+    ]
+  }
+}
+
 function after(rt: Runtime, ms: number, fn: () => void): void {
   const t = setTimeout(() => {
     rt.timers.delete(t)
@@ -324,6 +370,7 @@ function addVersion(rt: Runtime, v: Version, url: string): void {
   rt.s.versions.unshift(v)
   rt.s.versionUrls[v.id] = url
   rt.s.dashboard.currentVersionLabel = v.label
+  rt.s.dashboard.currentRevisionId = v.id
   store.emit(rt.s.dashboard.id, 'versionAdded', { dashboardId: rt.s.dashboard.id, version: v })
   save(rt)
 }
@@ -551,14 +598,21 @@ let capabilityCache: { key: string; ok: boolean; supportsVision: boolean } | nul
 let capabilityPending: Promise<{ ok: boolean; supportsVision: boolean }> | null = null
 
 export function getSettings(): ModelSettings {
-  return { ...cachedSettings }
+  return maskSettings(cachedSettings)
 }
 
 export function saveSettings(s: ModelSettings): void {
   // 兼容旧客户端可能还发 plannerModel 字符串字段的情况
-  cachedSettings = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
+  const normalized = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
+  cachedSettings = hydrateSettingsSecrets(normalized, cachedSettings)
   store.saveSettings(cachedSettings)
   capabilityCache = null
+  initAdapterSettings(cachedSettings, cachedDataSources, templatesRoot)
+}
+
+export function resolveSettingsSecrets(s: ModelSettings): ModelSettings {
+  const normalized = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
+  return hydrateSettingsSecrets(normalized, cachedSettings)
 }
 
 /* ------------------------------ 发布配置（云配置） ------------------------------ */
@@ -577,11 +631,16 @@ function normalizePublishConfig(raw: PublishConfig): PublishConfig {
 let cachedPublishConfig: PublishConfig = { ...DEFAULT_PUBLISH_CONFIG }
 
 export function getPublishConfig(): PublishConfig {
-  return { ...cachedPublishConfig }
+  return maskPublishConfig(cachedPublishConfig)
 }
 
 export function savePublishConfig(c: PublishConfig): void {
-  cachedPublishConfig = normalizePublishConfig({ ...DEFAULT_PUBLISH_CONFIG, ...c })
+  cachedPublishConfig = normalizePublishConfig(
+    hydratePublishConfigSecrets(
+      { ...DEFAULT_PUBLISH_CONFIG, ...c },
+      cachedPublishConfig
+    )
+  )
   store.savePublishConfig(cachedPublishConfig)
 }
 
@@ -633,20 +692,22 @@ function normalizeDataSources(raw: unknown): McpDataSource[] {
 }
 
 export function getDataSources(): McpDataSource[] {
-  return cachedDataSources.map((s) => ({ ...s }))
+  return maskDataSources(cachedDataSources)
 }
 
 /** 全量保存（与模型设置同风格：PUT 整份列表），保存时失效 listTools 缓存 */
 export function saveDataSources(list: unknown): McpDataSource[] {
-  cachedDataSources = normalizeDataSources(list)
+  cachedDataSources = hydrateDataSourceSecrets(normalizeDataSources(list), cachedDataSources)
   store.saveDataSources(cachedDataSources)
   invalidateToolsCache()
+  initAdapterSettings(cachedSettings, cachedDataSources, templatesRoot)
   return getDataSources()
 }
 
 /** 「测试数据源连接」：真实调 tools/list 探测，永不抛错（错误体现在 ok=false） */
 export async function probeDataSource(source: unknown): Promise<DataSourceProbeResult> {
-  const [s] = normalizeDataSources([source])
+  const [normalized] = normalizeDataSources([source])
+  const [s] = hydrateDataSourceSecrets([normalized], cachedDataSources)
   if (!s.url) {
     return { ok: false, tools: [], message: '先填一下数据源地址再测试', detail: null }
   }
@@ -776,7 +837,7 @@ function makeLivePreview(rt: Runtime): (partial: string) => void {
     n += 1
     const dashId = rt.s.dashboard.id
     store.writePreview(dashId, 'building', partial)
-    const url = `/preview/${dashId}/building/index.html?t=${n}`
+    const url = artifactPreviewUrl(dashId, 'building', n)
     rt.s.preview = { state: 'building', url }
     store.emit(dashId, 'previewBuilding', { dashboardId: dashId, url })
     save(rt)
@@ -1844,17 +1905,13 @@ async function callShotReview(
 
 /* ============================== 确定性校验（硬约束的落地） ============================== */
 function validateHtml(html: string): string[] {
-  const problems: string[] = []
-  if (!/<html[\s>]/i.test(html)) problems.push('不是完整的网页（缺少 html 标签）')
-  // 闭合标签检查：大屏 HTML 较长，模型可能被 max_tokens 截断，只剩开头 CSS 而 body 没生成。
-  // 缺少 </body> 或 </html> 几乎必然是截断，必须拦下触发修复。
-  if (!/<\/body>/i.test(html)) problems.push('页面没写完（缺少 </body>，可能生成时被长度限制截断）')
-  if (!/<\/html>/i.test(html)) problems.push('页面没写完（缺少 </html>，可能生成时被长度限制截断）')
-  if (!/<body[\s>]/i.test(html)) problems.push('页面没有正文内容（缺少 body 标签）')
-  if (html.length < 2048) problems.push('内容太少，不像一个完整的大屏页面')
-  if (/(?:src|href)\s*=\s*["']\s*https?:\/\//i.test(html) || /url\(\s*["']?\s*https?:\/\//i.test(html))
-    problems.push('引用了外部资源（大屏要求所有内容都写在一个文件里）')
-  return problems
+  const report = artifactRegistry.get('dashboard').validateDraft({
+    entryFile: 'index.html',
+    files: { 'index.html': html }
+  })
+  return report.gates
+    .filter((gate) => gate.status === 'failed')
+    .map((gate) => gate.detail ? `${gate.title}：${gate.detail}` : gate.title)
 }
 
 /** 确定性清洗（人工协助修好时用）：剥掉外部资源引用，保证校验能过 */
@@ -2864,7 +2921,7 @@ function commitVersion(rt: Runtime, run: ActiveRun): void {
   if (dataSourcesUsed.length > 0) {
     store.writeVersionMeta(dashId, id, dataSourcesUsed)
   }
-  const url = `/preview/${dashId}/${id}/index.html`
+  const url = artifactPreviewUrl(dashId, id)
   const v: Version = {
     id,
     label: `v${n}`,
@@ -2873,10 +2930,561 @@ function commitVersion(rt: Runtime, run: ActiveRun): void {
     screenshotUrl: rt.s.dashboard.coverUrl || coverFor(run.pending.text),
     published: false,
     isCurrent: true,
-    dataSourcesUsed: dataSourcesUsed.length > 0 ? dataSourcesUsed : undefined
+    dataSourcesUsed: dataSourcesUsed.length > 0 ? dataSourcesUsed : undefined,
+    manifest: manifestFor(rt.s.dashboard.artifactKind),
+    validationReport: artifactRegistry.get('dashboard').validateDraft({
+      entryFile: 'index.html',
+      files: { 'index.html': run.html }
+    })
   }
   addVersion(rt, v, url)
   previewReady(rt, id, url)
+}
+
+const IDUX_STAGE_TITLES = [
+  '确认页面目标',
+  '查询 IDux 组件证据',
+  '生成并构建页面',
+  '检查准确性、体验与安全',
+  '自动修复并复检',
+  '生成可交付版本'
+]
+
+const IDUX_IMAGE_STAGE_TITLES = [
+  '分析页面参考图',
+  '映射 IDux 组件与样式',
+  '生成并构建页面',
+  '对比参考图与双视口',
+  '自动修复并复检',
+  '生成可交付版本'
+]
+
+const IDUX_FLOW: FlowDefinition = {
+  nodes: [
+    { id: 'planner', name: '理解页面目标' },
+    { id: 'coder', name: '生成并构建 IDux 页面' },
+    { id: 'check', name: '浏览器质量验收' },
+    { id: 'repair', name: '自动修复' },
+    { id: 'finish', name: '闭环交付' }
+  ],
+  edges: [
+    { from: 'planner', to: 'coder' },
+    { from: 'coder', to: 'check', guard: 'buildPassed' },
+    { from: 'coder', to: 'repair' },
+    { from: 'check', to: 'finish', guard: 'qualityPassed' },
+    { from: 'check', to: 'repair' },
+    { from: 'repair', to: 'coder' }
+  ],
+  guards: {
+    buildPassed: (gs) => gs.nodes.coder?.output?.passed === true,
+    qualityPassed: (gs) => gs.nodes.check?.output?.passed === true
+  }
+}
+
+function iduxGraphSnapshot(gs: GraphState): GraphSnapshot {
+  const finished = !gs.awaiting && gs.nodes.finish?.status === 'done'
+  return {
+    nodes: gs.definition.nodes.map(node => {
+      const state = gs.nodes[node.id]
+      const summary: Record<string, string | number | boolean | null> = {}
+      const output = state?.output
+      for (const key of ['passed', 'issueCount', 'attempt', 'iduxVersion', 'repairCount']) {
+        const value = output?.[key]
+        if (
+          typeof value === 'string' ||
+          typeof value === 'number' ||
+          typeof value === 'boolean' ||
+          value === null
+        ) {
+          summary[key] = value
+        }
+      }
+      const status = state?.status ?? 'pending'
+      return {
+        id: node.id,
+        name: node.name,
+        status: finished && status === 'pending' ? 'skipped' : status,
+        summary
+      }
+    }),
+    edges: gs.definition.edges.map(edge => ({
+      from: edge.from,
+      to: edge.to,
+      guard: edge.guard
+    })),
+    current: gs.current,
+    awaiting: gs.awaiting
+  }
+}
+
+function emitIduxGraph(rt: Runtime, graph: GraphSnapshot): void {
+  rt.s.graph = graph
+  store.emit(rt.s.dashboard.id, 'graph', { dashboardId: rt.s.dashboard.id, graph })
+  save(rt)
+}
+
+function emitIduxGraphSkeleton(rt: Runtime): void {
+  emitIduxGraph(rt, {
+    nodes: IDUX_FLOW.nodes.map(node => ({
+      id: node.id,
+      name: node.name,
+      status: node.id === 'planner' ? 'active' : 'pending',
+      summary: {}
+    })),
+    edges: IDUX_FLOW.edges.map(edge => ({
+      from: edge.from,
+      to: edge.to,
+      guard: edge.guard
+    })),
+    current: 'planner',
+    awaiting: null
+  })
+}
+
+function effectiveIduxRequest(rt: Runtime, request: string): string {
+  const original = rt.s.messages.find(
+    message => message.kind === 'user' && message.text.trim().length > 0
+  )
+  if (!original || original.kind !== 'user' || original.text.trim() === request.trim()) {
+    return request.trim()
+  }
+  return `原始需求：${truncate(original.text.trim(), 500)}\n本轮要求：${request.trim()}`
+}
+
+function safeGenerationError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error)
+  if (/Executable doesn't exist|playwright install/i.test(raw)) {
+    return '浏览器验收环境不可用：请安装 Chromium、Chrome 或 Edge'
+  }
+  return raw
+    .replace(/[A-Za-z]:\\[^\r\n]+/g, '[本地路径]')
+    .replace(/\s+/g, ' ')
+    .slice(0, 300)
+}
+
+function iduxReferenceRegions(width: number, height: number): Region[] {
+  const clamp = (left: number, top: number, regionWidth: number, regionHeight: number): Region => {
+    const safeLeft = Math.min(Math.max(0, Math.round(left)), width - 1)
+    const safeTop = Math.min(Math.max(0, Math.round(top)), height - 1)
+    return {
+      left: safeLeft,
+      top: safeTop,
+      width: Math.max(1, Math.min(Math.round(regionWidth), width - safeLeft)),
+      height: Math.max(1, Math.min(Math.round(regionHeight), height - safeTop))
+    }
+  }
+  return [
+    clamp(0, 0, width, height * 0.3),
+    clamp(0, height * 0.25, width * 0.6, height * 0.5),
+    clamp(width * 0.55, height * 0.25, width * 0.45, height * 0.5),
+    clamp(0, height * 0.7, width, height * 0.3)
+  ]
+}
+
+async function runIduxPageGeneration(
+  rt: Runtime,
+  request: string,
+  attachments: string[]
+): Promise<void> {
+  if (rt.running) return
+  rt.running = true
+  setStatus(rt, 'generating')
+  updateDashboard(rt, { status: 'generating' })
+  emitPlan(rt, attachments.length > 0 ? IDUX_IMAGE_STAGE_TITLES : IDUX_STAGE_TITLES)
+  emitIduxGraphSkeleton(rt)
+
+  const requirement = effectiveIduxRequest(rt, request)
+  const revisionId = nextId('ver')
+  const workspace = store.artifactWorkspaceDir(rt.s.dashboard.id, revisionId)
+  const outputDir = store.previewDir(rt.s.dashboard.id, revisionId)
+  let generated: Awaited<ReturnType<typeof generateIduxPage>> | null = null
+  let reference: Awaited<ReturnType<typeof analyzeIduxPageReference>> | null = null
+  let referenceImage: string | null = null
+  let draft: Awaited<ReturnType<typeof generateIduxPage>>['draft'] | null = null
+  let staticReport: ValidationReport | null = null
+  let build: Awaited<ReturnType<typeof buildIduxPage>> | null = null
+  let runtime: Awaited<ReturnType<typeof validateBuiltIduxPage>> | null = null
+  let validationReport: ValidationReport | null = null
+  let failedGates: ValidationGateResult[] = []
+  let repairCount = 0
+  let currentIssue: Issue | null = null
+  let latestError = 'IDux 页面生成未完成'
+  let committed = false
+
+  const executors: Record<string, NodeExecutor> = {
+    planner: {
+      async execute() {
+        let step = startStep(
+          rt,
+          'st-1',
+          attachments.length > 0 ? '分析 IDux 页面参考图与业务目标' : '锁定产物类型与原始业务目标'
+        )
+        if (attachments.length > 0) {
+          const capability = await getCapability()
+          if (!capability.ok) {
+            latestError = '模型能力探测失败，无法可靠分析 IDux 页面参考图'
+            throw new Error(latestError)
+          }
+          if (!capability.supportsVision) {
+            latestError = '当前模型不支持图片理解，不能在忽略参考图的情况下生成 IDux 页面'
+            throw new Error(latestError)
+          }
+          referenceImage = attachments.find(item => /^data:image\//i.test(item)) ?? null
+          if (!referenceImage) {
+            latestError = '没有找到可分析的 PNG、JPEG 或 WebP 参考图'
+            throw new Error(latestError)
+          }
+          let crops: string[] = []
+          const replicaEnv = await probeReplicaEnv()
+          if (replicaEnv.sharpOk) {
+            const size = await imageSize(referenceImage)
+            crops = await cropImageDataUrl(
+              referenceImage,
+              iduxReferenceRegions(size.width, size.height)
+            )
+          }
+          try {
+            reference = await analyzeIduxPageReference(
+              cachedSettings,
+              requirement,
+              referenceImage,
+              crops
+            )
+          } catch (error) {
+            latestError = safeGenerationError(error)
+            throw error
+          }
+          finishStep(
+            rt,
+            step,
+            `识别为管理列表页：${reference.analysis.columns.length} 列、${reference.analysis.summaryCards.length} 个概览，置信度 ${reference.analysis.confidence}`
+          )
+        } else {
+          finishStep(rt, step, '已锁定 Vue 3 + IDux 2.11.0 普通页面')
+        }
+        finishStage(rt, 'st-1')
+
+        activateStage(rt, 'st-2')
+        step = startStep(rt, 'st-2', '通过 idux-cli 查询组件 API，并加载 idux-style 页面规范')
+        generated = await generateIduxPage(
+          workspace,
+          requirement,
+          cachedSettings,
+          reference ? { reference } : {}
+        )
+        draft = generated.draft
+        finishStep(
+          rt,
+          step,
+          `证据版本 ${generated.evidence.iduxVersion}，提交 ${generated.evidence.sourceCommit.slice(0, 8)}`
+        )
+        finishStage(rt, 'st-2')
+        return {
+          kind: 'done',
+          output: {
+            iduxVersion: generated.evidence.iduxVersion,
+            sourceCommit: generated.evidence.sourceCommit.slice(0, 8)
+          }
+        }
+      }
+    },
+    coder: {
+      async execute() {
+        activateStage(rt, 'st-3')
+        const step = startStep(
+          rt,
+          'st-3',
+          repairCount === 0 ? '校验源码并执行受控离线构建' : `应用第 ${repairCount} 轮修复后重新构建`
+        )
+        try {
+          if (!generated || !draft) throw new Error('IDux 组件证据或源码草稿缺失')
+          validateIduxBuildInput(draft)
+          staticReport = artifactRegistry.get('idux-page').validateDraft(draft)
+          failedGates = staticReport.gates.filter(gate => gate.status === 'failed')
+          if (failedGates.length > 0) {
+            latestError = failedGates[0]?.detail || failedGates[0]?.title || 'IDux 源码门禁未通过'
+            finishStep(rt, step, `发现 ${failedGates.length} 项源码问题，进入自动修复`)
+            finishStage(rt, 'st-3')
+            return {
+              kind: 'done',
+              output: { passed: false, issueCount: failedGates.length, attempt: repairCount + 1 }
+            }
+          }
+
+          store.writeArtifactDraft(rt.s.dashboard.id, revisionId, draft)
+          store.writeArtifactEvidence(rt.s.dashboard.id, revisionId, generated.evidence)
+          build = await buildIduxPage(workspace, outputDir)
+          finishStep(rt, step, `构建完成，用时 ${(build.durationMs / 1000).toFixed(1)} 秒`)
+          finishStage(rt, 'st-3')
+          return {
+            kind: 'done',
+            output: { passed: true, issueCount: 0, attempt: repairCount + 1 }
+          }
+        } catch (error) {
+          latestError = safeGenerationError(error)
+          failedGates = [{
+            id: 'production-build',
+            title: '生产构建成功',
+            status: 'failed',
+            detail: latestError
+          }]
+          finishStep(rt, step, `${latestError}；进入自动修复`)
+          finishStage(rt, 'st-3')
+          return {
+            kind: 'done',
+            output: { passed: false, issueCount: 1, attempt: repairCount + 1 }
+          }
+        }
+      }
+    },
+    check: {
+      async execute() {
+        activateStage(rt, 'st-4')
+        const step = startStep(rt, 'st-4', '在 1920×1080 与 1366×768 执行浏览器与视觉验收')
+        if (!staticReport || !build || !draft) {
+          return { kind: 'failed', error: new Error('IDux 构建结果不完整，不能执行浏览器验收') }
+        }
+        const url = artifactPreviewUrl(rt.s.dashboard.id, revisionId, Date.now())
+        runtime = await validateBuiltIduxPage(url)
+        const visualReview = await reviewIduxPageVisual(
+          cachedSettings,
+          requirement,
+          runtime.screenshot,
+          runtime.smallScreenshot,
+          referenceImage
+        )
+        validationReport = {
+          status: 'pending',
+          gates: [
+            ...staticReport.gates,
+            {
+              id: 'production-build',
+              title: '生产构建成功',
+              status: 'passed',
+              detail: `${runtimeVersionLabel()}，${(build.durationMs / 1000).toFixed(1)} 秒`
+            },
+            ...runtime.gates,
+            ...visualReview.gates
+          ]
+        }
+        failedGates = validationReport.gates.filter(gate => gate.status === 'failed')
+        validationReport.status = failedGates.length === 0 ? 'passed' : 'failed'
+
+        if (failedGates.length > 0) {
+          latestError = failedGates[0]?.detail || failedGates[0]?.title || '浏览器质量验收失败'
+          if (!currentIssue) {
+            const issueId = nextId('issue')
+            currentIssue = {
+              id: issueId,
+              stageId: 'st-5',
+              title: latestError,
+              attempt: repairCount + 1,
+              status: 'fixing',
+              beforeShotUrl: runtime.screenshot
+                ? persistShot(
+                    rt,
+                    issueId,
+                    'before',
+                    `data:image/png;base64,${runtime.screenshot.toString('base64')}`
+                  )
+                : null,
+              afterShotUrl: null,
+              detail: `检测到 ${failedGates.length} 项阻断问题，正在执行有边界的自动修复。`
+            }
+          } else {
+            currentIssue = {
+              ...currentIssue,
+              title: latestError,
+              attempt: repairCount + 1,
+              status: 'fixing',
+              detail: `第 ${repairCount + 1} 轮复检仍有 ${failedGates.length} 项阻断问题。`
+            }
+          }
+          setIssue(rt, currentIssue)
+          finishStep(rt, step, `发现 ${failedGates.length} 项阻断问题，进入自动修复`)
+        } else {
+          if (runtime.screenshot) store.writeCover(rt.s.dashboard.id, runtime.screenshot)
+          if (currentIssue) {
+            currentIssue = {
+              ...currentIssue,
+              status: 'fixed',
+              afterShotUrl: runtime.screenshot
+                ? persistShot(
+                    rt,
+                    currentIssue.id,
+                    'after',
+                    `data:image/png;base64,${runtime.screenshot.toString('base64')}`
+                  )
+                : null,
+              detail: `经过 ${repairCount} 轮自动修复，全部质量门禁复检通过。`
+            }
+            setIssue(rt, currentIssue)
+          }
+          finishStep(rt, step, `共 ${validationReport.gates.length} 项质量门禁通过`)
+        }
+        finishStage(rt, 'st-4')
+        return {
+          kind: 'done',
+          output: {
+            passed: failedGates.length === 0,
+            issueCount: failedGates.length,
+            attempt: repairCount + 1
+          }
+        }
+      }
+    },
+    repair: {
+      async execute() {
+        activateStage(rt, 'st-5')
+        const step = startStep(rt, 'st-5', `修复第 ${repairCount + 1} 轮质量问题`)
+        if (!draft) {
+          latestError = '没有可修复的 IDux 源码草稿'
+          finishStep(rt, step, latestError, 'failed')
+          return { kind: 'failed', error: new Error(latestError) }
+        }
+        if (repairCount >= 2) {
+          latestError = `自动修复已达到 2 轮上限：${latestError}`
+          if (currentIssue) {
+            currentIssue = { ...currentIssue, status: 'failed', detail: latestError }
+            setIssue(rt, currentIssue)
+          }
+          finishStep(rt, step, latestError, 'failed')
+          return { kind: 'failed', error: new Error(latestError) }
+        }
+        if (!currentIssue) {
+          currentIssue = {
+            id: nextId('issue'),
+            stageId: 'st-5',
+            title: latestError,
+            attempt: repairCount + 1,
+            status: 'fixing',
+            beforeShotUrl: null,
+            afterShotUrl: null,
+            detail: `源码或构建门禁发现 ${failedGates.length} 项问题，正在自动修复。`
+          }
+          setIssue(rt, currentIssue)
+        }
+        const repaired = repairIduxPageDraft(draft, failedGates)
+        if (repaired.actions.length === 0) {
+          latestError = `没有可审计的安全修复规则：${latestError}`
+          if (currentIssue) {
+            currentIssue = { ...currentIssue, status: 'failed', detail: latestError }
+            setIssue(rt, currentIssue)
+          }
+          finishStep(rt, step, latestError, 'failed')
+          return { kind: 'failed', error: new Error(latestError) }
+        }
+        draft = repaired.draft
+        repairCount += 1
+        finishStep(rt, step, repaired.actions.join('；'))
+        finishStage(rt, 'st-5')
+        return {
+          kind: 'done',
+          output: {
+            repairCount,
+            issueCount: failedGates.length
+          }
+        }
+      }
+    },
+    finish: {
+      async execute() {
+        if (rt.s.stages.find(stage => stage.id === 'st-5')?.state !== 'done') {
+          finishStage(rt, 'st-5')
+        }
+        activateStage(rt, 'st-6')
+        const step = startStep(rt, 'st-6', '固化证据、校验报告与可预览版本')
+        if (!generated || !draft || !runtime || validationReport?.status !== 'passed') {
+          latestError = '质量闭环尚未通过，拒绝提交版本'
+          finishStep(rt, step, latestError, 'failed')
+          return { kind: 'failed', error: new Error(latestError) }
+        }
+        finishStep(rt, step, repairCount > 0 ? `完成 ${repairCount} 轮修复并复检` : '首次验收即通过')
+        finishStage(rt, 'st-6')
+        return { kind: 'done', output: { passed: true, repairCount } }
+      }
+    }
+  }
+
+  try {
+    const engine = createLoop({
+      definition: IDUX_FLOW,
+      resume: { resume: {} },
+      executors,
+      stepTimeoutMs: 10 * 60 * 1000,
+      onNodeComplete: (_nodeId, graphState) => emitIduxGraph(rt, iduxGraphSnapshot(graphState)),
+      onCommit: async graphState => {
+        emitIduxGraph(rt, iduxGraphSnapshot(graphState))
+        if (!generated || !draft || !runtime || !validationReport || validationReport.status !== 'passed') {
+          throw new Error('IDux 闭环结果不完整，拒绝提交版本')
+        }
+        const url = artifactPreviewUrl(rt.s.dashboard.id, revisionId, Date.now())
+        const n = rt.s.versions.length + 1
+        const coverUrl = runtime.screenshot
+          ? `/covers/${rt.s.dashboard.id}.png?t=${Date.now()}`
+          : rt.s.dashboard.coverUrl
+        const version: Version = {
+          id: revisionId,
+          label: `v${n}`,
+          summary: rt.s.versions.length === 0
+            ? 'IDux 页面初版完成'
+            : truncate(request) || '更新 IDux 页面',
+          createdAt: Date.now(),
+          screenshotUrl: coverUrl,
+          published: false,
+          isCurrent: true,
+          manifest: artifactRegistry.get('idux-page').createManifest(draft),
+          validationReport
+        }
+        addVersion(rt, version, url)
+        previewReady(rt, revisionId, url)
+        pushAgent(
+          rt,
+          `IDux 普通页面已通过 ${validationReport.gates.length} 项质量门禁`
+            + (repairCount > 0 ? `，并完成 ${repairCount} 轮自动修复与复检。` : '。')
+        )
+        updateDashboard(rt, {
+          status: 'completed',
+          coverUrl,
+          targetProfile: artifactRegistry.get('idux-page').createTargetProfile()
+        })
+        committed = true
+      }
+    })
+    await engine.handleEvent({ kind: 'start', initialNode: 'planner' })
+    if (engine.getState() === 'blocked' || !committed) {
+      throw new Error(latestError)
+    }
+  } catch (error) {
+    const message = safeGenerationError(error)
+    const issue = currentIssue as Issue | null
+    if (issue) {
+      const failedIssue: Issue = { ...issue, status: 'failed', detail: message }
+      currentIssue = failedIssue
+      setIssue(rt, failedIssue)
+    } else {
+      setIssue(rt, {
+        id: nextId('issue'),
+        stageId: rt.s.stages.find(stage => stage.state === 'active')?.id ?? 'st-1',
+        title: message,
+        attempt: Math.max(1, repairCount + 1),
+        status: 'failed',
+        beforeShotUrl: null,
+        afterShotUrl: null,
+        detail: '质量门禁阻止了不可靠的 IDux 页面进入版本历史。'
+      })
+    }
+    pushAgent(rt, `这次 IDux 页面没有进入版本历史：${message}`)
+    updateDashboard(rt, { status: 'needs_attention' })
+  } finally {
+    rt.running = false
+    setStatus(rt, 'idle')
+    drainQueue(rt)
+  }
+}
+
+function runtimeVersionLabel(): string {
+  return 'Vite 6.4.3'
 }
 
 function completeRun(rt: Runtime, run: ActiveRun): void {
@@ -2907,7 +3515,11 @@ function drainQueue(rt: Runtime): void {
       updateMessage(rt, m)
     }
   }
-  startEditFlow(rt, text, attachments)
+  if (rt.s.dashboard.artifactKind === 'idux-page') {
+    void runIduxPageGeneration(rt, text, attachments)
+  } else {
+    startEditFlow(rt, text, attachments)
+  }
 }
 
 /* ============================== 主流程：增量修改（精简 3 步） ============================== */
@@ -3004,6 +3616,10 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
   }
   switch (rt.s.runStatus) {
     case 'idle':
+      if (rt.s.dashboard.artifactKind === 'idux-page') {
+        void runIduxPageGeneration(rt, text, attachments)
+        break
+      }
       if (rt.s.versions.length === 0) {
         const run: ActiveRun = {
           pending: newPending('create', text, attachments),
@@ -3276,17 +3892,16 @@ function rebuildActiveRun(rt: Runtime): ActiveRun | null {
 function doRollback(rt: Runtime, versionId: string): void {
   const target = rt.s.versions.find((v) => v.id === versionId)
   if (!target) return
-  const html = store.readPreview(rt.s.dashboard.id, versionId)
-  if (html === null) return
   // 继承原版本的数据来源明细（回退产物是同一份页面，数据来源不变）
   const inheritedMeta = store.readVersionMeta<DataUseEntry[]>(rt.s.dashboard.id, versionId)
   const n = rt.s.versions.length + 1
   const id = nextId('ver')
-  store.writePreview(rt.s.dashboard.id, id, html) // 复制产物生成新节点，历史不删
-  if (inheritedMeta && inheritedMeta.length > 0) {
-    store.writeVersionMeta(rt.s.dashboard.id, id, inheritedMeta)
+  if (target.manifest.kind === 'idux-page') {
+    store.copyArtifactRevision(rt.s.dashboard.id, versionId, id)
+  } else {
+    store.copyPreviewRevision(rt.s.dashboard.id, versionId, id)
   }
-  const url = `/preview/${rt.s.dashboard.id}/${id}/index.html`
+  const url = artifactPreviewUrl(rt.s.dashboard.id, id)
   const v: Version = {
     id,
     label: `v${n}`,
@@ -3295,7 +3910,9 @@ function doRollback(rt: Runtime, versionId: string): void {
     screenshotUrl: target.screenshotUrl,
     published: false,
     isCurrent: true,
-    dataSourcesUsed: inheritedMeta && inheritedMeta.length > 0 ? inheritedMeta : undefined
+    dataSourcesUsed: inheritedMeta && inheritedMeta.length > 0 ? inheritedMeta : undefined,
+    manifest: target.manifest,
+    validationReport: target.validationReport
   }
   addVersion(rt, v, url)
   previewReady(rt, id, url)
@@ -3339,16 +3956,112 @@ function emitPublishProgress(
  * 真实发布主流程（异步推进，进度通过 publishProgress 事件实时推给发布弹窗）。
  * 任何环节失败推 failed 进度；成功把 publicUrl 写进当前版本并标记已发布。
  */
+const MAX_PUBLISH_HTML_BYTES = 20 * 1024 * 1024
+
+function trustedPreviewAsset(
+  projectId: string,
+  revisionId: string,
+  reference: string,
+  relativeTo = ''
+): { content: Buffer; filePath: string } {
+  const cleanReference = reference.split(/[?#]/, 1)[0]
+  if (
+    !cleanReference ||
+    /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(cleanReference) ||
+    cleanReference.includes('\0')
+  ) {
+    throw new PublishError(`IDux 发布产物包含不受信任的资源地址：${reference}`)
+  }
+  const root = fs.realpathSync(store.previewDir(projectId, revisionId))
+  const normalizedReference = decodeURIComponent(cleanReference).replace(/^\/+/, '')
+  const candidate = path.resolve(root, relativeTo, normalizedReference)
+  const filePath = fs.realpathSync(candidate)
+  const relative = path.relative(root, filePath)
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new PublishError(`IDux 发布资源越出了受控预览目录：${reference}`)
+  }
+  if (!fs.statSync(filePath).isFile()) {
+    throw new PublishError(`IDux 发布资源不是普通文件：${reference}`)
+  }
+  return { content: fs.readFileSync(filePath), filePath }
+}
+
+function assetMimeType(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase()
+  const types: Record<string, string> = {
+    '.avif': 'image/avif',
+    '.gif': 'image/gif',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.webp': 'image/webp',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2'
+  }
+  const mime = types[extension]
+  if (!mime) throw new PublishError(`IDux 样式引用了不允许内联的资源类型：${extension || '未知'}`)
+  return mime
+}
+
+function inlineCssAssets(
+  projectId: string,
+  revisionId: string,
+  cssFilePath: string,
+  css: string
+): string {
+  const previewRoot = fs.realpathSync(store.previewDir(projectId, revisionId))
+  const relativeDirectory = path.relative(previewRoot, path.dirname(cssFilePath))
+  return css.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi, (match, _quote, reference: string) => {
+    if (/^(?:data:|#)/i.test(reference.trim())) return match
+    const asset = trustedPreviewAsset(projectId, revisionId, reference.trim(), relativeDirectory)
+    return `url("data:${assetMimeType(asset.filePath)};base64,${asset.content.toString('base64')}")`
+  })
+}
+
+function inlineIduxPreview(projectId: string, revisionId: string, html: string): string {
+  let result = html.replace(/<link\b[^>]*>/gi, tag => {
+    if (!/\brel\s*=\s*["']stylesheet["']/i.test(tag)) return tag
+    const href = /\bhref\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1]
+    if (!href) throw new PublishError('IDux 发布产物的样式标签缺少 href')
+    const asset = trustedPreviewAsset(projectId, revisionId, href)
+    const css = inlineCssAssets(projectId, revisionId, asset.filePath, asset.content.toString('utf8'))
+    return `<style data-inlined-from="${path.basename(asset.filePath)}">${css}</style>`
+  })
+  result = result.replace(
+    /<script\b([^>]*)\bsrc\s*=\s*["']([^"']+)["']([^>]*)><\/script>/gi,
+    (_tag, before, source, after) => {
+      const asset = trustedPreviewAsset(projectId, revisionId, source)
+      const script = asset.content.toString('utf8')
+      if (/\b(?:import\s*(?:\(|["'{*])|export\s+(?:\*|{))/m.test(script)) {
+        throw new PublishError('IDux 构建结果包含拆分模块，当前发布器无法安全合并，请重新生成后再试')
+      }
+      return `<script${before}${after}>${script}</script>`
+    }
+  )
+  if (Buffer.byteLength(result, 'utf8') > MAX_PUBLISH_HTML_BYTES) {
+    throw new PublishError('IDux 发布产物内联后超过 20MB 安全上限')
+  }
+  if (/(?:src|href)\s*=\s*["']\s*(?:\.?\/)?assets\//i.test(result)) {
+    throw new PublishError('IDux 发布产物仍包含未内联的本地资源')
+  }
+  return result
+}
+
 async function runPublish(rt: Runtime, cur: Version): Promise<void> {
   const dashId = rt.s.dashboard.id
   try {
+    if (cur.validationReport.status !== 'passed') {
+      throw new PublishError('当前版本没有通过全部质量门禁，已阻止发布')
+    }
     emitPublishProgress(rt, 'uploading', '正在准备云端环境（创建/复用 CodeBox、配置访问）…')
     const html = store.readPreview(dashId, cur.id)
     if (html === null) throw new PublishError('这个版本的页面文件找不到了，可能已被清理')
     // 发布单文件：把 data.json 内联进 HTML（云端只上传 index.html，需自带数据）
-    const dataJson = store.readDataFileText(dashId, cur.id)
-    const htmlToPublish = inlineDataIntoHtml(html, dataJson)
-    const cfg = getPublishConfig()
+    const htmlToPublish = cur.manifest.kind === 'idux-page'
+      ? inlineIduxPreview(dashId, cur.id, html)
+      : inlineDataIntoHtml(html, store.readDataFileText(dashId, cur.id))
+    const cfg = { ...cachedPublishConfig }
     const name = codeBoxName(dashId)
     emitPublishProgress(rt, 'uploading', '正在把大屏上传到云端…')
     // 上传完成后切到 serving 阶段（起服务 + 暴露公网）
@@ -3482,9 +4195,21 @@ function makeRuntime(s: SessionData): Runtime {
     s.runStatus = 'idle'
     s.pendingRun = null
   }
+  s.dashboard.artifactKind ??= 'dashboard'
+  s.dashboard.targetProfile ??= targetProfileFor(s.dashboard.artifactKind)
+  const currentRevision = s.versions.find((version) => version.isCurrent) ?? null
+  s.dashboard.currentRevisionId ??= currentRevision?.id ?? null
+  for (const version of s.versions) {
+    version.manifest ??= manifestFor(s.dashboard.artifactKind)
+    version.validationReport ??= passedValidationReport('历史产物按兼容规则登记')
+  }
   s.assistSession = null
   s.steps ??= [] // 旧版会话文件没有执行轨迹字段
   s.graph ??= null // 旧版会话文件没有流程图快照字段
+  s.preview.url = normalizePreviewUrl(s.preview.url)
+  for (const [versionId, url] of Object.entries(s.versionUrls)) {
+    s.versionUrls[versionId] = normalizePreviewUrl(url) ?? url
+  }
   const rt: Runtime = { s, running: false, queue: [], activeRun: null, autoTimer: null, timers: new Set(), stepsResetPending: false }
   sessions.set(s.dashboard.id, rt)
   return rt
@@ -3492,7 +4217,7 @@ function makeRuntime(s: SessionData): Runtime {
 
 function mustRuntime(dashId: string): Runtime {
   const rt = sessions.get(dashId)
-  if (!rt) throw new HttpError(404, `大屏不存在：${dashId}`)
+  if (!rt) throw new HttpError(404, `项目不存在：${dashId}`)
   return rt
 }
 
@@ -3528,6 +4253,8 @@ export function snapshotOf(rt: Runtime): WorkbenchSnapshot {
 export function syncAdapterSession(dashId: string, patch: {
   messages?: ChatMessage[]
   stages?: Stage[]
+  steps?: AgentStep[]
+  issues?: Issue[]
   versions?: Version[]
   versionUrls?: Record<string, string>
   runStatus?: RunStatus
@@ -3539,12 +4266,15 @@ export function syncAdapterSession(dashId: string, patch: {
   if (!rt) return
   if (patch.messages !== undefined) rt.s.messages = patch.messages
   if (patch.stages !== undefined) rt.s.stages = patch.stages
+  if (patch.steps !== undefined) rt.s.steps = patch.steps
+  if (patch.issues !== undefined) rt.s.issues = patch.issues
   if (patch.versions !== undefined) rt.s.versions = patch.versions
   if (patch.versionUrls !== undefined) rt.s.versionUrls = patch.versionUrls
   if (patch.runStatus !== undefined) rt.s.runStatus = patch.runStatus
   if (patch.blocker !== undefined) rt.s.blocker = patch.blocker
   if (patch.preview !== undefined) rt.s.preview = patch.preview
   if (patch.graph !== undefined) rt.s.graph = patch.graph
+  save(rt)
 }
 
 /**
@@ -3564,17 +4294,46 @@ export function listDashboards(): Dashboard[] {
   return [...sessions.values()].map((rt) => ({ ...rt.s.dashboard }))
 }
 
+export const listProjects = listDashboards
+
+export function listGenerationCapabilities(): Array<{
+  artifactKind: ArtifactKind
+  targetProfile: TargetProfile
+  skills: Array<{ id: string; name: string; description: string }>
+}> {
+  return artifactRegistry.list().map((adapter) => ({
+    artifactKind: adapter.kind,
+    targetProfile: adapter.createTargetProfile(),
+    skills: skillRegistry.forArtifact(adapter.kind).map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description
+    }))
+  }))
+}
+
 function persistDashboards(): void {
   store.saveDashboards(listDashboards())
 }
 
+export function getArtifactKind(id: string): ArtifactKind {
+  return mustRuntime(id).s.dashboard.artifactKind
+}
+
 export function createDashboard(name: string): Dashboard {
+  return createProject(name, 'dashboard')
+}
+
+export function createProject(name: string, artifactKind: ArtifactKind): Dashboard {
   const dash: Dashboard = {
     id: nextId('dash'),
-    name: name.trim() || '未命名大屏',
+    name: name.trim() || (artifactKind === 'dashboard' ? '未命名大屏' : '未命名页面'),
+    artifactKind,
+    targetProfile: targetProfileFor(artifactKind),
     status: 'completed',
     coverUrl: '',
     currentVersionLabel: null,
+    currentRevisionId: null,
     updatedAt: Date.now()
   }
   const rt = makeRuntime(emptySession(dash))
@@ -3590,12 +4349,10 @@ export function renameDashboard(id: string, name: string): Dashboard {
 }
 
 export function deleteDashboard(id: string): void {
-  const rt = sessions.get(id)
-  if (rt) {
-    for (const t of rt.timers) clearTimeout(t)
-    if (rt.autoTimer) clearTimeout(rt.autoTimer)
-    sessions.delete(id)
-  }
+  const rt = mustRuntime(id)
+  for (const t of rt.timers) clearTimeout(t)
+  if (rt.autoTimer) clearTimeout(rt.autoTimer)
+  sessions.delete(id)
   store.removeDashboardFiles(id)
   persistDashboards()
 }
@@ -3646,15 +4403,33 @@ export function uploadCover(id: string, image: unknown): void {
   updateDashboard(rt, { coverUrl: `/covers/${id}.png?t=${Date.now()}` })
 }
 
-export function exportVersion(id: string, versionId: string): { filename: string; html: string } {
+export async function exportVersion(
+  id: string,
+  versionId: string
+): Promise<{ filename: string; contentType: string; body: Buffer }> {
   const rt = mustRuntime(id)
   const v = rt.s.versions.find((x) => x.id === versionId)
   if (!v) throw new HttpError(404, `版本不存在：${versionId}`)
+  const adapter = artifactRegistry.get(v.manifest.kind)
+  const filename = adapter.exportFileName(rt.s.dashboard.name, v.label)
+  if (v.manifest.kind === 'idux-page') {
+    const draft = store.readArtifactDraft(id, versionId)
+    if (!draft) throw new HttpError(404, '这个版本的 IDux 页面源码找不到了，可能已被清理')
+    return {
+      filename,
+      contentType: 'application/zip',
+      body: await createIduxSourceArchive(draft)
+    }
+  }
   const html = store.readPreview(id, versionId)
   if (html === null) throw new HttpError(404, '这个版本的页面文件找不到了，可能已被清理')
   // 下载单文件：把 data.json 内联进 HTML（保持自包含，脱离服务端仍能显示数据）
   const dataJson = store.readDataFileText(id, versionId)
-  return { filename: `${rt.s.dashboard.name}-${v.label}.html`, html: inlineDataIntoHtml(html, dataJson) }
+  return {
+    filename,
+    contentType: 'text/html; charset=utf-8',
+    body: Buffer.from(inlineDataIntoHtml(html, dataJson), 'utf8')
+  }
 }
 
 /* ============================== 初始数据（首次启动种入） ============================== */
@@ -3664,7 +4439,7 @@ const CLIENT_PREVIEW_DIR = path.resolve(process.cwd(), '../client/public/preview
 function seedVersion(rt: Runtime, label: string, summary: string, srcFile: string, published: boolean, isCurrent: boolean, createdAt: number): void {
   const id = `ver-seed-${rt.s.dashboard.id}-${label}`
   store.copyPreview(srcFile, rt.s.dashboard.id, id)
-  const url = `/preview/${rt.s.dashboard.id}/${id}/index.html`
+  const url = artifactPreviewUrl(rt.s.dashboard.id, id)
   rt.s.versions.push({
     id,
     label,
@@ -3672,18 +4447,31 @@ function seedVersion(rt: Runtime, label: string, summary: string, srcFile: strin
     createdAt,
     screenshotUrl: rt.s.dashboard.coverUrl,
     published,
-    isCurrent
+    isCurrent,
+    manifest: manifestFor(rt.s.dashboard.artifactKind),
+    validationReport: passedValidationReport('历史示例产物已按兼容规则登记')
   })
   rt.s.versionUrls[id] = url
   if (isCurrent) {
     rt.s.dashboard.currentVersionLabel = label
+    rt.s.dashboard.currentRevisionId = id
     rt.s.preview = { state: 'ready', url }
   }
 }
 
 function seedDashboard(id: string, name: string, status: Dashboard['status'], coverUrl: string): Runtime {
   const now = Date.now()
-  const dash: Dashboard = { id, name, status, coverUrl, currentVersionLabel: null, updatedAt: now }
+  const dash: Dashboard = {
+    id,
+    name,
+    artifactKind: 'dashboard',
+    targetProfile: targetProfileFor('dashboard'),
+    status,
+    coverUrl,
+    currentVersionLabel: null,
+    currentRevisionId: null,
+    updatedAt: now
+  }
   const rt = makeRuntime(emptySession(dash))
   rt.s.messages.push({
     kind: 'agent',
@@ -3755,6 +4543,7 @@ function seedIfEmpty(): void {
 /* ============================== 启动 ============================== */
 
 export function boot(): void {
+  skillRegistry.load()
   // 同步模板库（client/templates -> data/templates；源缺失时模板匹配自动降级）
   templatesRoot = syncTemplates(dirs.root)
   // 扫描模板 HTML 的 meta 标签构建内存目录（HTML 全文一并读入，供 Coder 注入）

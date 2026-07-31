@@ -17,6 +17,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { ClientEventMap, McpDataSource, ModelSettings, PublishConfig } from './wire'
+import type { ArtifactDraft } from './artifacts/types'
 
 export interface StoredEvent {
   seq: number
@@ -42,6 +43,7 @@ export const dirs = {
   sessions: path.join(DATA_DIR, 'sessions'),
   events: path.join(DATA_DIR, 'events'),
   previews: path.join(DATA_DIR, 'previews'),
+  workspaces: path.join(DATA_DIR, 'workspaces'),
   covers: path.join(DATA_DIR, 'covers'),
   shots: path.join(DATA_DIR, 'shots')
 }
@@ -49,7 +51,14 @@ export const dirs = {
 /* ------------------------------ 基础读写 ------------------------------ */
 
 function ensureDirs(): void {
-  for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true })
+  for (const d of Object.values(dirs)) {
+    fs.mkdirSync(d, { recursive: true, mode: 0o700 })
+    try {
+      fs.chmodSync(d, 0o700)
+    } catch {
+      /* Windows may not expose POSIX permission bits. */
+    }
+  }
 }
 
 function readJson<T>(file: string): T | null {
@@ -60,11 +69,36 @@ function readJson<T>(file: string): T | null {
   }
 }
 
+let writeSequence = 0
+
 function writeJson(file: string, data: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.tmp`
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
-  fs.renameSync(tmp, file)
+  writeSequence += 1
+  const tmp = `${file}.${process.pid}.${writeSequence}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 })
+  try {
+    fs.renameSync(tmp, file)
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String((error as NodeJS.ErrnoException).code)
+      : ''
+    if (code !== 'EPERM' && code !== 'EEXIST') throw error
+    // Windows may temporarily refuse replacing an existing file with rename.
+    fs.copyFileSync(tmp, file)
+    fs.unlinkSync(tmp)
+  }
+  try {
+    fs.chmodSync(file, 0o600)
+  } catch {
+    /* Windows may not expose POSIX permission bits. */
+  }
+}
+
+function safeId(value: string, label: string): string {
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(value)) {
+    throw new Error(`${label} 不合法`)
+  }
+  return value
 }
 
 /* ------------------------------ Store ------------------------------ */
@@ -86,7 +120,7 @@ export class Store {
   /* ---------- 事件（append-only jsonl + 内存广播） ---------- */
 
   private eventsFile(dashId: string): string {
-    return path.join(dirs.events, `${dashId}.jsonl`)
+    return path.join(dirs.events, `${safeId(dashId, '项目 ID')}.jsonl`)
   }
 
   private restoreSeqCounters(): void {
@@ -165,7 +199,7 @@ export class Store {
   /* ---------- 会话快照 ---------- */
 
   sessionFile(dashId: string): string {
-    return path.join(dirs.sessions, `${dashId}.json`)
+    return path.join(dirs.sessions, `${safeId(dashId, '项目 ID')}.json`)
   }
 
   loadSession<T>(dashId: string): T | null {
@@ -209,7 +243,11 @@ export class Store {
   /* ---------- 预览产物 ---------- */
 
   previewDir(dashId: string, versionId: string): string {
-    return path.join(dirs.previews, dashId, versionId)
+    return path.join(
+      dirs.previews,
+      safeId(dashId, '项目 ID'),
+      safeId(versionId, '版本 ID')
+    )
   }
 
   writePreview(dashId: string, versionId: string, html: string): void {
@@ -288,6 +326,85 @@ export class Store {
     }
   }
 
+  /* ---------- 多文件产物工作区 ---------- */
+
+  artifactWorkspaceDir(projectId: string, revisionId: string): string {
+    return path.join(
+      dirs.workspaces,
+      safeId(projectId, '项目 ID'),
+      safeId(revisionId, '版本 ID')
+    )
+  }
+
+  writeArtifactDraft(projectId: string, revisionId: string, draft: ArtifactDraft): string {
+    const root = this.artifactWorkspaceDir(projectId, revisionId)
+    fs.mkdirSync(root, { recursive: true })
+    for (const [fileName, content] of Object.entries(draft.files)) {
+      const normalized = fileName.replaceAll('\\', '/')
+      const destination = path.resolve(root, normalized)
+      const relative = path.relative(root, destination)
+      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new Error(`产物文件路径不安全：${fileName}`)
+      }
+      fs.mkdirSync(path.dirname(destination), { recursive: true })
+      fs.writeFileSync(destination, content, 'utf8')
+    }
+    return root
+  }
+
+  writeArtifactEvidence(projectId: string, revisionId: string, evidence: unknown): void {
+    writeJson(path.join(this.artifactWorkspaceDir(projectId, revisionId), '.evidence.json'), evidence)
+  }
+
+  readArtifactDraft(projectId: string, revisionId: string): ArtifactDraft | null {
+    const root = this.artifactWorkspaceDir(projectId, revisionId)
+    if (!fs.existsSync(root)) return null
+    const files: Record<string, string> = {}
+    const walk = (directory: string): void => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (entry.name.startsWith('.')) continue
+        const absolute = path.join(directory, entry.name)
+        if (entry.isDirectory()) walk(absolute)
+        else if (entry.isFile()) {
+          const relative = path.relative(root, absolute).replaceAll('\\', '/')
+          files[relative] = fs.readFileSync(absolute, 'utf8')
+        }
+      }
+    }
+    walk(root)
+    return { entryFile: 'index.html', files }
+  }
+
+  copyPreviewRevision(projectId: string, sourceRevisionId: string, targetRevisionId: string): void {
+    const sourcePreview = this.previewDir(projectId, sourceRevisionId)
+    if (!fs.existsSync(sourcePreview)) {
+      throw new Error('要回退的预览产物不存在')
+    }
+    fs.cpSync(sourcePreview, this.previewDir(projectId, targetRevisionId), {
+      recursive: true,
+      errorOnExist: true,
+      force: false
+    })
+  }
+
+  removePreviewRevision(projectId: string, revisionId: string): void {
+    fs.rmSync(this.previewDir(projectId, revisionId), { recursive: true, force: true })
+  }
+
+  copyArtifactRevision(projectId: string, sourceRevisionId: string, targetRevisionId: string): void {
+    const sourcePreview = this.previewDir(projectId, sourceRevisionId)
+    const sourceWorkspace = this.artifactWorkspaceDir(projectId, sourceRevisionId)
+    if (!fs.existsSync(sourcePreview) || !fs.existsSync(sourceWorkspace)) {
+      throw new Error('要回退的多文件产物不完整')
+    }
+    this.copyPreviewRevision(projectId, sourceRevisionId, targetRevisionId)
+    fs.cpSync(sourceWorkspace, this.artifactWorkspaceDir(projectId, targetRevisionId), {
+      recursive: true,
+      errorOnExist: true,
+      force: false
+    })
+  }
+
   /* ---------- 删除大屏 ---------- */
 
   removeDashboardFiles(dashId: string): void {
@@ -300,15 +417,17 @@ export class Store {
         /* 不存在则忽略 */
       }
     }
-    fs.rmSync(path.join(dirs.previews, dashId), { recursive: true, force: true })
-    fs.rmSync(path.join(dirs.shots, dashId), { recursive: true, force: true })
+    const safeDashId = safeId(dashId, '项目 ID')
+    fs.rmSync(path.join(dirs.previews, safeDashId), { recursive: true, force: true })
+    fs.rmSync(path.join(dirs.workspaces, safeDashId), { recursive: true, force: true })
+    fs.rmSync(path.join(dirs.shots, safeDashId), { recursive: true, force: true })
   }
 
   /* ---------- 封面：客户端上传的截图 ---------- */
 
   writeCover(dashId: string, buf: Buffer): void {
     fs.mkdirSync(dirs.covers, { recursive: true })
-    fs.writeFileSync(path.join(dirs.covers, `${dashId}.png`), buf)
+    fs.writeFileSync(path.join(dirs.covers, `${safeId(dashId, '项目 ID')}.png`), buf)
   }
 
   /* ---------- 截图：复刻流程的修复前/后对比图 ---------- */
@@ -317,10 +436,12 @@ export class Store {
   writeShot(dashId: string, name: string, dataUrl: string): string {
     const m = /^data:image\/png;base64,([\s\S]+)$/.exec(dataUrl)
     const buf = Buffer.from(m ? m[1] : dataUrl, 'base64')
-    const dir = path.join(dirs.shots, dashId)
+    const safeDashId = safeId(dashId, '项目 ID')
+    const safeName = safeId(name, '截图名称')
+    const dir = path.join(dirs.shots, safeDashId)
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, `${name}.png`), buf)
-    return `/shots/${dashId}/${name}.png`
+    fs.writeFileSync(path.join(dir, `${safeName}.png`), buf)
+    return `/shots/${safeDashId}/${safeName}.png`
   }
 
   /* ---------- 封面：从 client/public/covers 拷贝（只读 client，不改动） ---------- */

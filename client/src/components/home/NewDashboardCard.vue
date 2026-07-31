@@ -28,7 +28,7 @@ const emit = defineEmits<{ create: [] }>()
     </div>
     <span class="inline-flex items-center gap-1 text-ink-secondary font-medium group-hover:text-primary transition-colors">
       <AppIcon v-if="!creating" name="add" :size="14" />
-      {{ creating ? '正在创建…' : '新建大屏' }}
+      {{ creating ? '正在创建…' : '新建项目' }}
     </span>
   </div>
 </template>

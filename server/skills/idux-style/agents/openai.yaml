@@ -1,0 +1,4 @@
+interface:
+  display_name: "IDux Style"
+  short_description: "Design or replicate IDux pages with official patterns"
+  default_prompt: "Use $idux-style to design or replicate a consistent IDux business page."

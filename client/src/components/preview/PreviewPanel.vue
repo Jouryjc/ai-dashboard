@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 中区 · 大屏预览区（UX §4.2 中区）。
- * - 逻辑分辨率 1920×1080 / 2560×1440，CSS transform scale 等比缩放（仅影响展示）。
+ * - 大屏与 IDux 普通页面都按各自逻辑分辨率等比缩放。
  * - 三种状态（强制）：
  *   empty    无任何版本 → 占位引导「在左侧描述你想要的大屏」
  *   building 构建中 → 旧版本不清空 + 半透明遮罩「正在生成新版本…」
@@ -9,7 +9,7 @@
  * - 预览内容用 <iframe> 加载 session.previewUrl（public/preview/ 下的 mock 产物）。
  * 数据源：useSessionStore（previewState / previewUrl / resolution / setResolution）。
  */
-import { onBeforeUnmount, ref, toRef, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, toRef, watch } from 'vue'
 import { useSessionStore } from '../../stores/session'
 import type { PreviewResolution } from '../../types'
 import { RESOLUTION_LABEL, useScaleFit } from './useScaleFit'
@@ -26,7 +26,11 @@ function refresh(): void {
 
 /* ---------- 分辨率切换器 ---------- */
 const resMenuOpen = ref(false)
-const RESOLUTIONS: PreviewResolution[] = ['1920x1080', '2560x1440']
+const resolutions = computed<PreviewResolution[]>(() =>
+  session.artifactKind === 'idux-page'
+    ? ['1920x1080', '1366x768']
+    : ['1920x1080', '2560x1440']
+)
 async function pickResolution(r: PreviewResolution): Promise<void> {
   resMenuOpen.value = false
   await session.setResolution(r)
@@ -58,7 +62,10 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
 </script>
 
 <template>
-  <section class="relative flex h-full min-h-0 flex-col bg-page" aria-label="大屏预览区">
+  <section
+    class="relative flex h-full min-h-0 flex-col bg-page"
+    :aria-label="session.artifactKind === 'idux-page' ? '普通页面预览区' : '大屏预览区'"
+  >
     <!-- 预览画布区 -->
     <div ref="containerRef" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6">
       <!-- 状态三：无任何版本 → 占位引导 -->
@@ -77,8 +84,12 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
           <rect x="52" y="72" width="16" height="4" rx="2" class="fill-line-strong" />
         </svg>
         <div>
-          <p class="text-base font-medium text-ink">在左侧描述你想要的大屏</p>
-          <p class="mt-1 text-sm text-ink-faint">说句话就行，做好后会显示在这里</p>
+          <p class="text-base font-medium text-ink">
+            在左侧描述你想要的{{ session.artifactKind === 'idux-page' ? '普通页面' : '大屏' }}
+          </p>
+          <p class="mt-1 text-sm text-ink-faint">
+            {{ session.artifactKind === 'idux-page' ? '会使用 IDux 组件生成，做好后显示在这里' : '说句话就行，做好后会显示在这里' }}
+          </p>
         </div>
       </div>
 
@@ -93,7 +104,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
           <iframe
             :key="`${session.previewUrl}#${refreshKey}`"
             :src="session.previewUrl"
-            title="大屏预览"
+            :title="session.artifactKind === 'idux-page' ? 'IDux 普通页面预览' : '大屏预览'"
             class="block h-full w-full border-0 bg-ink"
             sandbox="allow-scripts allow-same-origin"
           />
@@ -160,7 +171,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
             v-if="resMenuOpen"
             class="absolute left-1/2 z-20 mt-1 w-36 -translate-x-1/2 overflow-hidden rounded-card border border-line bg-card py-1 shadow-pop"
           >
-            <li v-for="r in RESOLUTIONS" :key="r">
+            <li v-for="r in resolutions" :key="r">
               <button
                 type="button"
                 class="flex w-full items-center justify-between px-3 py-1.5 text-left text-xs hover:bg-primary-soft"

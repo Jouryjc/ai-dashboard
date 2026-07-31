@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "big-screen-replica",
+  "artifactKinds": ["dashboard"],
+  "executionAdapter": null,
+  "allowedCommands": [],
+  "permissions": {
+    "filesystem": "skill-read",
+    "network": "deny",
+    "process": "deny"
+  }
+}

@@ -7,6 +7,25 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import path from 'node:path'
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
+const previewOrigin = process.env.AI_PREVIEW_ORIGIN?.replace(/\/+$/, '') || 'http://127.0.0.1:8788'
+
+function isTrustedCaptureUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw)
+    const allowedOrigins = new Set([
+      new URL(previewOrigin).origin,
+      ...(devServerUrl ? [new URL(devServerUrl).origin] : [])
+    ])
+    return (
+      allowedOrigins.has(url.origin) &&
+      url.pathname.startsWith('/preview/') &&
+      !url.username &&
+      !url.password
+    )
+  } catch {
+    return false
+  }
+}
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -45,7 +64,7 @@ ipcMain.handle('open-external', (_event, url: unknown): Promise<void> => {
 /** 页面加载上限：超时按失败处理（返回 null），否则隐藏窗口和 IPC 句柄会永久泄漏 */
 const CAPTURE_LOAD_TIMEOUT_MS = 30_000
 ipcMain.handle('capture-url', async (_event, url: unknown): Promise<string | null> => {
-  if (typeof url !== 'string' || !url) return null
+  if (typeof url !== 'string' || !isTrustedCaptureUrl(url)) return null
   let win: BrowserWindow | null = null
   let loadTimer: ReturnType<typeof setTimeout> | null = null
   try {
@@ -60,6 +79,10 @@ ipcMain.handle('capture-url', async (_event, url: unknown): Promise<string | nul
         nodeIntegration: false,
         sandbox: true
       }
+    })
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    win.webContents.on('will-navigate', (event, targetUrl) => {
+      if (!isTrustedCaptureUrl(targetUrl)) event.preventDefault()
     })
     await Promise.race([
       win.loadURL(url),
