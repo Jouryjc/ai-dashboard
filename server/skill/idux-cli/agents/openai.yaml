@@ -1,0 +1,4 @@
+interface:
+  display_name: "IDux CLI"
+  short_description: "Query version-matched IDux APIs and demos"
+  default_prompt: "Use $idux-cli to inspect the project-matched IDux component API and implement the requested UI safely."
