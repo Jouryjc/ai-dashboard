@@ -23,9 +23,11 @@ import {
   type AgentStep,
   type AssistSession,
   type Blocker,
+  type GraphSnapshot,
   type Issue,
   type PreviewResolution,
   type PreviewState,
+  type PublishPhase,
   type RunStatus,
   type Stage,
   type Version
@@ -93,6 +95,18 @@ export const useSessionStore = defineStore('session', () => {
   const assistSession = ref<AssistSession | null>(null)
   /** 右栏执行面板是否折叠为窄条（空闲折叠、任务中自动展开，可手动切换） */
   const panelCollapsed = ref(true)
+  /** LoopEngine 流程图快照（调试面板用，null = 无流程/未开始） */
+  const graph = ref<GraphSnapshot | null>(null)
+
+  /* ---------- 发布进度（发布弹窗独占，由 publishProgress 事件驱动） ---------- */
+  /** 当前发布阶段（idle/上传中/起服务/成功/失败） */
+  const publishPhase = ref<PublishPhase>('idle')
+  /** 当前发布进度文案 */
+  const publishMessage = ref('')
+  /** 发布失败的原因（phase='failed' 才有） */
+  const publishError = ref<string | undefined>(undefined)
+  /** 发布成功后的公网地址（弹窗「打开预览」用） */
+  const publishUrl = ref<string | undefined>(undefined)
 
   /* ---------- getters ---------- */
   /** 运行状态大白话一句话 */
@@ -109,11 +123,9 @@ export const useSessionStore = defineStore('session', () => {
   })
   /** 是否有任何可用版本 */
   const hasVersion = computed(() => versions.value.length > 0)
-  /** 发布申请已提交、正在等待审批（执行面板有「等待审批」进行中阶段） */
-  const publishPending = computed(() =>
-    stages.value.some((s) => s.id === 'st-publish' && s.state === 'active')
-  )
-  /** 是否可发布（空闲、有可用版本、且没有等待中的审批，UX §7.1 矩阵） */
+  /** 是否正在发布（发布弹窗进度页，弹窗打开期间禁用重复发布） */
+  const publishPending = computed(() => publishPhase.value === 'uploading' || publishPhase.value === 'serving')
+  /** 是否可发布（空闲、有可用版本、且当前未在发布中） */
   const canPublish = computed(() => runStatus.value === 'idle' && hasVersion.value && !publishPending.value)
   /** 是否可回退（生成中与人工协助中不可，其余可） */
   const canRollback = computed(() =>
@@ -146,6 +158,12 @@ export const useSessionStore = defineStore('session', () => {
     previewState.value = snap.preview.state
     previewUrl.value = snap.preview.url
     assistSession.value = snap.assistSession
+    graph.value = snap.graph ?? null
+    // 发布进度复位：进入工作台时无进行中的发布（重启后内存标记已丢，弹窗从确认页开始）
+    publishPhase.value = 'idle'
+    publishMessage.value = ''
+    publishError.value = undefined
+    publishUrl.value = undefined
     // 空闲折叠、任务中自动展开（C8）
     panelCollapsed.value = snap.runStatus === 'idle'
 
@@ -177,6 +195,20 @@ export const useSessionStore = defineStore('session', () => {
       api.on('blocker', (p) => {
         if (!forCurrent(p)) return
         blocker.value = p.blocker
+      }),
+      // LoopEngine 流程图快照：整图替换（调试面板实时点亮节点）
+      // LoopEngine 流程图快照：整图替换（调试面板实时点亮节点）
+      api.on('graph', (p) => {
+        if (!forCurrent(p)) return
+        graph.value = p.graph
+      }),
+      // 发布进度：发布弹窗独占订阅（idle/uploading/serving/success/failed）
+      api.on('publishProgress', (p) => {
+        if (!forCurrent(p)) return
+        publishPhase.value = p.phase
+        publishMessage.value = p.message
+        publishError.value = p.error
+        publishUrl.value = p.publicUrl
       }),
       api.on('previewReady', (p) => {
         if (!forCurrent(p)) return
@@ -236,6 +268,7 @@ export const useSessionStore = defineStore('session', () => {
     resolution.value = '1920x1080'
     assistSession.value = null
     panelCollapsed.value = true
+    graph.value = null
   }
 
   /** 回退到指定版本（生成一个新节点，历史保留；UI 先做二次确认再调） */
@@ -259,9 +292,15 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /** 发布（= 提交发布申请；UI 先弹确认再调） */
-  async function publish(): Promise<void> {
+  /** 发布（乐观切到 uploading，POST 是 fire-and-forget，不等返回避免 UI 卡顿；真正进度由 publishProgress 事件驱动） */
+  function publish(): void {
     if (!dashboardId.value || !canPublish.value) return
-    await api.publish(dashboardId.value)
+    // 立即乐观切到上传中，让弹窗瞬间进入进度页；POST 不 await（服务端返回 202 后靠 SSE 推进度）
+    publishPhase.value = 'uploading'
+    publishMessage.value = '已开始发布到云端，稍等一两分钟。'
+    publishError.value = undefined
+    publishUrl.value = undefined
+    void api.publish(dashboardId.value)
   }
 
   /** 呼叫人工协助（可选一句话描述） */
@@ -290,7 +329,8 @@ export const useSessionStore = defineStore('session', () => {
   return {
     dashboardId, dashboardName, runStatus, stages, steps, issues, blocker,
     versions, previewState, previewUrl, previewBuildingLive, viewingVersionId, resolution,
-    assistSession, panelCollapsed,
+    assistSession, panelCollapsed, graph,
+    publishPhase, publishMessage, publishError, publishUrl,
     statusText, currentStage, stageProgress, hasVersion, canPublish, canRollback, versionLabel,
     publishPending,
     open, close, rollback, previewVersion, backToCurrent, publish,

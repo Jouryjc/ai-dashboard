@@ -1,120 +1,148 @@
 /**
- * 模板库 —— 布局与组件 demo 目录（来源：client/templates，启动时同步到 data/templates）。
+ * 模板库 -- meta 自描述驱动（来源：client/templates，启动时同步到 data/templates）。
+ *
+ * 设计：每个模板 HTML 的 <head> 挂 <meta name="tpl-*"> 标签自描述元数据，
+ * 启动时扫描所有 HTML、正则抠 meta 构建内存目录。HTML 既是产物又是元数据载体，
+ * 加模板只需放文件 + 补 meta，不用改代码。HTML 全文启动时读入，注入 Coder prompt 还原样式。
  *
  * 用途（Planner 匹配模板环节）：
- * 1. 匹配：用户需求/参考图 → 选 1 个布局 + 若干组件类型（LLM 视觉比对 + 目录文本）
- * 2. 生成：命中的布局结构描述 + 组件 demo 图（vision）注入 Coder prompt，照模板还原
+ * 1. 匹配：用户需求/参考图 -> 选 1 个布局 + 每个模块匹配组件模板（LLM 视觉比对 + 目录文本）
+ * 2. 生成：命中的 layout HTML + 各模块组件 HTML 注入 Coder prompt，照模板还原
  */
 import fs from 'node:fs'
 import path from 'node:path'
 
-/* ============================== 模板目录 ============================== */
+/* ============================== 目录条目 ============================== */
 
-export interface LayoutTemplate {
+export interface TemplateEntry {
+  /** 模板 id（layoutU / bar_charts-1 / ...） */
   id: string
+  /** layout | component */
+  type: 'layout' | 'component'
+  /** 展示名（给 LLM 看） */
   name: string
-  /** 给 LLM 看的结构描述（匹配 + 生成共用） */
-  structure: string
-  /** 匹配关键词（非 vision 模式靠描述+标签匹配） */
-  tags: string[]
-  image: string // /templates/layouts/layoutU.png
-}
-
-export interface ComponentTemplate {
-  id: string
-  name: string
-  description: string
   /** 匹配关键词 */
   tags: string[]
-  /** demo 图（取每张目录第 1 张作代表） */
+  /** 适合的数据形态（metric/records/topology/...），空=不限 */
+  dataKind: string[]
+  /** 给 LLM 看的描述 */
+  description: string
+  /** 建议槽位（top/left/center/right/bottom），空=不限 */
+  slot: string[]
+  /** 相对 templates 根的路径（layouts/layoutU.html） */
+  relPath: string
+  /** 对应 PNG 路径（/templates/layouts/layoutU.png，给视觉模型看） */
   image: string
+  /** 启动时读入的 HTML 全文（注入 Coder 用） */
+  html: string
 }
 
-export const LAYOUTS: LayoutTemplate[] = [
-  {
-    id: 'layoutU',
-    name: 'U 型环绕',
-    structure:
-      '顶部通栏标题；左列 2 个信息图表面板（各占 6/24 列宽）；中央大主视觉区（占 12/24 列宽，一般放地图或设备可视化）；右列 3 个面板；底部一排 4 个小面板。整体呈 U 型环绕中央主视觉。',
-    tags: ['地图', '主视觉', '环绕', '监控', '多面板', '综合', '全局'],
-    image: '/templates/layouts/layoutU.png'
-  },
-  {
-    id: 'layoutL',
-    name: 'L 型左主视',
-    structure:
-      '顶部通栏标题；左侧超大主视觉区（占约 18/24 列宽，放地图或核心可视化）；右列 3 个信息图表面板（各占 6/24 列宽）；底部一排小面板（最小高度占 2/12 行）。主视觉偏左，右列与底排呈 L 型包围。',
-    tags: ['地图', '主视觉', '大图', '重点突出', '单一主题', '汇报'],
-    image: '/templates/layouts/layoutL.png'
-  },
-  {
-    id: 'layoutI',
-    name: 'I 型三栏',
-    structure:
-      '顶部通栏标题；经典三栏：左列 2 个信息图表面板、中央主视觉区（占 12/24 列宽）、右列 3 个面板，无底部横排。',
-    tags: ['三栏', '简洁', '对称', '经典', '中等信息量'],
-    image: '/templates/layouts/layoutI.png'
-  }
-]
+/** 内存目录（boot 时由 loadTemplateCatalog 填充） */
+let catalog: TemplateEntry[] = []
 
-export const COMPONENTS: ComponentTemplate[] = [
-  {
-    id: 'bar_charts',
-    name: '柱状图',
-    description: '深色底渐变柱：单系列渐变蓝柱（峰值带高亮数值标签）、双系列蓝绿对比柱、多系列堆叠柱；横轴为时间点，下方图例。',
-    tags: ['柱状', '对比', '排行', '数量', '次数', '销量', '统计'],
-    image: '/templates/components/bar_charts/1.png'
-  },
-  {
-    id: 'numerical_indicators',
-    name: '指标卡',
-    description: '立体小图标 + 大号数字（带单位上标）+ 指标名称，如「99999+ 秒 / 整体可用率」。',
-    tags: ['数字', '指标', 'KPI', '总数', '大数字', '概览'],
-    image: '/templates/components/numerical_indicators/1.png'
-  },
-  {
-    id: 'line_charts',
-    name: '折线图',
-    description: '蓝绿双折线：平滑曲线带面积渐变或普通折线，可带悬浮数值提示框和红色阈值虚线，横轴时间点。',
-    tags: ['折线', '趋势', '走势', '变化', '时间', '曲线', '告警阈值'],
-    image: '/templates/components/line_charts/3.png'
-  },
-  {
-    id: 'pie_charts',
-    name: '饼图',
-    description: '环形多纳图（右侧图例带数值）、带引线百分比标注的饼图、3D 立体饼图；蓝/青/橙/灰配色。',
-    tags: ['饼图', '占比', '比例', '分布', '构成', '环形'],
-    image: '/templates/components/pie_charts/1.png'
-  },
-  {
-    id: 'gauge_charts',
-    name: '仪表盘',
-    description: '指针式仪表盘、渐变弧线百分比（如 52%）、分段刻度弧线，右侧配「总数/已使用」图例说明。',
-    tags: ['仪表', '使用率', '进度', '百分比', '负载', '容量'],
-    image: '/templates/components/gauge_charts/1.png'
-  },
-  {
-    id: 'relation_type',
-    name: '关系拓扑',
-    description: '节点连线拓扑图：立体设备图标 + 连线（按状态变色，带指标文字），悬浮显示节点详情卡；支持树状层级和区域分组。',
-    tags: ['拓扑', '关系', '网络', '节点', '连线', '架构', '链路', '设备'],
-    image: '/templates/components/relation_type/1.png'
-  },
-  {
-    id: 'composite_type',
-    name: '复合指标',
-    description: '横向条形进度（按数值变色）、指标行（名称+百分比+明细文字）、环形进度、水球/竖条水位图。',
-    tags: ['进度', '复合', '水位', '达成率', '完成度', '指标行'],
-    image: '/templates/components/composite_type/1.png'
-  }
-]
+/* ============================== meta 解析 ============================== */
 
-/** 给 LLM 的目录文本（匹配用）：结构/样式描述 + 关键词标签（非 vision 模式的主要匹配依据） */
+/** 正则抠 <meta name="tpl-xxx" content="yyy">，无需 jsdom/cheerio */
+const META_RE = /<meta\s+name="tpl-(id|type|name|tags|dataKind|desc|slot)"\s+content="([^"]*)">/gi
+
+/** 把逗号分隔字符串切成数组（空串=空数组） */
+function splitList(s: string): string[] {
+  return s
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+}
+
+/**
+ * 扫描 templatesRoot 下所有 .html，正则抠 meta 构建内存目录。
+ * templatesRoot 为 null（client/templates 不存在）时清空目录，匹配自动降级为全自定义。
+ * 每个条目的 HTML 全文在此一次性读入，运行时零 IO。
+ */
+export function loadTemplateCatalog(templatesRoot: string | null): void {
+  catalog = []
+  if (!templatesRoot || !fs.existsSync(templatesRoot)) return
+
+  const walk = (dir: string): string[] =>
+    fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]
+    )
+  const htmlFiles = walk(templatesRoot).filter((f) => f.endsWith('.html'))
+
+  for (const file of htmlFiles) {
+    let text: string
+    try {
+      text = fs.readFileSync(file, 'utf8')
+    } catch {
+      console.warn(`[templates] 模板 HTML 读取失败：${file}`)
+      continue
+    }
+    // 抠 meta
+    const meta: Record<string, string> = {}
+    let m: RegExpExecArray | null
+    META_RE.lastIndex = 0
+    while ((m = META_RE.exec(text)) !== null) {
+      meta[m[1]] = m[2]
+    }
+    if (!meta.id || !meta.type) {
+      console.warn(`[templates] 模板缺 tpl-id/tpl-type，跳过：${file}`)
+      continue
+    }
+    if (meta.type !== 'layout' && meta.type !== 'component') {
+      console.warn(`[templates] 模板 tpl-type 非法（${meta.type}），跳过：${file}`)
+      continue
+    }
+    const relPath = path.relative(templatesRoot, file).replace(/\\/g, '/')
+    // PNG 路径：HTML 同名 .png，挂 /templates 前缀（与 templateImageDataUrl 的剥前缀逻辑对齐）
+    const image = `/templates/${relPath.replace(/\.html$/, '.png')}`
+    catalog.push({
+      id: meta.id,
+      type: meta.type,
+      name: meta.name || meta.id,
+      tags: splitList(meta.tags || ''),
+      dataKind: splitList(meta.dataKind || ''),
+      description: meta.desc || '',
+      slot: splitList(meta.slot || ''),
+      relPath,
+      image,
+      html: text
+    })
+  }
+  console.log(`[templates] 目录加载完成：${catalog.length} 个模板（layout ${catalog.filter((c) => c.type === 'layout').length} / component ${catalog.filter((c) => c.type === 'component').length}）`)
+}
+
+/* ============================== 目录查询 ============================== */
+
+/** 按 id 查条目（替代旧 LAYOUTS.find / COMPONENTS.find） */
+export function findTemplate(id: string): TemplateEntry | undefined {
+  return catalog.find((c) => c.id === id)
+}
+
+/** 按 type 过滤（替代旧 LAYOUTS / COMPONENTS 直接遍历） */
+export function templatesByType(type: 'layout' | 'component'): TemplateEntry[] {
+  return catalog.filter((c) => c.type === type)
+}
+
+/** 目录总条数（匹配阶段进度文案用） */
+export function catalogCount(): { layouts: number; components: number } {
+  return {
+    layouts: catalog.filter((c) => c.type === 'layout').length,
+    components: catalog.filter((c) => c.type === 'component').length
+  }
+}
+
+/* ============================== 给 LLM 的目录文本 ============================== */
+
+/** 给匹配 LLM 看的目录文本：结构/样式描述 + 关键词标签 + 数据形态 + 槽位 */
 export function catalogText(): string {
-  const layouts = LAYOUTS.map((l) => `- ${l.id}「${l.name}」（关键词：${l.tags.join('、')}）：${l.structure}`).join('\n')
-  const components = COMPONENTS.map(
-    (c) => `- ${c.id}「${c.name}」（关键词：${c.tags.join('、')}）：${c.description}`
-  ).join('\n')
+  const layouts = templatesByType('layout')
+    .map((l) => `- ${l.id}「${l.name}」（关键词：${l.tags.join('、')}）：${l.description}`)
+    .join('\n')
+  const components = templatesByType('component')
+    .map(
+      (c) =>
+        `- ${c.id}「${c.name}」（关键词：${c.tags.join('、')}）${c.dataKind.length ? `数据形态：${c.dataKind.join('/')}` : '数据形态：不限'}${c.slot.length ? `，建议槽位：${c.slot.join('/')}` : ''}：${c.description}`
+    )
+    .join('\n')
   return `【布局模板】\n${layouts}\n\n【组件模板】\n${components}`
 }
 
@@ -124,8 +152,11 @@ export function catalogText(): string {
  */
 export function keywordHint(text: string): string {
   const score = (tags: string[]): number => tags.reduce((acc, t) => acc + (text.includes(t) ? 1 : 0), 0)
-  const layouts = LAYOUTS.map((l) => ({ id: l.id, name: l.name, n: score(l.tags) })).sort((a, b) => b.n - a.n)
-  const comps = COMPONENTS.map((c) => ({ id: c.id, name: c.name, n: score(c.tags) }))
+  const layouts = templatesByType('layout')
+    .map((l) => ({ id: l.id, name: l.name, n: score(l.tags) }))
+    .sort((a, b) => b.n - a.n)
+  const comps = templatesByType('component')
+    .map((c) => ({ id: c.id, name: c.name, n: score(c.tags) }))
     .filter((c) => c.n > 0)
     .sort((a, b) => b.n - a.n)
   const lines: string[] = []

@@ -12,6 +12,7 @@ import { computed, ref, watch } from 'vue'
 import { useSessionStore } from '../../stores/session'
 import { useChatStore } from '../../stores/chat'
 import StageTimeline from './StageTimeline.vue'
+import LoopGraphPanel from './LoopGraphPanel.vue'
 import BlockerActionArea from './BlockerActionArea.vue'
 import AssistCard from './AssistCard.vue'
 import VersionDrawer from './VersionDrawer.vue'
@@ -22,6 +23,10 @@ import { emitLocateMessage } from './events'
 const session = useSessionStore()
 const chat = useChatStore()
 const { versionDrawerOpen, closeVersionDrawer } = useVersionDrawer()
+
+/* 右栏视图 tab：执行过程（默认）/ Loop 流程（调试面板） */
+type PanelTab = 'stages' | 'graph'
+const activeTab = ref<PanelTab>('stages')
 
 /* 状态行小圆点配色：生成中/协助中蓝色呼吸，等待澄清/卡点橙色，空闲灰 */
 const statusDotCls = computed(() => {
@@ -114,6 +119,22 @@ async function onRollback(versionId: string): Promise<void> {
       ><AppIcon name="chevron-right" :size="14" /></button>
     </header>
 
+    <!-- 视图切换 tab：执行过程（阶段时间线）/ Loop 流程（调试面板） -->
+    <div class="flex shrink-0 gap-1 border-b border-line px-3 py-1.5">
+      <button
+        type="button"
+        class="rounded-control px-2.5 py-1 text-xs transition-colors"
+        :class="activeTab === 'stages' ? 'bg-panel font-medium text-ink' : 'text-ink-faint hover:text-ink'"
+        @click="activeTab = 'stages'"
+      >执行过程</button>
+      <button
+        type="button"
+        class="rounded-control px-2.5 py-1 text-xs transition-colors"
+        :class="activeTab === 'graph' ? 'bg-panel font-medium text-ink' : 'text-ink-faint hover:text-ink'"
+        @click="activeTab = 'graph'"
+      >Loop 流程</button>
+    </div>
+
     <!-- 卡点行动区：仅卡点时固定在面板顶部，高亮色 -->
     <div v-if="session.blocker" class="shrink-0 px-3 pt-3">
       <BlockerActionArea :blocker="session.blocker" @choose="choose" @go-answer="goAnswer" />
@@ -124,12 +145,17 @@ async function onRollback(versionId: string): Promise<void> {
       <AssistCard :assist="session.assistSession" @end="session.endAssist()" />
     </div>
 
-    <!-- 滚动区：阶段时间线 + Issue 卡片 -->
+    <!-- 滚动区：按 tab 切换「执行过程」阶段时间线 / 「Loop 流程」调试面板 -->
     <div class="flex-1 overflow-y-auto px-4 py-3">
-      <StageTimeline v-if="session.stages.length" :stages="session.stages" :issues="session.issues" :steps="session.steps" />
-      <p v-else class="mt-8 text-center text-sm leading-6 text-ink-faint">
-        还没有开始干活<br />在左侧说说你想要什么大屏吧
-      </p>
+      <template v-if="activeTab === 'graph'">
+        <LoopGraphPanel :graph="session.graph" />
+      </template>
+      <template v-else>
+        <StageTimeline v-if="session.stages.length" :stages="session.stages" :issues="session.issues" :steps="session.steps" />
+        <p v-else class="mt-8 text-center text-sm leading-6 text-ink-faint">
+          还没有开始干活<br />在左侧说说你想要什么大屏吧
+        </p>
+      </template>
     </div>
 
     <!-- 底部常驻：呼叫人工协助（非卡点时也在，降低求助门槛） -->

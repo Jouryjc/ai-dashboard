@@ -24,8 +24,11 @@ import path from 'node:path'
 import { dirs, store } from './store'
 import * as gw from './gateway'
 import { listTools as mcpListTools, callTool as mcpCallTool, invalidateToolsCache, McpError } from './mcp'
-import { COMPONENTS, LAYOUTS, catalogText, keywordHint, syncTemplates, templateImageDataUrl } from './templates'
+import { catalogCount, catalogText, findTemplate, keywordHint, loadTemplateCatalog, syncTemplates, templateImageDataUrl, templatesByType } from './templates'
 import { prompt } from './prompts'
+import { initAdapterSettings } from './loop-adapter/adapter'
+import { inlineDataIntoHtml } from './loop-adapter/shared-utils'
+import { projectSlug, publishToAilab, PublishError } from './ailab/publish'
 import {
   probeReplicaEnv,
   imageSize,
@@ -47,12 +50,17 @@ import type {
   ClarificationQuestion,
   Dashboard,
   DataSourceProbeResult,
+  DataUseEntry,
+  GraphSnapshot,
   Issue,
   McpAuthType,
   McpDataSource,
   ModelSettings,
   PreviewResolution,
   ProblemMessage,
+  PublishConfig,
+  PublishPhase,
+  PublishProgress,
   RoleModelConfig,
   RunStatus,
   Stage,
@@ -87,6 +95,11 @@ interface PendingRun {
    */
   dataBlock?: string
   /**
+   * 本轮取数明细（每条 call 的来源/工具/用途/归一结果/状态），commitVersion 时随版本落盘
+   * 并塞进 Version.dataSourcesUsed 供版本抽屉展示。undefined = 还没取过；[] = 用演示数据。
+   */
+  dataSourcesUsed?: DataUseEntry[]
+  /**
    * 参考图精读出的内容清单（复刻模式；随 pendingRun 落盘，重启续跑直接恢复）。
    * undefined = 还没精读过（带图 + 模型能看图时精读一次）；null = 精读失败，按现有流程继续；
    * 非空 = 清单已就绪，Coder 走复刻 prompt。
@@ -101,9 +114,24 @@ interface PendingRun {
 /** 模板匹配环节的结论 */
 interface TemplateDecision {
   layoutId: string | null
-  componentIds: string[]
+  /** 模块化匹配结果：每个模块带角色/槽位/数据形态/匹配的模板 id */
+  modules: MatchModule[]
   /** false = 用户在"没有匹配"卡片里确认了自定义生成 */
   useTemplate: boolean
+}
+
+/** 一个大屏模块（区域/面板）的匹配结论 */
+interface MatchModule {
+  /** 模块角色（大白话，如"顶部指标条""中央拓扑"） */
+  role: string
+  /** 槽位：top|left|center|right|bottom */
+  slot: string
+  /** 数据形态：metric|records|topology|... */
+  dataKind: string
+  /** 匹配到的组件模板 id，null=无合适模板（该模块自定义） */
+  templateId: string | null
+  /** 一句话匹配理由 */
+  reason: string
 }
 
 /** 工作台会话快照（sessions/<id>.json 落盘内容） */
@@ -120,11 +148,15 @@ interface SessionData {
   /** 版本产物相对路径（/preview/<dashId>/<verId>/index.html） */
   versionUrls: Record<string, string>
   preview: { state: 'empty' | 'building' | 'ready'; url: string | null }
+  /** LoopEngine 流程图快照（调试面板用，由 adapter 同步进来；刷新恢复用） */
+  graph: GraphSnapshot | null
   assistSession: AssistSession | null
   previewResolution: PreviewResolution
   pendingRun: PendingRun | null
   /** 最近一次生成期取数的快照（'' = 上次决定用演示数据）；编辑流复用它，不重新取数 */
   lastDataBlock?: string
+  /** 最近一次生成期取数的明细（与 lastDataBlock 同源；编辑流复用，让新版本也能展示数据来源） */
+  lastDataSourcesUsed?: DataUseEntry[]
 }
 
 /** 运行中任务的内存态（不落盘） */
@@ -529,8 +561,32 @@ export function saveSettings(s: ModelSettings): void {
   capabilityCache = null
 }
 
+/* ------------------------------ 发布配置（云配置） ------------------------------ */
+
+const DEFAULT_PUBLISH_CONFIG: PublishConfig = { endpoint: '', accessKey: '', secretKey: '' }
+
+/** normalize：补全缺字段、强制字符串类型，避免脏文件导致后续发布流程异常 */
+function normalizePublishConfig(raw: PublishConfig): PublishConfig {
+  return {
+    endpoint: typeof raw.endpoint === 'string' ? raw.endpoint : '',
+    accessKey: typeof raw.accessKey === 'string' ? raw.accessKey : '',
+    secretKey: typeof raw.secretKey === 'string' ? raw.secretKey : ''
+  }
+}
+
+let cachedPublishConfig: PublishConfig = { ...DEFAULT_PUBLISH_CONFIG }
+
+export function getPublishConfig(): PublishConfig {
+  return { ...cachedPublishConfig }
+}
+
+export function savePublishConfig(c: PublishConfig): void {
+  cachedPublishConfig = normalizePublishConfig({ ...DEFAULT_PUBLISH_CONFIG, ...c })
+  store.savePublishConfig(cachedPublishConfig)
+}
+
 /** 能力协商（§4.2）：任务启动时探测一次，结果缓存到下次设置变更 */
-async function getCapability(): Promise<{ ok: boolean; supportsVision: boolean }> {
+export async function getCapability(): Promise<{ ok: boolean; supportsVision: boolean }> {
   const key = JSON.stringify(cachedSettings)
   if (capabilityCache && capabilityCache.key === key) return capabilityCache
   if (capabilityPending) return capabilityPending
@@ -559,7 +615,8 @@ function normalizeDataSources(raw: unknown): McpDataSource[] {
   const out: McpDataSource[] = []
   for (const item of raw) {
     const s = (item && typeof item === 'object' ? item : {}) as Partial<McpDataSource>
-    const authType: McpAuthType = s.authType === 'bearer' || s.authType === 'header' ? s.authType : 'none'
+    const authType: McpAuthType =
+      s.authType === 'bearer' || s.authType === 'header' || s.authType === 'hmac' ? s.authType : 'none'
     out.push({
       id: typeof s.id === 'string' && s.id ? s.id : nextId('ds'),
       name: typeof s.name === 'string' ? s.name : '',
@@ -567,6 +624,8 @@ function normalizeDataSources(raw: unknown): McpDataSource[] {
       authType,
       token: typeof s.token === 'string' ? s.token : '',
       headerName: typeof s.headerName === 'string' ? s.headerName : '',
+      accessKey: typeof s.accessKey === 'string' ? s.accessKey : '',
+      secretKey: typeof s.secretKey === 'string' ? s.secretKey : '',
       enabled: s.enabled !== false
     })
   }
@@ -900,6 +959,7 @@ async function splitCodingFlow(rt: Runtime, run: ActiveRun, stageId: string): Pr
             { role: 'system', content: prompt('coder.system') },
             { role: 'user', content: userContent }
           ],
+          maxTokens: CODER_MAX_TOKENS,
           signal: ctl.signal
         },
         (chars, partial) => {
@@ -1243,11 +1303,12 @@ async function callCoderCreate(
         { role: 'system', content: `${prompt('coder.system')}\n\n${prompt('coder.replica.system')}` },
         { role: 'user', content }
       ],
+      maxTokens: CODER_MAX_TOKENS,
       signal
     }, onProgress ?? (() => {}))
     return gw.extractHtml(reply)
   }
-  const tpl = template ? templateContext(template, vision) : { text: '', images: [] }
+  const tpl = template ? templateContext(template, vision, dataBlock) : { text: '', images: [] }
   let userText = prompt('coder.create.user', {
     text,
     answersBlock: answersSummary ? prompt('coder.create.answers-block', { answersSummary }) : '',
@@ -1267,6 +1328,7 @@ async function callCoderCreate(
       { role: 'system', content: prompt('coder.system') },
       { role: 'user', content }
     ],
+    maxTokens: CODER_MAX_TOKENS,
     signal
   }, onProgress ?? (() => {}))
   return gw.extractHtml(reply)
@@ -1282,21 +1344,23 @@ async function callCoderEdit(currentHtml: string, instruction: string, dataBlock
         content: prompt('coder.edit.user', { currentHtml, instruction, dataBlock })
       }
     ],
+    maxTokens: CODER_MAX_TOKENS,
     signal
   }, onProgress ?? (() => {}))
   return gw.extractHtml(reply)
 }
 
-async function callCoderRepair(html: string, problems: string[], onProgress?: (chars: number, partial: string) => void, signal?: AbortSignal): Promise<string> {
+async function callCoderRepair(html: string, problems: string[], dataBlock: string, onProgress?: (chars: number, partial: string) => void, signal?: AbortSignal): Promise<string> {
   const reply = await gw.chatCompletionStream(cachedSettings, {
     role: 'coder',
     messages: [
       { role: 'system', content: prompt('coder.system') },
       {
         role: 'user',
-        content: prompt('coder.repair.user', { problems: problems.map((p) => `- ${p}`).join('\n'), html })
+        content: prompt('coder.repair.user', { problems: problems.map((p) => `- ${p}`).join('\n'), html, dataBlock })
       }
     ],
+    maxTokens: CODER_MAX_TOKENS,
     signal
   }, onProgress ?? (() => {}))
   return gw.extractHtml(reply)
@@ -1311,8 +1375,7 @@ type LlmUserContent =
 
 interface MatchResult {
   layoutId: string | null
-  layoutReason: string
-  componentIds: string[]
+  modules: MatchModule[]
   unmatched: string[]
 }
 
@@ -1337,7 +1400,7 @@ async function callTemplateMatch(
   if (vision) {
     for (const url of attachments.slice(0, 1)) content.push({ type: 'image_url', image_url: { url } })
     if (templatesRoot) {
-      for (const l of LAYOUTS) {
+      for (const l of templatesByType('layout')) {
         const dataUrl = templateImageDataUrl(templatesRoot, l.image.replace(/^\//, ''))
         if (dataUrl) content.push({ type: 'image_url', image_url: { url: dataUrl } })
       }
@@ -1349,38 +1412,99 @@ async function callTemplateMatch(
     onProgress ?? (() => {})
   )
   const parsed = gw.extractJson(reply) as Partial<MatchResult>
-  const layoutId = LAYOUTS.some((l) => l.id === parsed.layoutId) ? (parsed.layoutId as string) : null
+  // 校验 layoutId 在目录里；modules 逐条校验 templateId（null 保留=自定义，非空必须在目录里）
+  const layoutId =
+    typeof parsed.layoutId === 'string' && findTemplate(parsed.layoutId)?.type === 'layout' ? parsed.layoutId : null
+  const rawModules: unknown[] = Array.isArray(parsed.modules) ? parsed.modules : []
+  const modules: MatchModule[] = rawModules
+    .filter((m): m is Record<string, unknown> => m !== null && typeof m === 'object')
+    .map((m): MatchModule => ({
+      role: typeof m.role === 'string' ? m.role : '',
+      slot: typeof m.slot === 'string' ? m.slot : '',
+      dataKind: typeof m.dataKind === 'string' ? m.dataKind : '',
+      templateId:
+        typeof m.templateId === 'string' && findTemplate(m.templateId)?.type === 'component' ? m.templateId : null,
+      reason: typeof m.reason === 'string' ? m.reason : ''
+    }))
+    .filter((m) => m.role) // 没角色的模块丢弃
   return {
     layoutId,
-    layoutReason: typeof parsed.layoutReason === 'string' ? parsed.layoutReason : '',
-    componentIds: Array.isArray(parsed.componentIds)
-      ? parsed.componentIds.filter((id): id is string => COMPONENTS.some((c) => c.id === id))
-      : [],
+    modules,
     unmatched: Array.isArray(parsed.unmatched) ? parsed.unmatched.map(String).filter(Boolean) : []
   }
 }
 
-/** 模板上下文：注入 Coder prompt 的结构约束文本 + 参考图（vision 时） */
-function templateContext(dec: TemplateDecision, vision: boolean): { text: string; images: string[] } {
+/**
+ * 从 dataBlock（buildDataBlock 产出的文本）里提取"指标名=数值"的精简摘要，
+ * 用于在模板注入时把真数据贴到每个模块标注旁边，防止 Coder 照抄模板演示数字。
+ * 解析 dataBlock 里的 JSON 数组，每条取 rows[0] 的字段拼成 "字段名=值" 列表。
+ */
+function extractDataSummary(dataBlock: string): string {
+  if (!dataBlock) return ''
+  const idx = dataBlock.lastIndexOf('\n[')
+  if (idx < 0) return ''
+  let partial = dataBlock.slice(idx).trim()
+  const lastClose = partial.lastIndexOf('}')
+  if (lastClose < 0) return ''
+  partial = partial.slice(0, lastClose + 1) + ']'
+  let arr: Array<{ 用途?: string; kind?: string; 数据?: { rows?: Array<Record<string, unknown>>; layers?: unknown[] } }>
+  try {
+    arr = JSON.parse(partial)
+  } catch {
+    return '' // 截断的 JSON 解析失败，放弃
+  }
+  const lines: string[] = []
+  for (const item of arr) {
+    const purpose = (item.用途 || '').replace(/^⚠️非标准结构\s*/, '').slice(0, 30)
+    const rows = item.数据?.rows
+    if (Array.isArray(rows) && rows.length > 0 && typeof rows[0] === 'object') {
+      const vals = Object.entries(rows[0] as Record<string, unknown>)
+        .filter(([, v]) => typeof v === 'number' || (typeof v === 'string' && /^\d+\.?\d*$/.test(v)))
+        .map(([k, v]) => `${k}=${v}`)
+        .join('、')
+      if (vals) lines.push(`- ${purpose}：${vals}`)
+    } else if (item.kind === 'topology' && Array.isArray(item.数据?.layers)) {
+      lines.push(`- ${purpose}：拓扑数据（见上方数据块）`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 模板上下文：注入 Coder prompt 的布局 HTML + 各模块组件 HTML + 参考图（vision 时）。
+ * 重构后直接注入匹配到的模板 HTML 全文（不再只发一句话描述），Coder 照 HTML 还原样式。
+ * ★关键★：dataBlock 的真数据摘要嵌入每个模块标注，防止 Coder 照抄模板演示数字。
+ */
+function templateContext(dec: TemplateDecision, vision: boolean, dataBlock: string): { text: string; images: string[] } {
   if (!dec.useTemplate) return { text: '', images: [] }
-  const layout = LAYOUTS.find((l) => l.id === dec.layoutId)
-  const comps = COMPONENTS.filter((c) => dec.componentIds.includes(c.id))
-  if (!layout && comps.length === 0) return { text: '', images: [] }
-  const text = prompt('coder.template-context', {
-    layoutBlock: layout
-      ? prompt('coder.template-context.layout-block', { layoutName: layout.name, layoutStructure: layout.structure }) + '\n'
-      : '',
-    componentsBlock:
-      comps.length > 0
-        ? prompt('coder.template-context.components-block', {
-            componentLines: comps.map((c) => `- ${c.name}：${c.description}`).join('\n')
-          })
-        : ''
-  })
+  const layout = dec.layoutId ? findTemplate(dec.layoutId) : undefined
+  const moduleEntries = dec.modules
+    .map((m) => ({ m, t: m.templateId ? findTemplate(m.templateId) : undefined }))
+    .filter((x) => x.t)
+  if (!layout && moduleEntries.length === 0) return { text: '', images: [] }
+
+  // 真数据摘要（贴到模板注入文本开头，让 Coder 看模板时就能看到所有真数值）
+  const dataSummary = extractDataSummary(dataBlock)
+  const summaryNote = dataSummary
+    ? `\n\n★本大屏要用的真实数值（必须用这些，禁止照抄模板里的占位数字）★：\n${dataSummary}`
+    : ''
+  // 拼注入文本：layout HTML 全量 + 每个模块的 HTML + 角色/槽位标注
+  const parts: string[] = []
+  if (layout) {
+    parts.push(`【布局模板：${layout.name}，照它的网格结构排版（模板里的数字是占位演示，不要照抄）】\n${layout.html}`)
+  }
+  for (const { m, t } of moduleEntries) {
+    const slotNote = m.slot ? `，画在${m.slot}位置` : ''
+    const kindNote = m.dataKind ? `，数据形态${m.dataKind}` : ''
+    parts.push(`【模块「${m.role}」模板：${t!.name}${slotNote}${kindNote}，照样式画但数值必须用上方真实数值，禁止照抄模板数字】\n${t!.html}`)
+  }
+  const text = `【模板库匹配结果：照下面的模板 HTML 还原样式（CSS/结构/配色/图表形态），保证视觉还原度。但是--模板 HTML 里的所有数字都是占位演示数据，禁止照抄！页面上显示的每个数值都必须来自「真实数据」块，用真数据替换模板里的占位数字。${summaryNote}】\n${parts.join('\n\n')}`
+
+  // vision 模式附 PNG（layout + 各模块代表图，作为视觉参考）
   const images: string[] = []
   if (vision && templatesRoot) {
-    for (const rel of [layout?.image, ...comps.slice(0, 3).map((c) => c.image)]) {
-      if (!rel) continue
+    const rels = [layout?.image, ...moduleEntries.map((x) => x.t!.image)].filter((r): r is string => Boolean(r))
+    for (const rel of rels) {
       const dataUrl = templateImageDataUrl(templatesRoot, rel.replace(/^\//, ''))
       if (dataUrl) images.push(dataUrl)
     }
@@ -1401,6 +1525,14 @@ interface DataFetchCall {
 /** 数据块截断上限（默认 8KB，环境变量可调）：防止取回的数据把 Coder prompt 撑爆 */
 const DATA_BLOCK_MAX_BYTES = Number(process.env.DATA_BLOCK_MAX_BYTES) || 8 * 1024
 
+/**
+ * Coder 单次生成的最大 token 数（环境变量可调）。
+ * 大屏 HTML 含内联 CSS/SVG/JS，较长；不传 max_tokens 时模型用默认值（glm-5.2 约 4K），
+ * 会写到一半被截断（只剩 CSS、body 没生成 -> 黑屏）。SVG 路径数据（折线图坐标）极耗 token，
+ * 32000 覆盖含多图表的复杂大屏。模型若不支持该上限会被自身 cap，不影响。
+ */
+const CODER_MAX_TOKENS = Number(process.env.CODER_MAX_TOKENS) || 32_000
+
 /** 注入 prompt 前剥掉 http(s):// 开头的网址（防止模型照抄进 HTML 后被 validateHtml 当外部资源引用拦截） */
 function stripUrls(text: string): string {
   return text.replace(/https?:\/\/[^\s"'<>)\]]+/gi, '（网址已省略）')
@@ -1419,7 +1551,7 @@ function normalizeDataFetchCalls(raw: unknown, whitelist: Map<string, Set<string
   const arr = Array.isArray(obj.calls) ? obj.calls : []
   const out: DataFetchCall[] = []
   for (const item of arr) {
-    if (out.length >= 3) break
+    if (out.length >= 6) break
     const c = (item ?? {}) as Record<string, unknown>
     if (typeof c.sourceId !== 'string' || typeof c.tool !== 'string') continue
     const tools = whitelist.get(c.sourceId)
@@ -1440,7 +1572,9 @@ async function callDataFetchPlan(
   answersSummary: string,
   toolsCatalog: string,
   onProgress?: (chars: number, partial: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 纠错轮用：上一轮各 callTool 的执行结果原文（含错误+hint）。首轮不传，行为不变。 */
+  previousAttempts?: string
 ): Promise<unknown> {
   const reply = await gw.chatCompletionStream(
     cachedSettings,
@@ -1453,7 +1587,8 @@ async function callDataFetchPlan(
           content: prompt('datasource.plan.user', {
             text: text || '（用户只发了图片，没有文字）',
             answersBlock: answersSummary ? prompt('coder.create.answers-block', { answersSummary }) : '',
-            toolsCatalog
+            toolsCatalog,
+            previousAttempts: previousAttempts ?? ''
           })
         }
       ],
@@ -1464,19 +1599,187 @@ async function callDataFetchPlan(
   return gw.extractJson(reply)
 }
 
-/** 拼注入 Coder prompt 的数据块：「以下是真实数据」标记 + JSON 文本（已剥 URL、已按 8KB 截断） */
-function buildDataBlock(results: Array<{ purpose: string; text: string }>): string {
+/**
+ * 把单条工具返回归一成 Coder 能稳定识别的结构。
+ * 不依赖外部 Schema，纯代码按字段特征判定 kind：
+ *   - metric    : { rows:[], schema:{}, meta:{} } -- query_metric 类
+ *   - records   : { rows:[], schema:{} } 无 meta -- query_records 类
+ *   - topology  : { layers:[] } -- query_topology_data 类
+ *   - catalog   : [{id,name,...}] -- list_metrics/suggest_metrics 发现类（指标清单）
+ *   - raw       : 形状不符 / 非 JSON / 解析失败 -- 原文嵌入，purpose 标注⚠️
+ * 这样 Coder 只需按 kind 选渲染路径，不必猜测数据源返回了什么形状。
+ */
+type NormalizedKind = 'metric' | 'records' | 'topology' | 'catalog' | 'raw'
+interface NormalizedResult {
+  kind: NormalizedKind
+  rows?: unknown[]
+  schema?: unknown
+  meta?: unknown
+  layers?: unknown
+  /** catalog 时保留发现的指标/模型清单（[{id,name,description}, ...]） */
+  catalog?: unknown[]
+  /** raw 时保留原文，方便 Coder 兜底读取 */
+  raw?: string
+}
+
+function normalizeToolResult(text: string, tool?: string): NormalizedResult {
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return { kind: 'raw', raw: text }
+  }
+  if (data == null || typeof data !== 'object') {
+    return { kind: 'raw', raw: text }
+  }
+  // 发现类工具返回的是数组（指标/模型清单），单独归一成 catalog
+  if (Array.isArray(data)) {
+    return { kind: 'catalog', catalog: data }
+  }
+  const obj = data as Record<string, unknown>
+  // 含 error 字段 -> 非正常数据形态，降级 raw（不判别 error 具体格式，仅形状判定）
+  // 让 Coder 看到⚠️标记 + error 原文，而不是被伪装成空指标/空明细
+  if ('error' in obj) return { kind: 'raw', raw: text }
+  const rows = Array.isArray(obj.rows) ? obj.rows : undefined
+  const schema = obj.schema
+  const meta = obj.meta
+  const layers = Array.isArray(obj.layers) ? obj.layers : undefined
+
+  // 拓扑优先判定（layers 是强信号，工具名也兜底）
+  if (layers || tool === 'query_topology_data') {
+    return { kind: 'topology', layers: layers ?? [] }
+  }
+  // 工具名优先于 meta 判定：
+  // query_records 的返回带 meta（model_id/table/record_type，非 default_chart/unit），
+  // 纯靠"rows+meta"形状会误判成 metric，必须按工具语义认定为明细。
+  if (tool === 'query_records') {
+    return { kind: 'records', rows: rows ?? [], schema }
+  }
+  if (tool === 'query_metric') {
+    return { kind: 'metric', rows: rows ?? [], schema, meta }
+  }
+  // 无工具名线索时，退回形状判定（兼容未知的取数工具）
+  if (rows && meta && typeof meta === 'object') return { kind: 'metric', rows, schema, meta }
+  if (rows) return { kind: 'records', rows, schema }
+  // 兜不住 -> raw
+  return { kind: 'raw', raw: text }
+}
+
+/**
+ * 算归一结果的"行数"用于展示（metric/records=rows.length；topology=各层节点数之和；catalog=清单项数；raw=0）。
+ */
+function countRows(norm: NormalizedResult): number {
+  if (norm.kind === 'topology') {
+    const layers = (norm.layers ?? []) as Array<{ nodes?: unknown[] }>
+    return layers.reduce((sum, l) => sum + (Array.isArray(l?.nodes) ? l.nodes.length : 0), 0)
+  }
+  if (norm.kind === 'catalog') {
+    return Array.isArray(norm.catalog) ? norm.catalog.length : 0
+  }
+  if (norm.kind === 'metric' || norm.kind === 'records') {
+    return Array.isArray(norm.rows) ? norm.rows.length : 0
+  }
+  return 0
+}
+
+/**
+ * 把一条取数结果（成功路径）转成 DataUseEntry，供版本抽屉展示。
+ * status 判定：raw=形状异常降级原文（fallback_raw）；其余=ok。
+ */
+function toDataUseEntry(
+  sourceName: string,
+  call: { tool: string; purpose: string },
+  norm: NormalizedResult
+): DataUseEntry {
+  return {
+    source: sourceName,
+    tool: call.tool,
+    purpose: call.purpose || call.tool,
+    kind: norm.kind,
+    rows: countRows(norm),
+    status: norm.kind === 'raw' ? 'fallback_raw' : 'ok'
+  }
+}
+
+/** 取数抛异常时的失败明细（不归一，直接记错误摘要） */
+function toFailedEntry(sourceName: string, call: { tool: string; purpose: string }, error: string): DataUseEntry {
+  return {
+    source: sourceName,
+    tool: call.tool,
+    purpose: call.purpose || call.tool,
+    kind: 'raw',
+    rows: 0,
+    status: 'failed',
+    error: truncate(error, 80)
+  }
+}
+
+/** 拼注入 Coder prompt 的数据块：「以下是真实数据」标记 + 归一化 JSON 文本（已剥 URL、分条截断） */
+function buildDataBlock(
+  results: Array<{ purpose: string; text: string; tool?: string }>
+): string {
   const items = results.map((r) => {
-    let data: unknown = r.text
-    try {
-      data = JSON.parse(r.text)
-    } catch {
-      /* 不是 JSON 就按原文嵌入 */
-    }
-    return { 用途: r.purpose, 数据: data }
+    const norm = normalizeToolResult(r.text, r.tool)
+    // 非标准结构在用途上标⚠️，提醒 Coder 这条不可信、需走 raw 兜底
+    const purpose = norm.kind === 'raw' ? `⚠️非标准结构 ${r.purpose}` : r.purpose
+    return { 用途: purpose, kind: norm.kind, 数据: norm }
   })
-  const body = truncateBytes(stripUrls(JSON.stringify(items, null, 2)), DATA_BLOCK_MAX_BYTES)
-  return `以下是真实数据（从已配置的数据源取回，编写页面时必须使用其中的数值，不要自己编造；数据里不会出现网址）：\n${body}`
+  // 分条截断：每条单独序列化 + 单独截断，避免一条超大把后面整条挤掉。
+  // 每条上限 = 总上限均摊（保底 1KB）；条数多时各条都留得到内容，不丢整条。
+  const perItemMax = Math.max(1024, Math.floor(DATA_BLOCK_MAX_BYTES / Math.max(1, items.length)))
+  const itemJsons = items.map((it) => {
+    const json = stripUrls(JSON.stringify(it, null, 2))
+    return truncateBytes(json, perItemMax)
+  })
+  const body = itemJsons.join(',\n')
+  return `以下是从数据源取回的真实数据，已按结构归一，编写页面时必须直接使用其中的数值，不要自己编造：
+- 每条数据是一个 JSON 对象，"用途"说明这块数据画什么，"kind"标明数据结构类型，"数据"是归一后的内容。
+- kind=metric（指标）：数值在"数据.rows"数组里，每行一个对象，字段名见"数据.schema"；"数据.meta.default_chart"提示画什么图（stat_card 指标卡/gauge 仪表/bar 柱图/line 折线/pie 饼图），"数据.meta.unit"是单位。
+- kind=records（明细）：每行一条记录在"数据.rows"里，字段含义见"数据.schema"的 display。
+- kind=topology（拓扑）：分层结构在"数据.layers"里，每层 layer.nodes 是该层节点。每个节点的 name 是设备/系统名（必须显示在拓扑节点上，不要编别的名字），status 是状态（normal/warning/critical，决定节点颜色），节点 metrics 数组里的 value 是实时指标值（如在线率99.2%、活跃数156，必须照抄进节点标注，不要换成别的数）。
+- kind=catalog（指标清单）：这是发现类结果（list_metrics/suggest_metrics 返回的可用指标列表），不是画图数据。里面的 id 是后续 query_metric 要用的指标标识，name/description 供你理解指标含义；画大屏时不要直接用清单里的内容当数值，需要数值的去找对应 kind=metric 的数据条。
+- kind=raw（非标准）：用途带⚠️标记，原文在"数据.raw"里，按需提取，无法识别就改用示例数据并标注。
+- 把真实数值直接写进 HTML：metric/records 看"数据.rows"（如 rows[0].avg_cpu_usage=51.4 就在指标卡里写 51.4）；topology 看"数据.layers"的 node.name/node.status/node.metrics[].value（如 layers[0].nodes[0].name="PC终端"、status="normal"、metrics[0].value="99.2%"，就把"PC终端"写在节点上、用正常色、旁边标"99.2%"）。不要换成别的名字或数字。数据里不会出现网址。
+[
+${body}
+]`
+}
+
+/**
+ * 把上一轮取数的执行记录拼成反馈文本，喂给取数规划 LLM 做纠错轮。
+ * 原样保留每条 callTool 的返回文本（含数据源返回的 error+hint），不判别错误--
+ * 由 LLM 自己识别 error 并用 available_hints 纠正。截断防 prompt 过长。
+ */
+function formatAttempts(attempts: Array<{ call: DataFetchCall; result: string }>): string {
+  if (attempts.length === 0) return ''
+  const lines = attempts.map((a, i) => {
+    const argsText = JSON.stringify(a.call.args)
+    const resultText = a.result.length > 600 ? `${a.result.slice(0, 600)}…（已截断）` : a.result
+    return `第 ${i + 1} 条：工具=${a.call.tool}，参数=${argsText}，用途=${a.call.purpose}\n返回结果：${resultText}`
+  })
+  return `\n上一轮取数结果（请据此纠正失败项的参数重新规划，全部成功则输出空 calls）：\n${lines.join('\n\n')}`
+}
+
+/**
+ * 解析 list_metrics / list_models 等发现类工具返回的 JSON，提取 {id, name, description} 列表。
+ * 容错：返回可能是数组、也可能是 {items:[...]} / {metrics:[...]} 等包装；非 JSON 返回空。
+ * 不认识任何具体业务字段，只认通用的 id/name/description 三件套。
+ */
+function parseListItems(text: string): Array<{ id: string; name?: string; description?: string }> {
+  let data: unknown
+  try { data = JSON.parse(text) } catch { return [] }
+  const arr = Array.isArray(data) ? data
+    : Array.isArray((data as { items?: unknown[] })?.items) ? (data as { items: unknown[] }).items
+    : Array.isArray((data as { metrics?: unknown[] })?.metrics) ? (data as { metrics: unknown[] }).metrics
+    : Array.isArray((data as { models?: unknown[] })?.models) ? (data as { models: unknown[] }).models
+    : []
+  return arr
+    .filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string')
+    .map((x) => ({
+      id: String(x.id),
+      name: typeof x.name === 'string' ? x.name : undefined,
+      description: typeof x.description === 'string' ? x.description : undefined
+    }))
 }
 
 /* ============================== LLM：视觉检查（结构化布局审查，设计 §4.1 非多模态路径） ============================== */
@@ -1543,6 +1846,11 @@ async function callShotReview(
 function validateHtml(html: string): string[] {
   const problems: string[] = []
   if (!/<html[\s>]/i.test(html)) problems.push('不是完整的网页（缺少 html 标签）')
+  // 闭合标签检查：大屏 HTML 较长，模型可能被 max_tokens 截断，只剩开头 CSS 而 body 没生成。
+  // 缺少 </body> 或 </html> 几乎必然是截断，必须拦下触发修复。
+  if (!/<\/body>/i.test(html)) problems.push('页面没写完（缺少 </body>，可能生成时被长度限制截断）')
+  if (!/<\/html>/i.test(html)) problems.push('页面没写完（缺少 </html>，可能生成时被长度限制截断）')
+  if (!/<body[\s>]/i.test(html)) problems.push('页面没有正文内容（缺少 body 标签）')
   if (html.length < 2048) problems.push('内容太少，不像一个完整的大屏页面')
   if (/(?:src|href)\s*=\s*["']\s*https?:\/\//i.test(html) || /url\(\s*["']?\s*https?:\/\//i.test(html))
     problems.push('引用了外部资源（大屏要求所有内容都写在一个文件里）')
@@ -1587,7 +1895,13 @@ function armAutoExec(rt: Runtime, options: CardOption[]): void {
   const delay = Math.max(0, (auto.autoExecuteAt as number) - Date.now())
   rt.autoTimer = setTimeout(() => {
     rt.autoTimer = null
-    handleChooseOption(rt.s.dashboard.id, auto.id, true)
+    // 倒计时到点时大屏可能已被删除、或 option 已失效（用户手动选过 / 状态已变）。
+    // 这里是定时器回调，没有 HTTP wrap 兜底，必须自己接住，否则未捕获异常会崩整个进程。
+    try {
+      handleChooseOption(rt.s.dashboard.id, auto.id, true)
+    } catch {
+      // 大屏不存在 / option 已失效 -> 静默忽略（autoTimer 已在 handleChooseOption 内清理）
+    }
   }, delay)
 }
 
@@ -1933,6 +2247,45 @@ async function fetchDataForCreate(rt: Runtime, run: ActiveRun, stageId: string):
       listErrors.push(err instanceof McpError ? `「${s.name || s.url}」${err.message}` : `「${s.name || s.url}」连不上`)
     }
   }
+
+  // 1.5) 主动预取指标与模型清单，拼进工具目录，让 LLM 直接看到具体 id 去 query 取数，
+  // 不必浪费规划额度自己调 list_metrics/list_models 发现。预取失败不阻塞（LLM 仍可自己发现）。
+  // 调的是数据源自己暴露的发现类工具（动态），不是硬编码任何指标名。
+  setStageDetail(rt, stageId, '正在浏览数据源有哪些指标和数据表…')
+  for (const s of sources) {
+    const tools = whitelist.get(s.id)
+    if (!tools) continue
+    const previewLines: string[] = []
+    // 指标清单（list_metrics）
+    if (tools.has('list_metrics')) {
+      try {
+        const text = await mcpCallTool(s, 'list_metrics', {})
+        const items = parseListItems(text)
+        if (items.length > 0) {
+          previewLines.push(`该数据源已注册的指标（直接用 id 调 query_metric 取数，不必再调 list_metrics）：`)
+          for (const it of items.slice(0, 20)) {
+            previewLines.push(`  - 指标 id="${it.id}"${it.name ? `（${it.name}）` : ''}${it.description ? `：${it.description}` : ''}`)
+          }
+          if (items.length > 20) previewLines.push(`  …共 ${items.length} 个，已列前 20 个`)
+        }
+      } catch { /* 预取失败不阻塞 */ }
+    }
+    // 数据模型清单（list_models，供 query_records 用）
+    if (tools.has('list_models')) {
+      try {
+        const text = await mcpCallTool(s, 'list_models', {})
+        const items = parseListItems(text)
+        if (items.length > 0) {
+          previewLines.push(`该数据源可查明细的数据模型（直接用 id 调 query_records 取明细）：`)
+          for (const it of items.slice(0, 15)) {
+            previewLines.push(`  - 模型 id="${it.id}"${it.description ? `：${it.description}` : ''}`)
+          }
+          if (items.length > 15) previewLines.push(`  …共 ${items.length} 个，已列前 15 个`)
+        }
+      } catch { /* 预取失败不阻塞 */ }
+    }
+    if (previewLines.length > 0) catalogLines.push(previewLines.join('\n'))
+  }
   if (whitelist.size === 0) {
     raiseDatasourceDownCard(rt, run, stageId, listErrors.join('；') || '配置的数据源都连不上')
     return false
@@ -1974,25 +2327,98 @@ async function fetchDataForCreate(rt: Runtime, run: ActiveRun, stageId: string):
     pushAgent(rt, '看了下需求，这版用演示数据就够用，不额外连数据源取数了。')
     run.pending.dataBlock = ''
     rt.s.lastDataBlock = ''
+    run.pending.dataSourcesUsed = [] // 演示数据 = 无数据源
+    rt.s.lastDataSourcesUsed = []
     save(rt)
     return true
   }
 
   // 4) 逐个执行取数调用（单个失败不致命，记下来继续；callTool 自带 15 秒超时 + 重试 1 次）
-  const results: Array<{ purpose: string; text: string }> = []
+  //    闭环：首轮规划执行后，若有失败，把执行结果（含数据源返回的错误+hint）反馈给取数规划 LLM，
+  //    让它基于 hint 纠正参数重新规划，最多再试 1 轮。判别"是不是失败"不靠代码硬编码错误格式，
+  //    而是把每条 callTool 的原始返回原样喂给 LLM，由 LLM 自己识别 error 并用 available_hints 纠正。
+  const results: Array<{ purpose: string; text: string; tool?: string }> = []
   const callErrors: string[] = []
-  for (const [i, call] of calls.entries()) {
-    const source = sourceById.get(call.sourceId) as McpDataSource
-    setStageDetail(rt, stageId, `正在取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}…`)
-    const fetchStep = startStep(rt, stageId, `取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}`)
-    try {
-      const text = await mcpCallTool(source, call.tool, call.args)
-      results.push({ purpose: call.purpose || call.tool, text })
-      finishStep(rt, fetchStep, '拿到了')
-    } catch (err) {
-      callErrors.push(err instanceof McpError ? err.message : `取「${call.purpose || call.tool}」失败了`)
-      finishStep(rt, fetchStep, '没取到')
+  /**
+   * 取数明细累积（按 call 签名去重，纠错轮重试同一条时覆盖前一轮的记录，保留最终结果）。
+   * commitVersion 时落盘 + 塞进 Version.dataSourcesUsed。
+   */
+  const usedMap = new Map<string, DataUseEntry>()
+  /** call 签名：同一 source+tool+purpose 视为同一条（purpose 由 LLM 生成，相同意图复述应一致） */
+  const sigOf = (c: DataFetchCall) => `${c.sourceId}|${c.tool}|${c.purpose || ''}`
+  /** 本轮每条调用的原文记录，用于反馈给规划 LLM（call + 返回文本，不判别错误） */
+  let attemptsLog: Array<{ call: DataFetchCall; result: string }> = []
+  const MAX_ROUNDS = 2
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    if (round > 0) {
+      // 纠错轮：把上一轮执行结果反馈给规划 LLM，让它输出需要重试的 calls
+      setStageDetail(rt, stageId, round === 1 ? '有些数据没取到，正在按数据源的提示重新取…' : '再次尝试取数…')
+      const retryStep = startStep(rt, stageId, round === 1 ? '按提示纠正后重新取数' : `第 ${round + 1} 轮取数`)
+      const wdRetry = armAgentWatchdog(rt, run, stageId, 'other')
+      const ctlRetry = new AbortController()
+      run.abort = ctlRetry
+      let retryCalls: DataFetchCall[] = []
+      try {
+        const raw = await callDataFetchPlan(
+          run.pending.text,
+          run.pending.answersSummary,
+          catalogLines.join('\n'),
+          llmProgress(rt, stageId, '正在规划重新取数'),
+          ctlRetry.signal,
+          formatAttempts(attemptsLog)
+        )
+        retryCalls = normalizeDataFetchCalls(raw, whitelist)
+      } catch (err) {
+        if (run.watchdogAborted === ctlRetry) return false
+        finishStep(rt, retryStep, '没规划完，用已有的继续', 'failed')
+      } finally {
+        if (run.abort === ctlRetry) run.abort = null
+        disarmAgentWatchdog(rt, run, wdRetry)
+      }
+      if (retryCalls.length === 0) {
+        finishStep(rt, retryStep, '没有需要重试的了')
+        break // LLM 说不用再试（都成功或无纠正线索），结束闭环
+      }
+      finishStep(rt, retryStep, `要重新取 ${retryCalls.length} 批`)
+      calls = retryCalls
+      attemptsLog = [] // 新一轮重新记录
     }
+
+    for (const [i, call] of calls.entries()) {
+      const source = sourceById.get(call.sourceId) as McpDataSource
+      const sourceName = source?.name || source?.url || call.sourceId
+      setStageDetail(rt, stageId, `正在取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}…`)
+      const fetchStep = startStep(rt, stageId, `取数 ${i + 1}/${calls.length}：${call.purpose || call.tool}`)
+      try {
+        const text = await mcpCallTool(source, call.tool, call.args)
+        attemptsLog.push({ call, result: text })
+        results.push({ purpose: call.purpose || call.tool, text, tool: call.tool })
+        // 捕获取数明细（成功路径：归一后判 status，raw=降级）
+        usedMap.set(sigOf(call), toDataUseEntry(sourceName, call, normalizeToolResult(text, call.tool)))
+        finishStep(rt, fetchStep, '拿到了')
+      } catch (err) {
+        const msg = err instanceof McpError ? err.message : `取「${call.purpose || call.tool}」失败了`
+        callErrors.push(msg)
+        attemptsLog.push({ call, result: msg })
+        // 捕获取数明细（失败路径：记错误摘要）
+        usedMap.set(sigOf(call), toFailedEntry(sourceName, call, msg))
+        finishStep(rt, fetchStep, '没取到')
+      }
+    }
+
+    // 首轮执行后判断要不要进纠错轮。
+    // 不靠 callErrors（业务错误 HTTP 200 不会抛异常，callErrors 捕获不到），
+    // 而是看本轮返回里有没有"值得让 LLM 再看一眼"的迹象--启发式（不判别具体格式），
+    // 只用于决定"要不要打扰 LLM"，权威判断交给 LLM 自己读 attemptsLog。
+    // 触发条件：含 error 字样（取数报错）、或返回空数组 [] / 空对象（发现不到东西）。
+    if (round === 0) {
+      const needsRetry = attemptsLog.some((a) => {
+        const head = a.result.slice(0, 800)
+        return /"error"\s*:/.test(head) || /\[\s*\]/.test(head) || /^\s*\{\s*\}\s*$/.test(a.result.trim())
+      })
+      if (!needsRetry) break // 都成功且非空，不必进纠错轮
+    }
+    // 纠错轮后不再继续（已用尽 MAX_ROUNDS）
   }
 
   // 5) 全部失败 → 数据源卡点卡等用户选
@@ -2006,6 +2432,8 @@ async function fetchDataForCreate(rt: Runtime, run: ActiveRun, stageId: string):
   const block = buildDataBlock(results)
   run.pending.dataBlock = block
   rt.s.lastDataBlock = block
+  run.pending.dataSourcesUsed = [...usedMap.values()]
+  rt.s.lastDataSourcesUsed = run.pending.dataSourcesUsed
   save(rt)
   pushAgent(rt, `真实数据取到了（${results.map((r) => `「${truncate(r.purpose, 12)}」`).join('、')}），编写页面时直接用这些真数据。`)
   return true
@@ -2020,8 +2448,9 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
 
   // 阶段 2：匹配模板（模板库存在且本轮还没匹配过时）
   if (templatesRoot && !run.pending.template) {
-    setStageDetail(rt, 'st-2', `正在和模板库比对：${LAYOUTS.length} 种布局、${COMPONENTS.length} 类组件…`)
-    const matchStep = startStep(rt, 'st-2', `和模板库比对：${LAYOUTS.length} 种布局、${COMPONENTS.length} 类组件`)
+    const cnt = catalogCount()
+    setStageDetail(rt, 'st-2', `正在和模板库比对：${cnt.layouts} 种布局、${cnt.components} 类组件…`)
+    const matchStep = startStep(rt, 'st-2', `和模板库比对：${cnt.layouts} 种布局、${cnt.components} 类组件`)
     let match: MatchResult | null = null
     run.retryLlm = () => void continueCreateToCoding(rt, run) // 超时卡片的"让 AI 再试一次"也走这里
     const cap = await getCapability()
@@ -2045,29 +2474,30 @@ async function continueCreateToCoding(rt: Runtime, run: ActiveRun): Promise<void
       disarmAgentWatchdog(rt, run, wdMatch)
     }
 
-    if (match && (match.layoutId !== null || match.componentIds.length > 0)) {
+    const hasHit = match && (match.layoutId !== null || match.modules.some((m) => m.templateId))
+    if (hasHit && match) {
       // 有命中（含部分命中）：继续，未覆盖部分自定义
       run.pending.template = {
-        layoutId: match.layoutId ?? 'layoutU',
-        componentIds: match.componentIds,
+        layoutId: match.layoutId,
+        modules: match.modules,
         useTemplate: true
       }
-      const layoutName = LAYOUTS.find((l) => l.id === run.pending.template?.layoutId)?.name
-      const compNames = match.componentIds
-        .map((id) => COMPONENTS.find((c) => c.id === id)?.name)
-        .filter(Boolean)
+      const layoutName = match.layoutId ? findTemplate(match.layoutId)?.name : undefined
+      const moduleRoles = match.modules
+        .filter((m) => m.templateId)
+        .map((m) => `「${m.role}」`)
         .join('、')
-      finishStep(rt, matchStep, `命中「${layoutName}」${compNames ? `、${compNames}` : ''}`)
+      finishStep(rt, matchStep, `命中${layoutName ? `「${layoutName}」` : ''}${moduleRoles ? `、${moduleRoles}` : ''}`)
       pushAgent(
         rt,
-        `模板匹配好了：布局用「${layoutName}」${compNames ? `，组件匹配到 ${compNames}` : ''}，这些都会照着模板库的标准样式来做，还原度更高。` +
+        `模板匹配好了：${layoutName ? `布局用「${layoutName}」` : ''}${moduleRoles ? `，模块匹配到 ${moduleRoles}` : ''}，这些都会照着模板库的标准样式来做，还原度更高。` +
           (match.unmatched.length > 0 ? `另外「${match.unmatched.join('、')}」模板库里没有，这部分我按需求自定义。` : '')
       )
       finishStage(rt, 'st-2')
     } else {
       // 完全没匹配上：让用户确认是否自定义生成（UX：必选项 + 必推荐）
       finishStep(rt, matchStep, '没有命中，按你的需求自定义做')
-      run.pending.template = { layoutId: null, componentIds: [], useTemplate: false }
+      run.pending.template = { layoutId: null, modules: [], useTemplate: false }
       finishStage(rt, 'st-2')
       raiseTemplateConfirmCard(rt, run, match)
       rt.running = false
@@ -2280,7 +2710,7 @@ async function checkRepairAndFinish(
     const ctlFix = new AbortController()
     run.abort = ctlFix
     try {
-      run.html = await callCoderRepair(run.html, problems, llmProgress(rt, fixStageId, '正在修复问题'), ctlFix.signal)
+      run.html = await callCoderRepair(run.html, problems, run.pending.dataBlock ?? '', llmProgress(rt, fixStageId, '正在修复问题'), ctlFix.signal)
     } catch (err) {
       if (run.watchdogAborted === ctlFix) return // 看门狗已接管（超时卡片）
       finishStep(rt, fixStep, '修复没完成', 'failed')
@@ -2367,7 +2797,7 @@ async function resumeRepair(rt: Runtime, run: ActiveRun, checkStageId: string, f
     const ctlFix = new AbortController()
     run.abort = ctlFix
     try {
-      run.html = await callCoderRepair(run.html, problems, llmProgress(rt, checkStageId, '正在修复问题'), ctlFix.signal)
+      run.html = await callCoderRepair(run.html, problems, run.pending.dataBlock ?? '', llmProgress(rt, checkStageId, '正在修复问题'), ctlFix.signal)
     } catch (err) {
       if (run.watchdogAborted === ctlFix) return // 看门狗已接管（超时卡片）
       finishStep(rt, retryStep, '修复没完成', 'failed')
@@ -2429,6 +2859,11 @@ function commitVersion(rt: Runtime, run: ActiveRun): void {
   const n = rt.s.versions.length + 1
   const id = nextId('ver')
   store.writePreview(dashId, id, run.html)
+  // 数据来源明细落盘（与 index.html 同目录的 data-used.json；演示数据/无数据源时为空数组也写一份）
+  const dataSourcesUsed = run.pending.dataSourcesUsed ?? []
+  if (dataSourcesUsed.length > 0) {
+    store.writeVersionMeta(dashId, id, dataSourcesUsed)
+  }
   const url = `/preview/${dashId}/${id}/index.html`
   const v: Version = {
     id,
@@ -2437,7 +2872,8 @@ function commitVersion(rt: Runtime, run: ActiveRun): void {
     createdAt: Date.now(),
     screenshotUrl: rt.s.dashboard.coverUrl || coverFor(run.pending.text),
     published: false,
-    isCurrent: true
+    isCurrent: true,
+    dataSourcesUsed: dataSourcesUsed.length > 0 ? dataSourcesUsed : undefined
   }
   addVersion(rt, v, url)
   previewReady(rt, id, url)
@@ -2486,6 +2922,7 @@ function startEditFlow(rt: Runtime, text: string, attachments: string[]): void {
   }
   // 编辑复用生成时落盘的数据快照（没有就是 undefined，Coder prompt 渲染为空串），不重新取数
   run.pending.dataBlock = rt.s.lastDataBlock
+  run.pending.dataSourcesUsed = rt.s.lastDataSourcesUsed // 复用明细，让新版本也能展示数据来源
   rt.activeRun = run
   void runEdit(rt, run)
 }
@@ -2721,8 +3158,9 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
     }
     case 'opt-use-nearest': {
       if (run) {
-        // 用最接近的模板：给默认布局打底
-        run.pending.template = { layoutId: 'layoutU', componentIds: [], useTemplate: true }
+        // 用最接近的模板：给默认布局打底（取目录第一个 layout，无目录则全自定义）
+        const firstLayout = templatesByType('layout')[0]?.id ?? null
+        run.pending.template = { layoutId: firstLayout, modules: [], useTemplate: true }
         run.pending.awaiting = null
         void continueCreateToCoding(rt, run)
       } else {
@@ -2746,6 +3184,8 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
       if (run) {
         run.pending.dataBlock = ''
         rt.s.lastDataBlock = ''
+        run.pending.dataSourcesUsed = [] // 演示数据 = 无数据源
+        rt.s.lastDataSourcesUsed = []
         run.pending.awaiting = null
         save(rt)
         if (run.proceed) run.proceed()
@@ -2761,6 +3201,7 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
       // 数据源卡点「再试一次取数」：清掉快照标记，重进流程会重新取数
       if (run) {
         run.pending.dataBlock = undefined
+        run.pending.dataSourcesUsed = undefined
         run.pending.awaiting = null
         save(rt)
         if (run.retryLlm) run.retryLlm()
@@ -2837,9 +3278,14 @@ function doRollback(rt: Runtime, versionId: string): void {
   if (!target) return
   const html = store.readPreview(rt.s.dashboard.id, versionId)
   if (html === null) return
+  // 继承原版本的数据来源明细（回退产物是同一份页面，数据来源不变）
+  const inheritedMeta = store.readVersionMeta<DataUseEntry[]>(rt.s.dashboard.id, versionId)
   const n = rt.s.versions.length + 1
   const id = nextId('ver')
   store.writePreview(rt.s.dashboard.id, id, html) // 复制产物生成新节点，历史不删
+  if (inheritedMeta && inheritedMeta.length > 0) {
+    store.writeVersionMeta(rt.s.dashboard.id, id, inheritedMeta)
+  }
   const url = `/preview/${rt.s.dashboard.id}/${id}/index.html`
   const v: Version = {
     id,
@@ -2848,7 +3294,8 @@ function doRollback(rt: Runtime, versionId: string): void {
     createdAt: Date.now(),
     screenshotUrl: target.screenshotUrl,
     published: false,
-    isCurrent: true
+    isCurrent: true,
+    dataSourcesUsed: inheritedMeta && inheritedMeta.length > 0 ? inheritedMeta : undefined
   }
   addVersion(rt, v, url)
   previewReady(rt, id, url)
@@ -2860,23 +3307,77 @@ export function handleRollback(dashId: string, versionId: string): void {
   doRollback(mustRuntime(dashId), versionId)
 }
 
-/* ============================== F6 发布（5 秒审批模拟） ============================== */
+/* ============================== F6 发布（真实发布到 AiLab CodeBox） ============================== */
+
+/** 当前大屏项目对应的 CodeBox 名称（复用同名 CodeBox，避免反复创建）。
+ *  用 dashId 生成 slug（稳定唯一、永不为中文），而非易变的 dashName —— 同一个大屏始终复用同一个 CodeBox。 */
+function codeBoxName(dashId: string): string {
+  return `${projectSlug(dashId)}-dev`
+}
+
+/** 发布进度内存标记：记录每个大屏当前是否正在发布（防并发，handlePublish 幂等判断用） */
+const publishingDashboards = new Set<string>()
+
+/** 推送发布进度事件（publishProgress，发布弹窗独占订阅；不进对话区/右栏） */
+function emitPublishProgress(
+  rt: Runtime,
+  phase: PublishPhase,
+  message: string,
+  extra?: { publicUrl?: string; error?: string }
+): void {
+  const payload: PublishProgress = {
+    dashboardId: rt.s.dashboard.id,
+    phase,
+    message,
+    publicUrl: extra?.publicUrl,
+    error: extra?.error
+  }
+  store.emit(rt.s.dashboard.id, 'publishProgress', payload)
+}
+
+/**
+ * 真实发布主流程（异步推进，进度通过 publishProgress 事件实时推给发布弹窗）。
+ * 任何环节失败推 failed 进度；成功把 publicUrl 写进当前版本并标记已发布。
+ */
+async function runPublish(rt: Runtime, cur: Version): Promise<void> {
+  const dashId = rt.s.dashboard.id
+  try {
+    emitPublishProgress(rt, 'uploading', '正在准备云端环境（创建/复用 CodeBox、配置访问）…')
+    const html = store.readPreview(dashId, cur.id)
+    if (html === null) throw new PublishError('这个版本的页面文件找不到了，可能已被清理')
+    // 发布单文件：把 data.json 内联进 HTML（云端只上传 index.html，需自带数据）
+    const dataJson = store.readDataFileText(dashId, cur.id)
+    const htmlToPublish = inlineDataIntoHtml(html, dataJson)
+    const cfg = getPublishConfig()
+    const name = codeBoxName(dashId)
+    emitPublishProgress(rt, 'uploading', '正在把大屏上传到云端…')
+    // 上传完成后切到 serving 阶段（起服务 + 暴露公网）
+    emitPublishProgress(rt, 'serving', '正在云端启动服务并发布到公网…')
+    const result = await publishToAilab(cfg, name, htmlToPublish)
+    // 成功：写 publicUrl + 标记已发布
+    upsertVersion(rt, { ...cur, published: true, publicUrl: result.publicUrl })
+    updateDashboard(rt, { status: 'published' })
+    emitPublishProgress(rt, 'success', `大屏已发布，公网访问地址：${result.publicUrl}`, { publicUrl: result.publicUrl })
+  } catch (err) {
+    const detail = err instanceof PublishError ? err.message : err instanceof Error ? err.message : String(err)
+    emitPublishProgress(rt, 'failed', '发布没有成功，大屏内容都还在，可以稍后再试', { error: detail })
+  } finally {
+    publishingDashboards.delete(dashId)
+  }
+}
 
 export function handlePublish(dashId: string): void {
   const rt = mustRuntime(dashId)
   if (rt.s.runStatus !== 'idle' || rt.s.versions.length === 0) return
-  if (rt.s.stages.some((s) => s.id === 'st-publish' && s.state === 'active')) return
-  pushAgent(rt, '已提交发布申请，正在等待审批。通过后会第一时间告诉你。')
-  setStage(rt, { id: 'st-publish', title: '等待审批', state: 'active', startedAt: Date.now(), finishedAt: null })
-  after(rt, 5000, () => {
-    const cur = rt.s.versions.find((v) => v.isCurrent)
-    if (cur) upsertVersion(rt, { ...cur, published: true })
-    const st = rt.s.stages.find((s) => s.id === 'st-publish')
-    if (st) setStage(rt, { ...st, state: 'done', finishedAt: Date.now() })
-    pushAgent(rt, '好消息！发布申请已通过，大屏正式发布了。')
-    updateDashboard(rt, { status: 'published' })
-  })
+  if (publishingDashboards.has(dashId)) return // 防并发：已有进行中的发布
+  const cur = rt.s.versions.find((v) => v.isCurrent)
+  if (!cur) return
+  publishingDashboards.add(dashId)
+  emitPublishProgress(rt, 'uploading', '已开始发布到云端，稍等一两分钟。')
+  // 真实发布是异步子进程流程；不放进 after（after 无错误网），直接 fire-and-forget
+  void runPublish(rt, cur)
 }
+
 
 /* ============================== F5 人工协助（客服小李模拟流水） ============================== */
 
@@ -2968,6 +3469,7 @@ function emptySession(dash: Dashboard): SessionData {
     versions: [],
     versionUrls: {},
     preview: { state: 'empty', url: null },
+    graph: null,
     assistSession: null,
     previewResolution: '1920x1080',
     pendingRun: null
@@ -2982,6 +3484,7 @@ function makeRuntime(s: SessionData): Runtime {
   }
   s.assistSession = null
   s.steps ??= [] // 旧版会话文件没有执行轨迹字段
+  s.graph ??= null // 旧版会话文件没有流程图快照字段
   const rt: Runtime = { s, running: false, queue: [], activeRun: null, autoTimer: null, timers: new Set(), stepsResetPending: false }
   sessions.set(s.dashboard.id, rt)
   return rt
@@ -3012,8 +3515,47 @@ export function snapshotOf(rt: Runtime): WorkbenchSnapshot {
     blocker: rt.s.blocker,
     versions: [...rt.s.versions],
     preview: { ...rt.s.preview },
+    graph: rt.s.graph,
     assistSession: rt.s.assistSession
   }
+}
+
+/**
+ * 同步 adapter 的 session 数据到 orchestrator 的 Runtime（供 loop-adapter 调用）。
+ * adapter 管理 messages/stages/versions/runStatus，但前端读数据走 orchestrator（enterDashboard/snapshotOf），
+ * 需要此函数把 adapter 的状态同步进 orchestrator 的内存 Runtime。
+ */
+export function syncAdapterSession(dashId: string, patch: {
+  messages?: ChatMessage[]
+  stages?: Stage[]
+  versions?: Version[]
+  versionUrls?: Record<string, string>
+  runStatus?: RunStatus
+  blocker?: Blocker | null
+  preview?: { state: 'empty' | 'building' | 'ready'; url: string | null }
+  graph?: GraphSnapshot | null
+}): void {
+  const rt = sessions.get(dashId)
+  if (!rt) return
+  if (patch.messages !== undefined) rt.s.messages = patch.messages
+  if (patch.stages !== undefined) rt.s.stages = patch.stages
+  if (patch.versions !== undefined) rt.s.versions = patch.versions
+  if (patch.versionUrls !== undefined) rt.s.versionUrls = patch.versionUrls
+  if (patch.runStatus !== undefined) rt.s.runStatus = patch.runStatus
+  if (patch.blocker !== undefined) rt.s.blocker = patch.blocker
+  if (patch.preview !== undefined) rt.s.preview = patch.preview
+  if (patch.graph !== undefined) rt.s.graph = patch.graph
+}
+
+/**
+ * 同步 adapter 的 dashboard 字段到 orchestrator Runtime（供 loop-adapter 调用）。
+ * 复用 updateDashboard 的全部副作用：更新字段、发 dashboardUpdated SSE、持久化。
+ * 用于 loop-adapter 提交版本后设置 coverUrl/status，让首页缩略图和状态徽标正确刷新。
+ */
+export function syncAdapterDashboard(dashId: string, patch: Partial<Dashboard>): void {
+  const rt = sessions.get(dashId)
+  if (!rt) return
+  updateDashboard(rt, patch)
 }
 
 /* ---------- 对外 API ---------- */
@@ -3110,7 +3652,9 @@ export function exportVersion(id: string, versionId: string): { filename: string
   if (!v) throw new HttpError(404, `版本不存在：${versionId}`)
   const html = store.readPreview(id, versionId)
   if (html === null) throw new HttpError(404, '这个版本的页面文件找不到了，可能已被清理')
-  return { filename: `${rt.s.dashboard.name}-${v.label}.html`, html }
+  // 下载单文件：把 data.json 内联进 HTML（保持自包含，脱离服务端仍能显示数据）
+  const dataJson = store.readDataFileText(id, versionId)
+  return { filename: `${rt.s.dashboard.name}-${v.label}.html`, html: inlineDataIntoHtml(html, dataJson) }
 }
 
 /* ============================== 初始数据（首次启动种入） ============================== */
@@ -3211,13 +3755,20 @@ function seedIfEmpty(): void {
 /* ============================== 启动 ============================== */
 
 export function boot(): void {
-  // 同步模板库（client/templates → data/templates；源缺失时模板匹配自动降级）
+  // 同步模板库（client/templates -> data/templates；源缺失时模板匹配自动降级）
   templatesRoot = syncTemplates(dirs.root)
+  // 扫描模板 HTML 的 meta 标签构建内存目录（HTML 全文一并读入，供 Coder 注入）
+  loadTemplateCatalog(templatesRoot)
   // 载入设置（normalizeSettings 兼容旧版 plannerModel 字符串字段）
   const s = store.loadSettings()
   if (s) cachedSettings = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
   // 载入 MCP 数据源列表
   cachedDataSources = normalizeDataSources(store.loadDataSources() ?? [])
+  // 载入发布配置（云配置）
+  const pc = store.loadPublishConfig()
+  if (pc) cachedPublishConfig = normalizePublishConfig({ ...DEFAULT_PUBLISH_CONFIG, ...pc })
+  // 初始化 loop-adapter 的设置缓存（供执行器构造时使用）
+  initAdapterSettings(cachedSettings, cachedDataSources, templatesRoot)
   // 种入示例大屏（仅首次）
   seedIfEmpty()
   // 恢复会话
@@ -3227,5 +3778,14 @@ export function boot(): void {
     const session = store.loadSession<SessionData>(dash.id)
     if (session) makeRuntime(session)
     else makeRuntime(emptySession(dash))
+
+    // 孤儿任务回收：上次进程在跑任务时被中断（重启/崩溃），引擎是内存态无法续跑。
+    // 把残留的 generating 态降级为 idle，让前端回到"可输入"——用户重发消息即可触发新流程
+    //（adapter.handleMessage 检查 engine=null 不会误排队，直接走 create/edit）。
+    const rt = sessions.get(dash.id)
+    if (rt && rt.s.runStatus === 'generating') {
+      rt.s.runStatus = 'idle'
+      rt.s.blocker = null
+    }
   }
 }

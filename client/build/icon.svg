@@ -1,0 +1,38 @@
+<!--
+  AI 大屏工作台 App 图标源文件（1024×1024）
+  设计语言：品牌主蓝渐变圆角方底（tokens.css 的 color-primary 色系）
+    - 白色大屏 + 蓝色柱状图 = 产品的产出物（1920×1080 数据大屏）
+    - 右上四角星芒 = AI（自然语言一句话生成）
+  改图后重新导出：rsvg-convert -w 1024 -h 1024 icon.svg -o icon.png
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3D6BFF"/>
+      <stop offset="1" stop-color="#1A3FCC"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2E5BFF"/>
+      <stop offset="1" stop-color="#1F49E0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角方底（macOS 图标比例 rx≈22%） -->
+  <rect x="0" y="0" width="1024" height="1024" rx="228" fill="url(#bg)"/>
+
+  <!-- AI 星芒（大四角星 + 小四角星） -->
+  <path transform="translate(796 256)" fill="#FFFFFF"
+        d="M0,-96 C10,-26 26,-10 96,0 C26,10 10,26 0,96 C-10,26 -26,10 -96,0 C-26,-10 -10,-26 0,-96 Z"/>
+  <path transform="translate(668 168)" fill="#FFFFFF" opacity="0.85"
+        d="M0,-44 C5,-12 12,-5 44,0 C12,5 5,12 0,44 C-5,12 -12,5 -44,0 C-12,-5 -5,-12 0,-44 Z"/>
+
+  <!-- 大屏：白色机身 + 底座 -->
+  <rect x="176" y="316" width="592" height="416" rx="52" fill="#FFFFFF"/>
+  <rect x="316" y="764" width="240" height="36" rx="18" fill="#FFFFFF" opacity="0.9"/>
+
+  <!-- 屏内柱状图：递增 + 回落一格，读作"数据大屏" -->
+  <rect x="268" y="560" width="72" height="108" rx="16" fill="url(#bar)" opacity="0.55"/>
+  <rect x="388" y="500" width="72" height="168" rx="16" fill="url(#bar)" opacity="0.75"/>
+  <rect x="508" y="428" width="72" height="240" rx="16" fill="url(#bar)"/>
+  <rect x="628" y="492" width="72" height="176" rx="16" fill="url(#bar)" opacity="0.75"/>
+</svg>

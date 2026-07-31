@@ -5,6 +5,7 @@
  *   dashboards.json                     大屏卡片列表
  *   settings.json                       模型设置（单用户演示，Key 明文落本地文件）
  *   data-sources.json                   MCP 数据源列表（单用户演示，令牌/请求头值明文落本地文件）
+ *   publish-config.json                 发布配置（单用户演示，密钥明文落本地文件）
  *   sessions/<dashId>.json              工作台会话快照（消息/阶段/版本/卡点…）
  *   events/<dashId>.jsonl               事件溯源，append-only，seq 单大屏递增
  *   previews/<dashId>/<verId>/index.html  构建产物（自包含 HTML）
@@ -15,7 +16,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import type { ClientEventMap, McpDataSource, ModelSettings } from './wire'
+import type { ClientEventMap, McpDataSource, ModelSettings, PublishConfig } from './wire'
 
 export interface StoredEvent {
   seq: number
@@ -34,6 +35,7 @@ const DATA_DIR = process.env.DATA_DIR
 const DASHBOARDS_FILE = path.join(DATA_DIR, 'dashboards.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
 const DATA_SOURCES_FILE = path.join(DATA_DIR, 'data-sources.json')
+const PUBLISH_CONFIG_FILE = path.join(DATA_DIR, 'publish-config.json')
 
 export const dirs = {
   root: DATA_DIR,
@@ -184,6 +186,16 @@ export class Store {
     writeJson(SETTINGS_FILE, s)
   }
 
+  /* ---------- 发布配置（云配置，密钥明文落本地，单用户演示形态） ---------- */
+
+  loadPublishConfig(): PublishConfig | null {
+    return readJson<PublishConfig>(PUBLISH_CONFIG_FILE)
+  }
+
+  savePublishConfig(c: PublishConfig): void {
+    writeJson(PUBLISH_CONFIG_FILE, c)
+  }
+
   /* ---------- MCP 数据源（凭证明文落本地，单用户演示形态） ---------- */
 
   loadDataSources(): McpDataSource[] | null {
@@ -215,6 +227,62 @@ export class Store {
   readPreview(dashId: string, versionId: string): string | null {
     try {
       return fs.readFileSync(path.join(this.previewDir(dashId, versionId), 'index.html'), 'utf8')
+    } catch {
+      return null
+    }
+  }
+
+  /* ---------- 版本数据来源元数据（与 index.html 同目录的 data-used.json） ---------- */
+
+  /** 数据来源元数据文件名（与 index.html 同目录，removeDashboardFiles 删整棵树自动带走） */
+  private static readonly META_FILE = 'data-used.json'
+
+  writeVersionMeta(dashId: string, versionId: string, meta: unknown): void {
+    const dir = this.previewDir(dashId, versionId)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, Store.META_FILE), JSON.stringify(meta, null, 2), 'utf8')
+  }
+
+  readVersionMeta<T = unknown>(dashId: string, versionId: string): T | null {
+    try {
+      return JSON.parse(
+        fs.readFileSync(path.join(this.previewDir(dashId, versionId), Store.META_FILE), 'utf8')
+      ) as T
+    } catch {
+      return null
+    }
+  }
+
+  /* ---------- 版本真实数据（与 index.html 同目录的 data.json） ----------
+   * 大屏 HTML 运行时 fetch('./data.json') 读取真实数值（不再由 LLM 写死）。
+   * 发布/下载时由 inlineDataIntoHtml 把它内联进 HTML，保持单文件自包含。
+   */
+
+  /** 真实数据文件名（与 index.html 同目录，removeDashboardFiles 删整棵树自动带走） */
+  private static readonly DATA_FILE = 'data.json'
+
+  /** 写真实数据 data.json（结构化数组，未截断）到版本目录 */
+  writeDataFile(dashId: string, versionId: string, data: unknown): void {
+    const dir = this.previewDir(dashId, versionId)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, Store.DATA_FILE), JSON.stringify(data, null, 2), 'utf8')
+  }
+
+  /** 读真实数据 data.json；不存在返回 null */
+  readDataFile<T = unknown>(dashId: string, versionId: string): T | null {
+    try {
+      return JSON.parse(
+        fs.readFileSync(path.join(this.previewDir(dashId, versionId), Store.DATA_FILE), 'utf8')
+      ) as T
+    } catch {
+      return null
+    }
+  }
+
+  /** 读真实数据 data.json 原始字符串（发布/下载内联用，避免二次序列化丢精度）；不存在返回 null */
+  readDataFileText(dashId: string, versionId: string): string | null {
+    try {
+      return fs.readFileSync(path.join(this.previewDir(dashId, versionId), Store.DATA_FILE), 'utf8')
     } catch {
       return null
     }

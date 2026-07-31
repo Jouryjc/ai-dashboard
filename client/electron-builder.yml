@@ -9,6 +9,8 @@ publish:
   repo: ai-dashboard
 directories:
   output: release
+  # 构建资源目录：build/icon.png（1024×1024，源文件 icon.svg）由 electron-builder 自动转 icns/ico
+  buildResources: build
 files:
   - dist/**
   - dist-electron/**

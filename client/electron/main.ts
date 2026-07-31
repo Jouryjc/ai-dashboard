@@ -3,7 +3,7 @@
  * 窗口规格见 UX 文档 §8：默认 1440×900，最小 1200×720，原生标题栏。
  * 'capture-url' 通道：离屏截取预览页 1920×1080 PNG（封面自动更新用），失败返回 null。
  */
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import path from 'node:path'
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
@@ -16,6 +16,8 @@ function createWindow(): void {
     minHeight: 720,
     title: 'AI 大屏工作台',
     backgroundColor: '#F5F6FA',
+    // 开发态窗口图标（打包态图标由 electron-builder 从 build/icon.png 生成 icns/ico）
+    icon: path.join(__dirname, '../build/icon.png'),
     // 原生标题栏（UX §8 / C13），不做 frame: false
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -30,6 +32,14 @@ function createWindow(): void {
     void win.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 }
+
+/* ---------- 打开外部链接（发布后的公网大屏地址）：用系统默认浏览器 ---------- */
+ipcMain.handle('open-external', (_event, url: unknown): Promise<void> => {
+  if (typeof url !== 'string' || !url) return Promise.resolve()
+  // 只允许 http(s)，避免任意协议被打开
+  if (!/^https?:\/\//i.test(url)) return Promise.resolve()
+  return shell.openExternal(url)
+})
 
 /* ---------- 离屏截图（封面自动更新）：不可见窗口截 1920×1080 PNG ---------- */
 /** 页面加载上限：超时按失败处理（返回 null），否则隐藏窗口和 IPC 句柄会永久泄漏 */
