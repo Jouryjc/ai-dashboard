@@ -550,15 +550,79 @@ let cachedSettings: ModelSettings = { ...DEFAULT_SETTINGS }
 let capabilityCache: { key: string; ok: boolean; supportsVision: boolean } | null = null
 let capabilityPending: Promise<{ ok: boolean; supportsVision: boolean }> | null = null
 
+/**
+ * API Key 脱敏：>8 位显示前 3 位 + … + 后 4 位（如 sk-…9xyz）；≤8 位整体打码；空保持空。
+ * 目的：GET /settings 不再把明文 Key 交给客户端，落盘/内存里仍然是原文。
+ */
+function maskApiKey(key: string): string {
+  if (!key) return ''
+  if (key.length <= 8) return '******'
+  return `${key.slice(0, 3)}…${key.slice(-4)}`
+}
+
+/** 生成一份脱敏后的设置副本（角色配置也要复制，避免调用方改到缓存原件） */
+function maskSettings(s: ModelSettings): ModelSettings {
+  return {
+    ...s,
+    apiKey: maskApiKey(s.apiKey),
+    planner: { ...s.planner, apiKey: maskApiKey(s.planner.apiKey) },
+    coder: { ...s.coder, apiKey: maskApiKey(s.coder.apiKey) },
+    vision: { ...s.vision, apiKey: maskApiKey(s.vision.apiKey) }
+  }
+}
+
+/**
+ * 回传值若等于原值的脱敏形态，说明用户没改动（客户端原样回传了掩码），保留原 Key 不覆盖；
+ * 空字符串允许清空；其余视为新 Key。
+ */
+function mergeApiKey(incoming: string, original: string): string {
+  if (original && incoming === maskApiKey(original)) return original
+  return incoming
+}
+
+/** 对外返回的设置：apiKey 一律脱敏（客户端展示用，永远拿不到明文） */
 export function getSettings(): ModelSettings {
+  return maskSettings(cachedSettings)
+}
+
+/** 服务端内部专用：未脱敏的完整设置（网关调用、能力探测等必须用原文 Key） */
+export function getSettingsRaw(): ModelSettings {
   return { ...cachedSettings }
 }
 
+/**
+ * 探测用设置解析：客户端没传表单就用服务端保存的原文；
+ * 传了表单时，表单里的 Key 可能是脱敏回传值，先还原成原文再探测，否则探测必失败。
+ */
+export function resolveProbeSettings(s?: ModelSettings): ModelSettings {
+  if (!s) return getSettingsRaw()
+  const raw = cachedSettings
+  return {
+    ...s,
+    apiKey: mergeApiKey(s.apiKey, raw.apiKey),
+    planner: s.planner ? { ...s.planner, apiKey: mergeApiKey(s.planner.apiKey, raw.planner.apiKey) } : s.planner,
+    coder: s.coder ? { ...s.coder, apiKey: mergeApiKey(s.coder.apiKey, raw.coder.apiKey) } : s.coder,
+    vision: s.vision ? { ...s.vision, apiKey: mergeApiKey(s.vision.apiKey, raw.vision.apiKey) } : s.vision
+  }
+}
+
 export function saveSettings(s: ModelSettings): void {
+  // 客户端原样回传脱敏值 = 没改 Key，保留原值；空串允许清空；其余按新值更新
+  const prev = cachedSettings
+  const merged: ModelSettings = {
+    ...s,
+    apiKey: mergeApiKey(s.apiKey, prev.apiKey),
+    planner: { ...(s.planner ?? EMPTY_ROLE), apiKey: mergeApiKey(s.planner?.apiKey ?? '', prev.planner.apiKey) },
+    coder: { ...(s.coder ?? EMPTY_ROLE), apiKey: mergeApiKey(s.coder?.apiKey ?? '', prev.coder.apiKey) },
+    vision: { ...(s.vision ?? EMPTY_ROLE), apiKey: mergeApiKey(s.vision?.apiKey ?? '', prev.vision.apiKey) }
+  }
   // 兼容旧客户端可能还发 plannerModel 字符串字段的情况
-  cachedSettings = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
+  cachedSettings = normalizeSettings({ ...DEFAULT_SETTINGS, ...merged })
   store.saveSettings(cachedSettings)
   capabilityCache = null
+  // 同步给 loop-adapter：执行器拿的是它自己模块级的设置缓存，不同步的话
+  // 改完模型地址后生成流程仍按启动时的旧配置请求，必挂（冒烟就是踩的这个坑）
+  initAdapterSettings(cachedSettings, cachedDataSources, templatesRoot)
 }
 
 /* ------------------------------ 发布配置（云配置） ------------------------------ */
@@ -641,6 +705,8 @@ export function saveDataSources(list: unknown): McpDataSource[] {
   cachedDataSources = normalizeDataSources(list)
   store.saveDataSources(cachedDataSources)
   invalidateToolsCache()
+  // 同 saveSettings：adapter 的数据源缓存也要同步，否则新建流程感知不到刚配好的数据源
+  initAdapterSettings(cachedSettings, cachedDataSources, templatesRoot)
   return getDataSources()
 }
 
@@ -3528,23 +3594,29 @@ export function snapshotOf(rt: Runtime): WorkbenchSnapshot {
 export function syncAdapterSession(dashId: string, patch: {
   messages?: ChatMessage[]
   stages?: Stage[]
+  steps?: AgentStep[]
+  issues?: Issue[]
   versions?: Version[]
   versionUrls?: Record<string, string>
   runStatus?: RunStatus
   blocker?: Blocker | null
   preview?: { state: 'empty' | 'building' | 'ready'; url: string | null }
   graph?: GraphSnapshot | null
+  lastDataBlock?: string
 }): void {
   const rt = sessions.get(dashId)
   if (!rt) return
   if (patch.messages !== undefined) rt.s.messages = patch.messages
   if (patch.stages !== undefined) rt.s.stages = patch.stages
+  if (patch.steps !== undefined) rt.s.steps = patch.steps
+  if (patch.issues !== undefined) rt.s.issues = patch.issues
   if (patch.versions !== undefined) rt.s.versions = patch.versions
   if (patch.versionUrls !== undefined) rt.s.versionUrls = patch.versionUrls
   if (patch.runStatus !== undefined) rt.s.runStatus = patch.runStatus
   if (patch.blocker !== undefined) rt.s.blocker = patch.blocker
   if (patch.preview !== undefined) rt.s.preview = patch.preview
   if (patch.graph !== undefined) rt.s.graph = patch.graph
+  if (patch.lastDataBlock !== undefined) rt.s.lastDataBlock = patch.lastDataBlock
 }
 
 /**

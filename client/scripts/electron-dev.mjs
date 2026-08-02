@@ -15,7 +15,9 @@ const vite = spawn('npx', ['vite'], { stdio: 'inherit', shell: true })
 function waitForPort(port, retries = 120) {
   return new Promise((resolve, reject) => {
     const tryOnce = (left) => {
-      const sock = net.connect(port, '127.0.0.1')
+      // 用 'localhost' 而不是 '127.0.0.1'：Vite 6 在这台机器上只绑 IPv6 的 ::1，
+      // 直连 127.0.0.1 会被拒绝，明明起来了也误判超时
+      const sock = net.connect(port, 'localhost')
       sock.once('connect', () => { sock.end(); resolve(true) })
       sock.once('error', () => {
         if (left <= 0) return reject(new Error('等待 Vite 开发服务器超时'))

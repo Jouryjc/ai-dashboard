@@ -11,7 +11,7 @@
  *   - system 含「大屏规划师」→ 返回规划 JSON（分析结论 + 2 个澄清问题，恰一个 ★推荐）
  *   - system 含「取数规划师」→ 从工具目录抓第一个数据源 + 第一个工具，规划一条调用（目录空则空 calls）
  *   - system 含「大屏开发」→ 返回一段合法的自包含大屏 HTML（>2KB，无外部引用）；
- *     user 文本含「以下是真实数据」时把特征数值 88.8% 回声进页面（验证 MCP 数据烤进 HTML）
+ *     user 文本含「以下是从数据源取回的真实数据」时把特征数值 88.8% 回声进页面（验证 MCP 数据烤进 HTML）
  *   - system 含「大屏读图精读专家」→ 返回一份固定的参考图内容清单 JSON（无地图，避免联网备料）
  *   - system 含「大屏验收员」→ 返回截图审查 JSON：需求文本带「演示视觉修复」时
  *     同一需求首次报一个问题（之后的复查放行），否则空清单
@@ -101,9 +101,10 @@ function dashboardHtml(userText) {
   const marker = userText.includes('演示视觉修复') && !userText.includes('检查没通过')
     ? '<!-- STUB_VISUAL_ISSUE -->'
     : ''
-  // 真实数据标记：user 文本含「以下是真实数据」说明编排层注入了取数快照，
+  // 真实数据标记：user 文本含「以下是从数据源取回的真实数据」说明编排层注入了取数快照
+  // （标记文本与 loop-adapter/shared-utils.ts 的 DATA_BLOCK_HEADER 头部一致），
   // 把特征数值 88.8% 回声进页面，冒烟据此验证 MCP 数据真的烤进了 HTML
-  const dataKpi = userText.includes('以下是真实数据')
+  const dataKpi = userText.includes('以下是从数据源取回的真实数据')
     ? '<div class="kpi">88.8%<small>目标完成率（真实数据）</small></div>\n      '
     : ''
   // 用重复的内联柱图把内容撑到 2KB 以上，全程无外部引用

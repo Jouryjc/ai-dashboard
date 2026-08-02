@@ -89,6 +89,20 @@ export class MatchExecutor implements NodeExecutor {
   }
 
   async execute(ctx: NodeContext): Promise<NodeResult> {
+    // 0. 用户在「模板无匹配」确认卡上做过选择了（adapter chooseOption patch 进 output 的）：
+    //    按选择直接过，不再调 LLM 重匹配——重匹配结果一样，会无限挂起同一张卡
+    const prevOutput = (ctx.graphState.nodes[CREATE_NODES.match]?.output ?? {}) as Record<string, unknown>
+    if (prevOutput.userDecision === 'custom') {
+      ctx.report('按你选的，不用模板，直接按需求自定义做')
+      return { kind: 'done', output: { layoutId: null, layoutReason: '', modules: [], useTemplate: false } }
+    }
+    if (prevOutput.userDecision === 'nearest') {
+      // 用最接近的模板：给目录第一个 layout 打底（与 orchestrator 旧路径一致），无目录则全自定义
+      const firstLayout = this.templates.templatesByType('layout')[0]?.id ?? null
+      ctx.report(firstLayout ? '按你选的，用最接近的模板打底' : '模板库是空的，按需求自定义做')
+      return { kind: 'done', output: { layoutId: firstLayout, layoutReason: '', modules: [], useTemplate: firstLayout !== null } }
+    }
+
     // 1. 读 planner 节点 output（需求文本、附件）
     const planner = (ctx.graphState.nodes[CREATE_NODES.planner]?.output ?? {}) as Record<string, unknown>
     const text = typeof planner.text === 'string' ? planner.text : ''

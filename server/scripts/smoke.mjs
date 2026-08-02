@@ -9,7 +9,7 @@
  *   3. POST 建大屏 → 发消息（带参考图）→ 订阅 SSE 看 message/stage/blocker 流出
  *   4. 回答澄清 → 「获取数据」阶段 active→done → 等 previewReady → GET 预览 HTML 200、无外部引用、含 88.8%
  *   5. 再发一条不带图的修改消息 → 等 v2 previewReady
- *   6. rollback → 新节点；publish → 5 秒后已发布
+ *   6. rollback → 新节点；publish → 无发布配置时大白话报错（真实云发布，冒烟不验真发）
  *   7. 断源链路：数据源换 --down stub → 「数据源连不上」卡点卡 → 再试仍摆卡 → 改用演示数据照常出预览
  *   8. 重启服务端（DATA_DIR 保留）→ 数据源配置恢复 + 数据快照落盘 + 编辑复用快照不重取数
  *   9. Last-Event-ID 补发抽查
@@ -291,10 +291,12 @@ async function main() {
   const rb = await sse.waitFor('versionAdded', (e) => /回退到/.test(e.data?.version?.summary ?? ''), 30_000, '回退新节点')
   ok('rollback → 新节点', `${rb.data.version.label}「${rb.data.version.summary}」`)
 
-  // 8. 发布 → 5 秒后已发布
+  // 8. 发布：现在是真实 AiLab 云发布（不再是模拟审批），冒烟环境没有真凭据，
+  //    验证「没配发布配置 → publishProgress failed + 大白话提示去配配置」这条兜底链路
   await api('POST', `/dashboards/${dash.id}/publish`)
-  const pub = await sse.waitFor('dashboardUpdated', (e) => e.data?.dashboard?.status === 'published', 30_000, '发布审批通过')
-  ok('publish → 审批通过', `徽标变为「已发布」(${pub.data.dashboard.name})`)
+  const pubFail = await sse.waitFor('publishProgress', (e) => e.data?.phase === 'failed', 30_000, '发布失败进度')
+  if (!/发布配置/.test(pubFail.data?.error ?? '')) fail('发布失败提示去配发布配置', JSON.stringify(pubFail.data))
+  ok('publish → 无发布配置时大白话报错', pubFail.data.error)
 
   // 8.5 阶段时间线：新建流程必须是 7 步（含「获取数据」），含「视觉检查」「修复问题」
   const titles = [...new Set(sse.events.filter((e) => e.event === 'stage').map((e) => e.data?.stage?.title).filter(Boolean))]
@@ -423,8 +425,13 @@ async function main() {
   const cd = exportRes.headers.get('content-disposition') ?? ''
   if (!cd.includes("filename*=UTF-8''")) fail('Content-Disposition 含 filename*', cd)
   const expectHtml = await (await fetch(`${BASE}/preview/${dash.id}/${v1.id}/index.html`)).text()
-  if (exportHtml !== expectHtml) fail('导出内容与预览 HTML 一致', `导出 ${exportHtml.length} 字节 / 预览 ${expectHtml.length} 字节`)
-  ok('GET export → 200，Content-Disposition 含 filename*，内容与预览一致', cd)
+  // 导出单文件 = 预览 HTML + 内联 data.json 数据块（设计如此：下载后脱离服务端也能显示真数据，
+  // 见 shared-utils.inlineDataIntoHtml）。剥掉内联块后应与预览逐字节一致
+  if (!exportHtml.includes('id="dashboard-data"')) fail('导出内联真实数据块（dashboard-data）')
+  if (!exportHtml.includes('88.8%')) fail('导出内联块含真实数据（88.8%）')
+  const stripped = exportHtml.replace(/<script type="application\/json" id="dashboard-data">[\s\S]*?<\/script>/, '')
+  if (stripped !== expectHtml) fail('导出剥掉内联数据块后与预览一致', `导出 ${exportHtml.length} 字节 / 预览 ${expectHtml.length} 字节`)
+  ok('GET export → 200，含 filename*，预览内容 + 内联真实数据块', cd)
   const export404 = await api('GET', `/dashboards/${dash.id}/versions/ver-not-exist/export`)
   if (export404.status !== 404) fail('导出不存在的版本 → 404', `HTTP ${export404.status}`)
   ok('导出不存在的版本 → 404')

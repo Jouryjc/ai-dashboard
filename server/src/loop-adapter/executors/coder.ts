@@ -200,7 +200,18 @@ export class CoderExecutor implements NodeExecutor {
         { maxTokens: CODER_MAX_TOKENS, signal: ctx.signal }
       )
     } catch (err) {
-      return { kind: 'failed', error: err instanceof Error ? err : new Error(String(err)) }
+      // 被引擎看门狗中止（编码超时）：拆成「骨架 → 逐面板」的小步骤重做，
+      // 对齐 orchestrator 旧路径的 splitCodingFlow——每步都是独立小调用，单步不会再超时
+      if (ctx.signal.aborted) {
+        ctx.report('这一步做了太久还没做完，我把它拆成几步小的来做，会快很多。')
+        try {
+          reply = await this.splitCoding(text, answersSummary, dataBlock, ctx)
+        } catch (splitErr) {
+          return { kind: 'failed', error: splitErr instanceof Error ? splitErr : new Error(String(splitErr)) }
+        }
+      } else {
+        return { kind: 'failed', error: err instanceof Error ? err : new Error(String(err)) }
+      }
     }
 
     // 6) extractHtml 提取
@@ -213,5 +224,65 @@ export class CoderExecutor implements NodeExecutor {
       output: { summary: '生成完毕' },
       refs: { html }
     }
+  }
+
+  /**
+   * 编码超时后的拆分生成（对齐 orchestrator.splitCodingFlow）：
+   *   第 1 步：只生成页面骨架（完整 HTML + 全部样式 + 每面板一个 <!--PANEL:名称--> 占位注释）
+   *   第 2..N 步：逐个面板生成内容片段，填回占位注释
+   * 每个子步骤是独立的小 LLM 调用。注意不能传 ctx.signal——它已被看门狗中止，复用会让子步骤秒失败；
+   * 单次调用仍受网关自身的角色超时约束，不会无限挂。
+   */
+  private async splitCoding(text: string, answersSummary: string, dataBlock: string, ctx: NodeContext): Promise<string> {
+    const dataPart = dataBlock ? `\n\n${dataBlock}` : ''
+    // edit 拆分必须带上当前大屏完整 HTML（丢了就会把原页面静默替换掉）
+    const requirement = this.currentHtml
+      ? `请在这个大屏现有 HTML 基础上修改：${text || '按用户发的参考图调整'}\n\n当前 HTML：\n${this.currentHtml}${dataPart}`
+      : `请做这样一个大屏：${text}${answersSummary ? `\n用户确认的偏好：${answersSummary}` : ''}${dataPart}`
+
+    const callStep = async (label: string, userContent: string): Promise<string> => {
+      ctx.report(label)
+      return this.llm.chatStream(
+        'coder',
+        [
+          { role: 'system', content: prompt('coder.system') },
+          { role: 'user', content: userContent }
+        ],
+        () => { /* 子步骤不汇报字数，标题已经够清楚 */ },
+        { maxTokens: CODER_MAX_TOKENS }
+      )
+    }
+
+    // 第 1 步：骨架
+    const skeletonRaw = await callStep('拆分步骤 1：先搭页面骨架', prompt('split.skeleton.user', { requirement }))
+    let html = this.llm.extractHtml(skeletonRaw)
+    // 记录占位注释原文：名字 trim 后拼正则可能匹配不到含空格的原始注释，替换一律用原文
+    const panels = [...html.matchAll(/<!--PANEL:([^>]+?)-->/g)]
+      .map((m) => ({ raw: m[0], name: (m[1] ?? '').trim() }))
+      .filter((p) => p.name.length > 0)
+      .slice(0, 6)
+
+    // 模型没按占位约定输出：骨架已是完整页面，直接用
+    if (panels.length === 0) return html
+
+    // 第 2..N 步：逐个面板生成内容；单个面板失败留占位说明，交给后续视觉检查 + 修复兜底
+    for (let i = 0; i < panels.length; i++) {
+      const p = panels[i]
+      try {
+        const fragment = await callStep(
+          `拆分步骤 ${i + 2}/${panels.length + 1}：生成「${p.name.slice(0, 10)}」`,
+          prompt('split.panel.user', { requirement, panelName: p.name })
+        )
+        html = html.replace(p.raw, () => fragment)
+      } catch {
+        html = html.replace(p.raw, () => `<!-- 「${p.name}」暂未生成 -->`)
+      }
+    }
+
+    // 兜底：成品里不允许残留面板占位注释
+    if (/<!--PANEL:/.test(html)) {
+      html = html.replace(/<!--PANEL:[^>]*?-->/g, '<!-- 面板暂未生成 -->')
+    }
+    return html
   }
 }

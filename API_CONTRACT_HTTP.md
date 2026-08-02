@@ -15,7 +15,7 @@ Base URL 示例：`http://localhost:8787`。所有 JSON。CORS：开发期 `Acce
 | DELETE | `/api/v1/dashboards/:id` | → 204 | deleteDashboard |
 | POST | `/api/v1/dashboards/:id/enter` | → `WorkbenchSnapshot` | enterDashboard |
 | POST | `/api/v1/dashboards/:id/leave` | → 204（仅断开该客户端的 SSE，任务继续跑） | leaveDashboard |
-| POST | `/api/v1/dashboards/:id/messages` | `{text, attachments?: string[]}` → 202。attachments 为 dataURL（客户端已把 blob: 转好）或 http(s) URL；新建需求带图片附件时进入复刻模式（见「行为语义」） | sendMessage |
+| POST | `/api/v1/dashboards/:id/messages` | `{text, attachments?: string[]}` → 202。attachments 为 dataURL（客户端已把 blob: 转好）或 http(s) URL；新建需求带图片附件时进入复刻模式（见「行为语义」）。错误：400（消息为空/超过 4000 字；附件超过 3 张、单张超过 5MB、或格式不是 PNG/JPG/WebP 的 dataURL）；429（同一 IP 每分钟最多 20 条，超限回 `{error:'你说得太快啦，歇一秒再发'}`） | sendMessage |
 | POST | `/api/v1/dashboards/:id/messages/:messageId/answers` | `{answers: ClarificationAnswer[]}` → 202 | answerClarification |
 | POST | `/api/v1/dashboards/:id/options/:optionId` | → 202 | chooseOption |
 | POST | `/api/v1/dashboards/:id/auto-exec/cancel` | → 204 | cancelAutoExec |
@@ -27,12 +27,17 @@ Base URL 示例：`http://localhost:8787`。所有 JSON。CORS：开发期 `Acce
 | POST | `/api/v1/dashboards/:id/publish` | → 202 | publish |
 | POST | `/api/v1/dashboards/:id/assist` | `{note?}` → 202 | callAssist |
 | POST | `/api/v1/dashboards/:id/assist/end` | → 202 | endAssist |
-| GET | `/api/v1/settings` | → `ModelSettings` | getSettings |
-| PUT | `/api/v1/settings` | `ModelSettings` → 204 | saveSettings |
+| GET | `/api/v1/settings` | → `ModelSettings`（apiKey 脱敏返回：超过 8 位显示前 3 位 + `…` + 后 4 位，≤8 位全部打码；永远不明文返回） | getSettings |
+| PUT | `/api/v1/settings` | `ModelSettings` → 204。apiKey 回传的是脱敏掩码值则保留原密钥不动；传空字符串清空密钥；传新明文则更新 | saveSettings |
 | POST | `/api/v1/model-gateway/probe` | `{settings: ModelSettings}` → `ProbeResult`（真实探测，永远不抛错，错误体现在 ProbeResult.ok=false） | testConnection |
 | GET | `/api/v1/data-sources` | → `McpDataSource[]` | getDataSources |
 | PUT | `/api/v1/data-sources` | `McpDataSource[]` → 200 + `McpDataSource[]`（全量覆盖式保存，返回规整后的列表：自动补 id） | saveDataSources |
 | POST | `/api/v1/data-sources/probe` | `{source: McpDataSource}` → `DataSourceProbeResult`（真实探测，永远不抛错，错误体现在 ok=false） | probeDataSource |
+
+通用约定：
+- 所有 `:id` / `:messageId` / `:optionId` / `:versionId` 路径参数只接受字母、数字和 `-` `_`（最长 64 位），不满足一律 400 `{error:'请求参数不对'}`（防目录遍历，这些 id 会拼进文件路径）。
+- 大屏名称（POST /dashboards、rename）最长 50 字，超出 400。
+- 错误统一为 `{error: 大白话提示}` JSON，客户端原样展示。
 
 ## SSE
 

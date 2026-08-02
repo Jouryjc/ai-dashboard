@@ -8,11 +8,15 @@ import { HttpError } from './orchestrator'
 import { getOrCreateAdapter } from './loop-adapter/adapter'
 import { store, type StoredEvent } from './store'
 import { probe } from './gateway'
+import { assertSafeId, checkMessageInput, createRateLimiter } from './security'
 import type { ClarificationAnswer, ModelSettings, PreviewResolution, PublishConfig } from './wire'
 
 export const router = Router()
 
 /* ------------------------------ 工具 ------------------------------ */
+
+// 消息接口限流：每个 IP 每分钟最多 20 条，防刷防失控连发（每次发消息都会真烧模型钱）
+const messageRateLimit = createRateLimiter(20)
 
 function wrap(handler: (req: Request, res: Response) => void | Promise<void>) {
   return (req: Request, res: Response): void => {
@@ -36,6 +40,12 @@ function writeEvent(res: Response, e: StoredEvent): void {
   res.write(`id: ${e.seq}\nevent: ${e.type}\ndata: ${JSON.stringify(e.payload)}\n\n`)
 }
 
+// 大屏名称上限：名字会进 JSON 持久化文件和各处 UI，太长纯属撑爆布局，没必要放行
+const NAME_MAX_CHARS = 50
+function checkDashboardName(name: string): void {
+  if (name.length > NAME_MAX_CHARS) throw new HttpError(400, '名字太长了，最多 50 个字')
+}
+
 /* ------------------------------ 大屏 CRUD ------------------------------ */
 
 router.get('/dashboards', (_req, res) => {
@@ -46,6 +56,7 @@ router.post(
   '/dashboards',
   wrap((req, res) => {
     const name = typeof req.body?.name === 'string' ? req.body.name : ''
+    checkDashboardName(name)
     res.json(orch.createDashboard(name))
   })
 )
@@ -53,15 +64,17 @@ router.post(
 router.post(
   '/dashboards/:id/rename',
   wrap((req, res) => {
+    const id = assertSafeId(req.params.id)
     const name = typeof req.body?.name === 'string' ? req.body.name : ''
-    res.json(orch.renameDashboard(req.params.id, name))
+    checkDashboardName(name)
+    res.json(orch.renameDashboard(id, name))
   })
 )
 
 router.delete(
   '/dashboards/:id',
   wrap((req, res) => {
-    orch.deleteDashboard(req.params.id)
+    orch.deleteDashboard(assertSafeId(req.params.id))
     res.status(204).end()
   })
 )
@@ -69,7 +82,7 @@ router.delete(
 router.post(
   '/dashboards/:id/cover',
   wrap((req, res) => {
-    orch.uploadCover(req.params.id, req.body?.image)
+    orch.uploadCover(assertSafeId(req.params.id), req.body?.image)
     res.status(204).end()
   })
 )
@@ -79,7 +92,7 @@ router.post(
 router.post(
   '/dashboards/:id/enter',
   wrap((req, res) => {
-    res.json(orch.enterDashboard(req.params.id))
+    res.json(orch.enterDashboard(assertSafeId(req.params.id)))
   })
 )
 
@@ -94,11 +107,18 @@ router.post('/dashboards/:id/leave', (_req, res) => {
 router.post(
   '/dashboards/:id/messages',
   wrap((req, res) => {
+    const id = assertSafeId(req.params.id)
+    // 限流放最前：连格式校验都不值得为刷量请求做
+    if (!messageRateLimit(req.ip ?? 'unknown')) {
+      res.status(429).json({ error: '你说得太快啦，歇一秒再发' })
+      return
+    }
     const text = typeof req.body?.text === 'string' ? req.body.text : ''
     const attachments = Array.isArray(req.body?.attachments)
       ? (req.body.attachments as unknown[]).filter((a): a is string => typeof a === 'string')
       : []
-    getOrCreateAdapter(req.params.id).handleMessage(text, attachments)
+    checkMessageInput(text, attachments)
+    getOrCreateAdapter(id).handleMessage(text, attachments)
     res.status(202).end()
   })
 )
@@ -106,8 +126,10 @@ router.post(
 router.post(
   '/dashboards/:id/messages/:messageId/answers',
   wrap((req, res) => {
+    const id = assertSafeId(req.params.id)
+    const messageId = assertSafeId(req.params.messageId)
     const answers = (Array.isArray(req.body?.answers) ? req.body.answers : []) as ClarificationAnswer[]
-    getOrCreateAdapter(req.params.id).answerClarification(req.params.messageId, answers)
+    getOrCreateAdapter(id).answerClarification(messageId, answers)
     res.status(202).end()
   })
 )
@@ -115,7 +137,9 @@ router.post(
 router.post(
   '/dashboards/:id/options/:optionId',
   wrap((req, res) => {
-    getOrCreateAdapter(req.params.id).chooseOption(req.params.optionId)
+    const id = assertSafeId(req.params.id)
+    const optionId = assertSafeId(req.params.optionId)
+    getOrCreateAdapter(id).chooseOption(optionId)
     res.status(202).end()
   })
 )
@@ -123,7 +147,7 @@ router.post(
 router.post(
   '/dashboards/:id/auto-exec/cancel',
   wrap((req, res) => {
-    orch.cancelAutoExec(req.params.id)
+    orch.cancelAutoExec(assertSafeId(req.params.id))
     res.status(204).end()
   })
 )
@@ -133,14 +157,14 @@ router.post(
 router.get(
   '/dashboards/:id/versions',
   wrap((req, res) => {
-    res.json(orch.listVersions(req.params.id))
+    res.json(orch.listVersions(assertSafeId(req.params.id)))
   })
 )
 
 router.get(
   '/dashboards/:id/versions/:versionId/export',
   wrap((req, res) => {
-    const { filename, html } = orch.exportVersion(req.params.id, req.params.versionId)
+    const { filename, html } = orch.exportVersion(assertSafeId(req.params.id), assertSafeId(req.params.versionId))
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
     res.status(200).send(html)
@@ -150,7 +174,7 @@ router.get(
 router.post(
   '/dashboards/:id/versions/:versionId/preview',
   wrap((req, res) => {
-    orch.previewVersion(req.params.id, req.params.versionId)
+    orch.previewVersion(assertSafeId(req.params.id), assertSafeId(req.params.versionId))
     res.status(204).end()
   })
 )
@@ -158,7 +182,7 @@ router.post(
 router.post(
   '/dashboards/:id/versions/current',
   wrap((req, res) => {
-    orch.backToCurrentVersion(req.params.id)
+    orch.backToCurrentVersion(assertSafeId(req.params.id))
     res.status(204).end()
   })
 )
@@ -166,7 +190,7 @@ router.post(
 router.post(
   '/dashboards/:id/versions/:versionId/rollback',
   wrap((req, res) => {
-    getOrCreateAdapter(req.params.id).rollback(req.params.versionId)
+    getOrCreateAdapter(assertSafeId(req.params.id)).rollback(assertSafeId(req.params.versionId))
     res.status(202).end()
   })
 )
@@ -181,7 +205,7 @@ router.post(
       res.status(400).json({ error: 'resolution 只能是 1920x1080 或 2560x1440' })
       return
     }
-    orch.setPreviewResolution(req.params.id, resolution)
+    orch.setPreviewResolution(assertSafeId(req.params.id), resolution)
     res.status(204).end()
   })
 )
@@ -191,7 +215,7 @@ router.post(
 router.post(
   '/dashboards/:id/publish',
   wrap((req, res) => {
-    orch.handlePublish(req.params.id)
+    orch.handlePublish(assertSafeId(req.params.id))
     res.status(202).end()
   })
 )
@@ -202,7 +226,7 @@ router.post(
   '/dashboards/:id/assist',
   wrap((req, res) => {
     const note = typeof req.body?.note === 'string' ? req.body.note : undefined
-    orch.startAssistFlow(req.params.id, note)
+    orch.startAssistFlow(assertSafeId(req.params.id), note)
     res.status(202).end()
   })
 )
@@ -210,7 +234,7 @@ router.post(
 router.post(
   '/dashboards/:id/assist/end',
   wrap((req, res) => {
-    orch.handleEndAssist(req.params.id)
+    orch.handleEndAssist(assertSafeId(req.params.id))
     res.status(202).end()
   })
 )
@@ -233,7 +257,9 @@ router.post(
   '/model-gateway/probe',
   wrap(async (req, res) => {
     // 真实探测，永远不抛错：错误体现在 ProbeResult.ok=false
-    const settings = (req.body?.settings ?? orch.getSettings()) as ModelSettings
+    // 注意要用 resolveProbeSettings：getSettings() 返回的是脱敏 Key，直接探测必失败；
+    // 客户端传了表单时也要把表单里的脱敏回传值还原成原文
+    const settings = orch.resolveProbeSettings(req.body?.settings as ModelSettings | undefined)
     const result = await probe(settings).catch((err) => ({
       ok: false,
       supportsVision: false,
@@ -284,7 +310,14 @@ router.post(
 /* ------------------------------ SSE ------------------------------ */
 
 router.get('/dashboards/:id/events', (req, res) => {
-  const dashId = req.params.id
+  // SSE 走长连接不走 wrap()，路径校验的 HttpError 要自己接住转成 JSON
+  let dashId: string
+  try {
+    dashId = assertSafeId(req.params.id)
+  } catch {
+    res.status(400).json({ error: '请求参数不对' })
+    return
+  }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',

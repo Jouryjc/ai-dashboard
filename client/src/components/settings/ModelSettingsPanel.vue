@@ -71,6 +71,15 @@ const showKey = ref(false)
 const showAdvanced = ref(false)
 const showDetail = ref(false)
 
+/**
+ * 服务端出于安全只回传打码后的 Key（如 sk-…9xyz 或 ******）。
+ * 框里是打码值时给用户一句提示：不动它就保持不变，避免误以为是明文又手滑改掉。
+ * 打码值原样回传即可，服务端会识别并保留原 Key，客户端无需额外处理。
+ */
+function isMaskedKey(v: string): boolean {
+  return v === '******' || v.includes('…')
+}
+
 function onProviderChange(): void {
   const preset = PROVIDER_DEFAULT_BASE[store.settings.provider]
   if (preset && !store.settings.apiBase) {
@@ -178,6 +187,9 @@ async function onSave(): Promise<void> {
           {{ showKey ? '隐藏' : '显示' }}
         </button>
       </div>
+      <p v-if="isMaskedKey(store.settings.apiKey)" class="text-xs text-ink-faint">
+        已保存密钥，这里打码显示。不动它就保持不变；输入新 Key 会更换；清空会删除。
+      </p>
 
       <label class="text-sm text-ink-secondary">模型</label>
       <!-- 可从列表选，也可直接打字输入模型名（如 qwen2.5-72b-text-instruct 这类不看图片的模型） -->
@@ -311,6 +323,9 @@ async function onSave(): Promise<void> {
                 {{ showRoleKey[role] ? '隐藏' : '显示' }}
               </button>
             </div>
+            <p v-if="isMaskedKey(store.settings[role].apiKey)" class="col-start-2 pl-3 text-xs text-ink-faint">
+              已保存密钥，这里打码显示。不动它就保持不变；输入新 Key 会更换；清空则跟随上面的 API Key。
+            </p>
           </template>
         </template>
       </div>
