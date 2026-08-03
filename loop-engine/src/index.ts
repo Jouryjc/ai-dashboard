@@ -11,11 +11,26 @@ import type { NodeExecutor } from './node-executor'
 
 export { LoopEngine } from './engine'
 export type { LoopConfig } from './engine'
-export type { GraphState, NodeState, NodeOutput, FlowDefinition, Edge, NodeId, Tag, EngineState } from './types'
+export type {
+  GraphCheckpoint,
+  GraphState,
+  NodeState,
+  NodeOutput,
+  FlowDefinition,
+  Edge,
+  NodeId,
+  Tag,
+  EngineState
+} from './types'
 export type { ResumeTable, ResumePoint } from './definition'
 export type { NodeExecutor, NodeContext, NodeResult } from './node-executor'
 export type { LoopEvent } from './events'
-export { createGraphState, cloneGraphState } from './graph-state'
+export {
+  createGraphCheckpoint,
+  createGraphState,
+  cloneGraphState,
+  restoreGraphState
+} from './graph-state'
 
 /**
  * 创建 Loop 实例（声明式接入）。

@@ -6,6 +6,8 @@
  */
 export type {
   AgentStep,
+  ArtifactKind,
+  ArtifactManifest,
   AssistAction,
   AssistSession,
   Blocker,
@@ -27,24 +29,30 @@ export type {
   ModelSettings,
   PreviewResolution,
   PreviewState,
+  Project,
+  ProjectStatus,
   ProbeResult,
   ProblemMessage,
   PublishConfig,
   PublishPhase,
   PublishProgress,
   RiskLevel,
+  Revision,
   RoleModelConfig,
   RunStatus,
   Stage,
   StageState,
   StepState,
   SystemMessage,
+  TargetProfile,
   UserMessage,
-  Version,
   GraphSnapshot,
   GraphNodeSnapshot,
   GraphEdge,
-  GraphNodeStatus
+  GraphNodeStatus,
+  ValidationGateResult,
+  ValidationReport,
+  Version
 } from '../../client/src/types/index'
 
 export type { ClientEventMap, WorkbenchSnapshot } from '../../client/src/api/client'

@@ -102,7 +102,9 @@ export class CoderExecutor implements NodeExecutor {
     /** edit 流程的当前 HTML（create 流程不传） */
     private readonly currentHtml?: string,
     /** edit 流程从源版本 data.json 回填的数据块文本（create 流程从 fetch 节点读） */
-    private readonly editDataBlock?: string
+    private readonly editDataBlock?: string,
+    /** 首次创建时把可渲染的部分 HTML 推给隔离预览。 */
+    private readonly onPartial?: (partial: string) => void
   ) {}
 
   async execute(ctx: NodeContext): Promise<NodeResult> {
@@ -196,7 +198,10 @@ export class CoderExecutor implements NodeExecutor {
       reply = await this.llm.chatStream(
         'coder',
         messages,
-        (chars) => ctx.report(`已生成 ${chars} 字`),
+        (chars, partial) => {
+          ctx.report(`已生成 ${chars} 字`)
+          this.onPartial?.(partial)
+        },
         { maxTokens: CODER_MAX_TOKENS, signal: ctx.signal }
       )
     } catch (err) {

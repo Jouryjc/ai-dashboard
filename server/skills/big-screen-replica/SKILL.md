@@ -1,6 +1,6 @@
-﻿---
+---
 name: big-screen-replica
-description: 数据可视化大屏(指挥中心/监控大屏/运营驾驶舱)的复刻与创作,产出 Daimon Blueprint Widget 并放上 Dashboard。两种触发:(1) 复刻——用户提供大屏截图/设计稿,说"实现这个大屏""复刻/还原这个页面""照着图做";(2) 创作——用户没有图片,说"做一个数据大屏""生成指挥中心大屏""帮我搭个监控驾驶舱"。核心方法:region 裁剪精读原图(复刻)/ design-language 设计规范(创作)-> 固定设计稿舞台 + transform 等比缩放 -> 真实地图 GeoJSON 转 SVG 内联 -> 无头浏览器截图对比校验闭环。也适用于把已有大屏 HTML 改造为 Widget。
+description: 数据可视化大屏(指挥中心/监控大屏/运营驾驶舱)的复刻与创作,产出 Daimon Blueprint Widget 并放上 Dashboard。两种触发:(1) 复刻——用户提供大屏截图/设计稿,说"实现这个大屏""复刻/还原这个页面""照着图做";(2) 创作——用户没有图片,说"做一个数据大屏""生成指挥中心大屏""帮我搭个监控驾驶舱"。核心方法:region 裁剪精读原图(复刻)/ design-language 设计规范(创作)→ 固定设计稿舞台 + transform 等比缩放 → 真实地图 GeoJSON 转 SVG 内联 → 无头浏览器截图对比校验闭环。也适用于把已有大屏 HTML 改造为 Widget。
 ---
 
 # Big Screen Replica(大屏复刻与创作)

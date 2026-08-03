@@ -29,6 +29,44 @@ import { prompt } from './prompts'
 import { initAdapterSettings } from './loop-adapter/adapter'
 import { inlineDataIntoHtml } from './loop-adapter/shared-utils'
 import { projectSlug, publishToAilab, PublishError } from './ailab/publish'
+import { artifactPreviewUrl, normalizePreviewUrl } from './preview'
+import {
+  hydrateDataSourceSecrets,
+  hydratePublishConfigSecrets,
+  hydrateSettingsSecrets,
+  maskDataSources,
+  maskPublishConfig,
+  maskSettings
+} from './secrets'
+import { artifactRegistry } from './artifacts/registry'
+import { buildBusinessApp, validateBusinessAppBuildInput } from './artifacts/business-app/builder'
+import { repairBusinessAppWithModel } from './artifacts/business-app/coder'
+import { createBusinessAppSourceArchive } from './artifacts/business-app/exporter'
+import { generateBusinessApp } from './artifacts/business-app/generator'
+import { analyzeBusinessAppRequirement } from './artifacts/business-app/requirements/analyzer'
+import type {
+  BusinessApplicationBlueprint,
+  BusinessAppChangePlan,
+  BusinessAppClarificationTurn,
+  BusinessAppRequirementContract,
+  BusinessAppRequirementDecision
+} from './artifacts/business-app/domain/model'
+import { analyzeBusinessAppReference } from './artifacts/business-app/reference'
+import type {
+  BusinessAppReferenceAnalysis,
+  BusinessAppReferenceEvidence
+} from './artifacts/business-app/reference'
+import { repairBusinessAppDraft } from './artifacts/business-app/repairer'
+import { reviewBusinessAppVisual } from './artifacts/business-app/reviewer'
+import { validateBuiltBusinessApp } from './artifacts/business-app/validator'
+import { skillRegistry } from './skills/registry'
+import {
+  createLoop,
+  type FlowDefinition,
+  type GraphCheckpoint,
+  type GraphState,
+  type NodeExecutor
+} from '../../loop-engine/src'
 import {
   probeReplicaEnv,
   imageSize,
@@ -41,6 +79,8 @@ import {
 } from './replica'
 import type {
   AgentStep,
+  ArtifactKind,
+  ArtifactManifest,
   AssistSession,
   Blocker,
   CardOption,
@@ -65,6 +105,9 @@ import type {
   RunStatus,
   Stage,
   StepState,
+  TargetProfile,
+  ValidationGateResult,
+  ValidationReport,
   Version,
   WorkbenchSnapshot
 } from './wire'
@@ -157,6 +200,34 @@ interface SessionData {
   lastDataBlock?: string
   /** 最近一次生成期取数的明细（与 lastDataBlock 同源；编辑流复用，让新版本也能展示数据来源） */
   lastDataSourcesUsed?: DataUseEntry[]
+  /** 业务应用的累计需求与未完成候选，保证“继续”不会开启一轮失忆的全量生成。 */
+  businessAppState?: BusinessAppProjectState
+}
+
+/**
+ * business-app 跨轮次持久化状态。
+ *
+ * 已提交蓝图与未通过验收的候选蓝图分开保存；澄清问题、用户决策和纯 JSON 检查点用于服务重启后续跑。
+ */
+interface BusinessAppProjectState {
+  requirements: string[]
+  activeRequirement: string | null
+  candidateRevisionId: string | null
+  unresolved: boolean
+  strategiesTried: string[]
+  lastFailure: string | null
+  decisions: BusinessAppRequirementDecision[]
+  requirementContract: BusinessAppRequirementContract | null
+  blueprint: BusinessApplicationBlueprint | null
+  changePlan: BusinessAppChangePlan | null
+  candidateBlueprint: BusinessApplicationBlueprint | null
+  candidateChangePlan: BusinessAppChangePlan | null
+  pendingClarification: BusinessAppClarificationTurn | null
+  checkpoint: GraphCheckpoint | null
+  reference?: {
+    analysis: BusinessAppReferenceAnalysis
+    evidence: BusinessAppReferenceEvidence
+  }
 }
 
 /** 运行中任务的内存态（不落盘） */
@@ -211,6 +282,23 @@ function nextId(prefix: string): string {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+function targetProfileFor(kind: ArtifactKind): TargetProfile {
+  return artifactRegistry.get(kind).createTargetProfile()
+}
+
+function manifestFor(kind: ArtifactKind): ArtifactManifest {
+  return artifactRegistry.get(kind).createManifest()
+}
+
+function passedValidationReport(detail = '已通过当前产物类型的全部门禁'): ValidationReport {
+  return {
+    status: 'passed',
+    gates: [
+      { id: 'legacy-validation', title: '产物检查', status: 'passed', detail }
+    ]
+  }
+}
 
 function after(rt: Runtime, ms: number, fn: () => void): void {
   const t = setTimeout(() => {
@@ -324,6 +412,7 @@ function addVersion(rt: Runtime, v: Version, url: string): void {
   rt.s.versions.unshift(v)
   rt.s.versionUrls[v.id] = url
   rt.s.dashboard.currentVersionLabel = v.label
+  rt.s.dashboard.currentRevisionId = v.id
   store.emit(rt.s.dashboard.id, 'versionAdded', { dashboardId: rt.s.dashboard.id, version: v })
   save(rt)
 }
@@ -551,14 +640,21 @@ let capabilityCache: { key: string; ok: boolean; supportsVision: boolean } | nul
 let capabilityPending: Promise<{ ok: boolean; supportsVision: boolean }> | null = null
 
 export function getSettings(): ModelSettings {
-  return { ...cachedSettings }
+  return maskSettings(cachedSettings)
 }
 
 export function saveSettings(s: ModelSettings): void {
   // 兼容旧客户端可能还发 plannerModel 字符串字段的情况
-  cachedSettings = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
+  const normalized = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
+  cachedSettings = hydrateSettingsSecrets(normalized, cachedSettings)
   store.saveSettings(cachedSettings)
   capabilityCache = null
+  initAdapterSettings(cachedSettings, cachedDataSources, templatesRoot)
+}
+
+export function resolveSettingsSecrets(s: ModelSettings): ModelSettings {
+  const normalized = normalizeSettings({ ...DEFAULT_SETTINGS, ...s })
+  return hydrateSettingsSecrets(normalized, cachedSettings)
 }
 
 /* ------------------------------ 发布配置（云配置） ------------------------------ */
@@ -577,11 +673,16 @@ function normalizePublishConfig(raw: PublishConfig): PublishConfig {
 let cachedPublishConfig: PublishConfig = { ...DEFAULT_PUBLISH_CONFIG }
 
 export function getPublishConfig(): PublishConfig {
-  return { ...cachedPublishConfig }
+  return maskPublishConfig(cachedPublishConfig)
 }
 
 export function savePublishConfig(c: PublishConfig): void {
-  cachedPublishConfig = normalizePublishConfig({ ...DEFAULT_PUBLISH_CONFIG, ...c })
+  cachedPublishConfig = normalizePublishConfig(
+    hydratePublishConfigSecrets(
+      { ...DEFAULT_PUBLISH_CONFIG, ...c },
+      cachedPublishConfig
+    )
+  )
   store.savePublishConfig(cachedPublishConfig)
 }
 
@@ -633,20 +734,22 @@ function normalizeDataSources(raw: unknown): McpDataSource[] {
 }
 
 export function getDataSources(): McpDataSource[] {
-  return cachedDataSources.map((s) => ({ ...s }))
+  return maskDataSources(cachedDataSources)
 }
 
 /** 全量保存（与模型设置同风格：PUT 整份列表），保存时失效 listTools 缓存 */
 export function saveDataSources(list: unknown): McpDataSource[] {
-  cachedDataSources = normalizeDataSources(list)
+  cachedDataSources = hydrateDataSourceSecrets(normalizeDataSources(list), cachedDataSources)
   store.saveDataSources(cachedDataSources)
   invalidateToolsCache()
+  initAdapterSettings(cachedSettings, cachedDataSources, templatesRoot)
   return getDataSources()
 }
 
 /** 「测试数据源连接」：真实调 tools/list 探测，永不抛错（错误体现在 ok=false） */
 export async function probeDataSource(source: unknown): Promise<DataSourceProbeResult> {
-  const [s] = normalizeDataSources([source])
+  const [normalized] = normalizeDataSources([source])
+  const [s] = hydrateDataSourceSecrets([normalized], cachedDataSources)
   if (!s.url) {
     return { ok: false, tools: [], message: '先填一下数据源地址再测试', detail: null }
   }
@@ -776,7 +879,7 @@ function makeLivePreview(rt: Runtime): (partial: string) => void {
     n += 1
     const dashId = rt.s.dashboard.id
     store.writePreview(dashId, 'building', partial)
-    const url = `/preview/${dashId}/building/index.html?t=${n}`
+    const url = artifactPreviewUrl(dashId, 'building', n)
     rt.s.preview = { state: 'building', url }
     store.emit(dashId, 'previewBuilding', { dashboardId: dashId, url })
     save(rt)
@@ -1844,17 +1947,20 @@ async function callShotReview(
 
 /* ============================== 确定性校验（硬约束的落地） ============================== */
 function validateHtml(html: string): string[] {
-  const problems: string[] = []
-  if (!/<html[\s>]/i.test(html)) problems.push('不是完整的网页（缺少 html 标签）')
-  // 闭合标签检查：大屏 HTML 较长，模型可能被 max_tokens 截断，只剩开头 CSS 而 body 没生成。
-  // 缺少 </body> 或 </html> 几乎必然是截断，必须拦下触发修复。
-  if (!/<\/body>/i.test(html)) problems.push('页面没写完（缺少 </body>，可能生成时被长度限制截断）')
-  if (!/<\/html>/i.test(html)) problems.push('页面没写完（缺少 </html>，可能生成时被长度限制截断）')
-  if (!/<body[\s>]/i.test(html)) problems.push('页面没有正文内容（缺少 body 标签）')
-  if (html.length < 2048) problems.push('内容太少，不像一个完整的大屏页面')
-  if (/(?:src|href)\s*=\s*["']\s*https?:\/\//i.test(html) || /url\(\s*["']?\s*https?:\/\//i.test(html))
-    problems.push('引用了外部资源（大屏要求所有内容都写在一个文件里）')
-  return problems
+  const report = artifactRegistry.get('dashboard').validateDraft({
+    entryFile: 'index.html',
+    files: { 'index.html': html }
+  })
+  return report.gates
+    .filter((gate) => gate.status === 'failed')
+    .map((gate) => gate.detail ? `${gate.title}：${gate.detail}` : gate.title)
+}
+
+function failActiveStage(rt: Runtime, detail: string): void {
+  const stage = rt.s.stages.find(item => item.state === 'active')
+  if (!stage) return
+  closeOrphanSteps(rt, stage.id, 'failed', detail)
+  setStage(rt, { ...stage, state: 'failed', finishedAt: Date.now(), detail })
 }
 
 /** 确定性清洗（人工协助修好时用）：剥掉外部资源引用，保证校验能过 */
@@ -2864,7 +2970,7 @@ function commitVersion(rt: Runtime, run: ActiveRun): void {
   if (dataSourcesUsed.length > 0) {
     store.writeVersionMeta(dashId, id, dataSourcesUsed)
   }
-  const url = `/preview/${dashId}/${id}/index.html`
+  const url = artifactPreviewUrl(dashId, id)
   const v: Version = {
     id,
     label: `v${n}`,
@@ -2873,10 +2979,923 @@ function commitVersion(rt: Runtime, run: ActiveRun): void {
     screenshotUrl: rt.s.dashboard.coverUrl || coverFor(run.pending.text),
     published: false,
     isCurrent: true,
-    dataSourcesUsed: dataSourcesUsed.length > 0 ? dataSourcesUsed : undefined
+    dataSourcesUsed: dataSourcesUsed.length > 0 ? dataSourcesUsed : undefined,
+    manifest: manifestFor(rt.s.dashboard.artifactKind),
+    validationReport: artifactRegistry.get('dashboard').validateDraft({
+      entryFile: 'index.html',
+      files: { 'index.html': run.html }
+    })
   }
   addVersion(rt, v, url)
   previewReady(rt, id, url)
+}
+
+/** 无参考图时展示的业务应用七阶段执行计划。 */
+const BUSINESS_APP_STAGE_TITLES = [
+  '收敛业务需求契约',
+  '规划应用模块与业务流程',
+  '查询 IDux 组件证据',
+  '生成并构建业务应用',
+  '验收准确性、体验与安全',
+  '自动诊断、修复并复检',
+  '生成可交付版本'
+]
+
+/** 有参考图时展示的业务应用七阶段执行计划。 */
+const BUSINESS_APP_IMAGE_STAGE_TITLES = [
+  '收敛业务需求契约',
+  '分析参考图并规划应用',
+  '映射 IDux 组件与样式',
+  '生成并构建业务应用',
+  '验收流程、参考图与双视口',
+  '自动诊断、修复并复检',
+  '生成可交付版本'
+]
+
+/**
+ * business-app 声明式 Loop 拓扑。
+ *
+ * 需求节点可挂起等待单问题回答；构建或验收失败统一进入修复节点，只有全部门禁通过才能到达 finish。
+ */
+const BUSINESS_APP_FLOW: FlowDefinition = {
+  nodes: [
+    { id: 'requirements', name: '收敛需求契约' },
+    { id: 'planner', name: '规划业务应用' },
+    { id: 'coder', name: '生成并构建业务应用' },
+    { id: 'check', name: '浏览器质量验收' },
+    { id: 'repair', name: '自动修复' },
+    { id: 'finish', name: '闭环交付' }
+  ],
+  edges: [
+    { from: 'requirements', to: 'planner' },
+    { from: 'planner', to: 'coder' },
+    { from: 'coder', to: 'check', guard: 'buildPassed' },
+    { from: 'coder', to: 'repair' },
+    { from: 'check', to: 'finish', guard: 'qualityPassed' },
+    { from: 'check', to: 'repair' },
+    { from: 'repair', to: 'coder' }
+  ],
+  guards: {
+    buildPassed: (gs) => gs.nodes.coder?.output?.passed === true,
+    qualityPassed: (gs) => gs.nodes.check?.output?.passed === true
+  }
+}
+
+/** 将 LoopEngine 图状态转换成工作台可展示、可落盘的精简快照。 */
+function businessAppGraphSnapshot(gs: GraphState): GraphSnapshot {
+  const finished = !gs.awaiting && gs.nodes.finish?.status === 'done'
+  return {
+    nodes: gs.definition.nodes.map(node => {
+      const state = gs.nodes[node.id]
+      const summary: Record<string, string | number | boolean | null> = {}
+      const output = state?.output
+      for (const key of ['passed', 'issueCount', 'attempt', 'iduxVersion', 'repairCount']) {
+        const value = output?.[key]
+        if (
+          typeof value === 'string' ||
+          typeof value === 'number' ||
+          typeof value === 'boolean' ||
+          value === null
+        ) {
+          summary[key] = value
+        }
+      }
+      const status = state?.status ?? 'pending'
+      return {
+        id: node.id,
+        name: node.name,
+        status: finished && status === 'pending' ? 'skipped' : status,
+        summary
+      }
+    }),
+    edges: gs.definition.edges.map(edge => ({
+      from: edge.from,
+      to: edge.to,
+      guard: edge.guard
+    })),
+    current: gs.current,
+    awaiting: gs.awaiting
+  }
+}
+
+/** 持久化并广播业务应用流程图状态。 */
+function emitBusinessAppGraph(rt: Runtime, graph: GraphSnapshot): void {
+  rt.s.graph = graph
+  store.emit(rt.s.dashboard.id, 'graph', { dashboardId: rt.s.dashboard.id, graph })
+  save(rt)
+}
+
+/** 在执行器启动前发送完整图骨架，避免界面阶段信息延迟出现。 */
+function emitBusinessAppGraphSkeleton(rt: Runtime): void {
+  emitBusinessAppGraph(rt, {
+    nodes: BUSINESS_APP_FLOW.nodes.map(node => ({
+      id: node.id,
+      name: node.name,
+      status: node.id === 'requirements' ? 'active' : 'pending',
+      summary: {}
+    })),
+    edges: BUSINESS_APP_FLOW.edges.map(edge => ({
+      from: edge.from,
+      to: edge.to,
+      guard: edge.guard
+    })),
+    current: 'requirements',
+    awaiting: null
+  })
+}
+
+/** 不创建新需求、而是继续当前失败候选的用户短语。 */
+const BUSINESS_APP_CONTINUE_REQUEST = /^(?:继续|重试|再试(?:一次)?|继续修复|接着修|恢复)(?:吧|一下|看看|检查)?[。！!]?$/i
+
+/** 获取并补齐旧会话中可能缺少字段的 business-app 状态。 */
+function getBusinessAppState(rt: Runtime): BusinessAppProjectState {
+  rt.s.businessAppState ??= {
+    requirements: [],
+    activeRequirement: null,
+    candidateRevisionId: null,
+    unresolved: false,
+    strategiesTried: [],
+    lastFailure: null,
+    decisions: [],
+    requirementContract: null,
+    blueprint: null,
+    changePlan: null,
+    candidateBlueprint: null,
+    candidateChangePlan: null,
+    pendingClarification: null,
+    checkpoint: null
+  }
+  rt.s.businessAppState.decisions ??= []
+  rt.s.businessAppState.requirementContract ??= null
+  rt.s.businessAppState.blueprint ??= null
+  rt.s.businessAppState.changePlan ??= null
+  rt.s.businessAppState.candidateBlueprint ??= null
+  rt.s.businessAppState.candidateChangePlan ??= null
+  rt.s.businessAppState.pendingClarification ??= null
+  rt.s.businessAppState.checkpoint ??= null
+  return rt.s.businessAppState
+}
+
+/** 解析新需求或续跑指令，并记录当前轮唯一有效的需求文本。 */
+function effectiveBusinessAppRequest(rt: Runtime, request: string): string {
+  const state = getBusinessAppState(rt)
+  const current = request.trim()
+  const resume = BUSINESS_APP_CONTINUE_REQUEST.test(current) && state.unresolved
+  if (!resume && current.length > 0) {
+    const requirement = truncate(current, 500)
+    if (!state.requirements.includes(requirement)) state.requirements.push(requirement)
+    state.requirements = state.requirements.slice(-20)
+    state.activeRequirement = requirement
+  }
+  if (!state.activeRequirement && state.requirements.length > 0) {
+    state.activeRequirement = state.requirements[state.requirements.length - 1]
+  }
+  state.unresolved = true
+  save(rt)
+  return state.activeRequirement || current || '继续完成当前业务应用目标'
+}
+
+/** 将领域层的单问题澄清契约转换成工作台消息和阻断卡片。 */
+function emitBusinessAppClarification(
+  rt: Runtime,
+  clarification: BusinessAppClarificationTurn
+): void {
+  const question: ClarificationQuestion = {
+    id: clarification.topic,
+    question: clarification.question,
+    options: clarification.options.map(option => ({
+      id: option.id,
+      title: option.title,
+      consequence: option.consequence,
+      recommended: option.recommended,
+      recommendReason: option.recommendReason,
+      riskLevel: option.riskLevel,
+      autoExecuteAt: null
+    })),
+    allowCustomInput: clarification.allowCustomInput,
+    answer: null
+  }
+  const card: ClarificationMessage = {
+    kind: 'clarification',
+    id: nextId('m'),
+    createdAt: Date.now(),
+    intro: clarification.intro,
+    questions: [question],
+    answered: false
+  }
+  pushMessage(rt, card)
+  setStatus(rt, 'awaiting_clarification')
+  setBlocker(rt, {
+    id: nextId('blk'),
+    type: 'clarification',
+    title: '需要确认一个关键问题',
+    description: '本轮只确认这一项；回答后会继续判断是否还有下一个阻断问题。',
+    options: [{
+      id: 'opt-goto-answer',
+      title: '去回答',
+      consequence: '跳到对话中的单问题澄清卡片',
+      recommended: true,
+      recommendReason: '确认关键边界后再生成，避免做出错误业务流程',
+      riskLevel: 'low',
+      autoExecuteAt: null
+    }],
+    relatedMessageId: card.id
+  })
+  save(rt)
+}
+
+/** 将内部异常转换为不泄漏本地路径、长度受限的用户可见错误。 */
+function safeBusinessAppError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error)
+  if (/Executable doesn't exist|playwright install/i.test(raw)) {
+    return '浏览器验收环境不可用：请安装 Chromium、Chrome 或 Edge'
+  }
+  return raw
+    .replace(/[A-Za-z]:\\[^\r\n]+/g, '[本地路径]')
+    .replace(/\s+/g, ' ')
+    .slice(0, 300)
+}
+
+/** 把失败门禁整理为包含期望、实际、复现与验收条件的修复契约。 */
+function iduxFailureContract(gates: ValidationGateResult[]): string {
+  return gates.slice(0, 4).map(gate =>
+    `【${gate.id}】期望：${gate.title}；实际：${gate.detail ?? '门禁未通过'}；复现：按该门禁对应的双视口任务场景执行；验收：复检状态必须为 passed。`
+  ).join('\n')
+}
+
+/** 按图片实际尺寸生成参考图精读区域，并保证所有区域不越界。 */
+function businessAppReferenceRegions(width: number, height: number): Region[] {
+  const clamp = (left: number, top: number, regionWidth: number, regionHeight: number): Region => {
+    const safeLeft = Math.min(Math.max(0, Math.round(left)), width - 1)
+    const safeTop = Math.min(Math.max(0, Math.round(top)), height - 1)
+    return {
+      left: safeLeft,
+      top: safeTop,
+      width: Math.max(1, Math.min(Math.round(regionWidth), width - safeLeft)),
+      height: Math.max(1, Math.min(Math.round(regionHeight), height - safeTop))
+    }
+  }
+  return [
+    clamp(0, 0, width, height * 0.3),
+    clamp(0, height * 0.25, width * 0.6, height * 0.5),
+    clamp(width * 0.55, height * 0.25, width * 0.45, height * 0.5),
+    clamp(0, height * 0.7, width, height * 0.3)
+  ]
+}
+
+/**
+ * 执行完整 business-app Loop。
+ *
+ * 流程覆盖逐问澄清、参考图分析、增量规划、受控构建、双视口场景验收、策略化修复和原子提交。
+ * 未通过全部门禁的候选只保留在工作状态中，不会污染已提交版本。
+ */
+async function runBusinessAppGeneration(
+  rt: Runtime,
+  request: string,
+  attachments: string[]
+): Promise<void> {
+  if (rt.running) return
+  rt.running = true
+  setStatus(rt, 'generating')
+  updateDashboard(rt, { status: 'generating' })
+  emitPlan(rt, attachments.length > 0 ? BUSINESS_APP_IMAGE_STAGE_TITLES : BUSINESS_APP_STAGE_TITLES)
+  emitBusinessAppGraphSkeleton(rt)
+
+  const businessAppState = getBusinessAppState(rt)
+  const resumeCandidate = BUSINESS_APP_CONTINUE_REQUEST.test(request.trim()) && businessAppState.unresolved
+  if (!resumeCandidate) {
+    businessAppState.decisions = []
+    businessAppState.requirementContract = null
+    businessAppState.pendingClarification = null
+    businessAppState.checkpoint = null
+    businessAppState.candidateBlueprint = null
+    businessAppState.candidateChangePlan = null
+  }
+  const baseRevisionId = resumeCandidate
+    ? businessAppState.candidateRevisionId
+    : rt.s.dashboard.currentRevisionId
+  const baseDraft = baseRevisionId
+    ? store.readArtifactDraft(rt.s.dashboard.id, baseRevisionId)
+    : null
+  const requirement = effectiveBusinessAppRequest(rt, request)
+  const revisionId = resumeCandidate && businessAppState.candidateRevisionId
+    ? businessAppState.candidateRevisionId
+    : nextId('ver')
+  businessAppState.candidateRevisionId = revisionId
+  if (!resumeCandidate) businessAppState.strategiesTried = []
+  businessAppState.lastFailure = null
+  save(rt)
+  const workspace = store.artifactWorkspaceDir(rt.s.dashboard.id, revisionId)
+  const outputDir = store.previewDir(rt.s.dashboard.id, revisionId)
+  let generated: Awaited<ReturnType<typeof generateBusinessApp>> | null = null
+  let requirementContract = businessAppState.requirementContract
+  const activeBlueprint = resumeCandidate
+    ? businessAppState.candidateBlueprint ?? businessAppState.blueprint
+    : businessAppState.blueprint
+  let reference: Awaited<ReturnType<typeof analyzeBusinessAppReference>> | null =
+    attachments.length === 0 && resumeCandidate ? businessAppState.reference ?? null : null
+  let referenceImage: string | null = attachments.length === 0 && resumeCandidate && reference
+    ? [...rt.s.messages]
+        .reverse()
+        .flatMap(message => message.kind === 'user' ? message.attachmentUrls : [])
+        .find(item => /^data:image\//i.test(item)) ?? null
+    : null
+  let draft: Awaited<ReturnType<typeof generateBusinessApp>>['draft'] | null = null
+  let staticReport: ValidationReport | null = null
+  let build: Awaited<ReturnType<typeof buildBusinessApp>> | null = null
+  let runtime: Awaited<ReturnType<typeof validateBuiltBusinessApp>> | null = null
+  let validationReport: ValidationReport | null = null
+  let failedGates: ValidationGateResult[] = []
+  let repairCount = 0
+  let currentIssue: Issue | null = null
+  let latestError = '业务应用生成未完成'
+  let committed = false
+
+  const executors: Record<string, NodeExecutor> = {
+    /** 收敛需求契约；存在阻塞未知项时携带持久化产出挂起。 */
+    requirements: {
+      async execute() {
+        activateStage(rt, 'st-1')
+        const step = startStep(rt, 'st-1', '把业务目标收敛为可追踪、可验收的需求契约')
+        const analysis = await analyzeBusinessAppRequirement(requirement, {
+          decisions: businessAppState.decisions,
+          currentBlueprint: activeBlueprint,
+          settings: cachedSettings
+        })
+        requirementContract = analysis.contract
+        businessAppState.requirementContract = analysis.contract
+        businessAppState.pendingClarification = analysis.clarification
+        save(rt)
+        if (analysis.clarification) {
+          finishStep(rt, step, `发现关键阻断项：${analysis.clarification.topic}；等待本轮一个回答`)
+          emitBusinessAppClarification(rt, analysis.clarification)
+          return {
+            kind: 'suspend',
+            reason: 'business-app-clarification',
+            output: {
+              contractStatus: analysis.contract.status,
+              clarificationTopic: analysis.clarification.topic
+            }
+          }
+        }
+        businessAppState.pendingClarification = null
+        finishStep(rt, step, `需求契约已就绪：${analysis.contract.capabilities.length} 项能力、${analysis.contract.acceptanceCriteria.length} 条验收标准`)
+        finishStage(rt, 'st-1')
+        return {
+          kind: 'done',
+          output: {
+            contractStatus: 'ready',
+            capabilityCount: analysis.contract.capabilities.length,
+            acceptanceCount: analysis.contract.acceptanceCriteria.length
+          }
+        }
+      }
+    },
+    /** 分析可选参考图，规划完整应用蓝图并收集 IDux 证据。 */
+    planner: {
+      async execute() {
+        activateStage(rt, 'st-2')
+        let step = startStep(
+          rt,
+          'st-2',
+          attachments.length > 0 ? '分析业务应用参考图与业务目标' : '锁定产物类型与原始业务目标'
+        )
+        if (attachments.length > 0) {
+          const capability = await getCapability()
+          if (!capability.ok) {
+            latestError = '模型能力探测失败，无法可靠分析业务应用参考图'
+            throw new Error(latestError)
+          }
+          if (!capability.supportsVision) {
+            latestError = '当前模型不支持图片理解，不能在忽略参考图的情况下生成业务应用'
+            throw new Error(latestError)
+          }
+          referenceImage = attachments.find(item => /^data:image\//i.test(item)) ?? null
+          if (!referenceImage) {
+            latestError = '没有找到可分析的 PNG、JPEG 或 WebP 参考图'
+            throw new Error(latestError)
+          }
+          let crops: string[] = []
+          const replicaEnv = await probeReplicaEnv()
+          if (replicaEnv.sharpOk) {
+            const size = await imageSize(referenceImage)
+            crops = await cropImageDataUrl(
+              referenceImage,
+              businessAppReferenceRegions(size.width, size.height)
+            )
+          }
+          try {
+            reference = await analyzeBusinessAppReference(
+              cachedSettings,
+              requirement,
+              referenceImage,
+              crops
+            )
+            businessAppState.reference = reference
+            save(rt)
+          } catch (error) {
+            latestError = safeBusinessAppError(error)
+            throw error
+          }
+          finishStep(
+            rt,
+            step,
+            `已提取参考图的应用结构、导航、内容层级与视觉证据，置信度 ${reference.analysis.confidence}`
+          )
+        } else {
+          finishStep(
+            rt,
+            step,
+            reference
+              ? '已恢复累计需求、失败候选与上一轮参考图蓝图'
+              : '已锁定 Vue 3 + IDux 2.11.0 业务应用技术栈'
+          )
+        }
+        finishStage(rt, 'st-2')
+
+        activateStage(rt, 'st-3')
+        step = startStep(rt, 'st-3', '通过 idux-cli 查询所需组件 API，并加载 idux-style 应用规范')
+        if (!requirementContract || requirementContract.status !== 'ready') {
+          throw new Error('需求契约未就绪，拒绝规划业务应用')
+        }
+        generated = await generateBusinessApp(
+          workspace,
+          requirementContract,
+          {
+            currentBlueprint: activeBlueprint,
+            baseRevisionId,
+            settings: cachedSettings,
+            presentation: reference ? {
+              navigation: reference.analysis.navigation === 'none' ? 'side' : reference.analysis.navigation,
+              theme: reference.analysis.theme
+            } : undefined,
+            referenceAnalysis: reference?.analysis,
+            referenceEvidence: reference?.evidence ?? (activeBlueprint ? businessAppState.reference?.evidence : undefined)
+          }
+        )
+        draft = generated.draft
+        businessAppState.candidateBlueprint = generated.blueprint
+        businessAppState.candidateChangePlan = generated.changePlan
+        save(rt)
+        finishStep(
+          rt,
+          step,
+          `证据版本 ${generated.evidence.iduxVersion}，提交 ${generated.evidence.sourceCommit.slice(0, 8)}`
+            + (baseDraft ? `；已在${resumeCandidate ? '失败候选' : '当前应用蓝图'}上执行增量变更计划` : '')
+        )
+        finishStage(rt, 'st-3')
+        return {
+          kind: 'done',
+          output: {
+            iduxVersion: generated.evidence.iduxVersion,
+            sourceCommit: generated.evidence.sourceCommit.slice(0, 8)
+          }
+        }
+      }
+    },
+    /** 执行静态准入、保存候选草稿并进行受控生产构建。 */
+    coder: {
+      async execute() {
+        activateStage(rt, 'st-4')
+        const step = startStep(
+          rt,
+          'st-4',
+          repairCount === 0 ? '校验源码并执行受控离线构建' : `应用第 ${repairCount} 轮修复后重新构建`
+        )
+        try {
+          if (!generated || !draft) throw new Error('业务应用的 IDux 组件证据或源码草稿缺失')
+          validateBusinessAppBuildInput(draft)
+          staticReport = artifactRegistry.get('business-app').validateDraft(draft)
+          failedGates = staticReport.gates.filter(gate => gate.status === 'failed')
+          if (failedGates.length > 0) {
+            latestError = failedGates[0]?.detail || failedGates[0]?.title || '业务应用源码门禁未通过'
+            finishStep(rt, step, `发现 ${failedGates.length} 项源码问题，进入自动修复`)
+            finishStage(rt, 'st-4')
+            return {
+              kind: 'done',
+              output: { passed: false, issueCount: failedGates.length, attempt: repairCount + 1 }
+            }
+          }
+
+          store.writeArtifactDraft(rt.s.dashboard.id, revisionId, draft)
+          store.writeArtifactEvidence(rt.s.dashboard.id, revisionId, generated.evidence)
+          build = await buildBusinessApp(workspace, outputDir)
+          finishStep(rt, step, `构建完成，用时 ${(build.durationMs / 1000).toFixed(1)} 秒`)
+          finishStage(rt, 'st-4')
+          return {
+            kind: 'done',
+            output: { passed: true, issueCount: 0, attempt: repairCount + 1 }
+          }
+        } catch (error) {
+          latestError = safeBusinessAppError(error)
+          failedGates = [{
+            id: 'production-build',
+            title: '生产构建成功',
+            status: 'failed',
+            detail: latestError
+          }]
+          finishStep(rt, step, `${latestError}；进入自动修复`)
+          finishStage(rt, 'st-4')
+          return {
+            kind: 'done',
+            output: { passed: false, issueCount: 1, attempt: repairCount + 1 }
+          }
+        }
+      }
+    },
+    /** 执行双视口结构、交互场景、安全网络和视觉模型复核。 */
+    check: {
+      async execute() {
+        activateStage(rt, 'st-5')
+        const step = startStep(rt, 'st-5', '在 1920×1080 与 1366×768 执行需求场景、浏览器与视觉验收')
+        if (!generated || !staticReport || !build || !draft) {
+          return { kind: 'failed', error: new Error('业务应用构建结果不完整，不能执行浏览器验收') }
+        }
+        const url = artifactPreviewUrl(rt.s.dashboard.id, revisionId, Date.now())
+        runtime = await validateBuiltBusinessApp(url, generated.blueprint.acceptanceScenarios)
+        const visualReview = await reviewBusinessAppVisual(
+          cachedSettings,
+          requirement,
+          runtime.screenshot,
+          runtime.smallScreenshot,
+          referenceImage,
+          runtime.scenarioScreenshots
+        )
+        validationReport = {
+          status: 'pending',
+          gates: [
+            ...staticReport.gates,
+            {
+              id: 'production-build',
+              title: '生产构建成功',
+              status: 'passed',
+              detail: `${runtimeVersionLabel()}，${(build.durationMs / 1000).toFixed(1)} 秒`
+            },
+            ...runtime.gates,
+            ...visualReview.gates
+          ]
+        }
+        failedGates = validationReport.gates.filter(gate => gate.status === 'failed')
+        validationReport.status = failedGates.length === 0 ? 'passed' : 'failed'
+
+        if (failedGates.length > 0) {
+          latestError = failedGates[0]?.detail || failedGates[0]?.title || '浏览器质量验收失败'
+          if (!currentIssue) {
+            const issueId = nextId('issue')
+            currentIssue = {
+              id: issueId,
+              stageId: 'st-6',
+              title: latestError,
+              attempt: repairCount + 1,
+              status: 'fixing',
+              beforeShotUrl: runtime.screenshot
+                ? persistShot(
+                    rt,
+                    issueId,
+                    'before',
+                    `data:image/png;base64,${runtime.screenshot.toString('base64')}`
+                  )
+                : null,
+              afterShotUrl: null,
+              detail: `${iduxFailureContract(failedGates)}\n当前策略：执行有边界的自动修复。`
+            }
+          } else {
+            currentIssue = {
+              ...currentIssue,
+              title: latestError,
+              attempt: repairCount + 1,
+              status: 'fixing',
+              detail: `${iduxFailureContract(failedGates)}\n第 ${repairCount + 1} 轮复检仍有 ${failedGates.length} 项阻断问题。`
+            }
+          }
+          setIssue(rt, currentIssue)
+          finishStep(rt, step, `发现 ${failedGates.length} 项阻断问题，进入自动修复`)
+        } else {
+          if (runtime.screenshot) store.writeCover(rt.s.dashboard.id, runtime.screenshot)
+          if (currentIssue) {
+            currentIssue = {
+              ...currentIssue,
+              status: 'fixed',
+              afterShotUrl: runtime.screenshot
+                ? persistShot(
+                    rt,
+                    currentIssue.id,
+                    'after',
+                    `data:image/png;base64,${runtime.screenshot.toString('base64')}`
+                  )
+                : null,
+              detail: `经过 ${repairCount} 轮自动修复，全部质量门禁复检通过。`
+            }
+            setIssue(rt, currentIssue)
+          }
+          finishStep(rt, step, `共 ${validationReport.gates.length} 项质量门禁通过`)
+        }
+        finishStage(rt, 'st-5')
+        return {
+          kind: 'done',
+          output: {
+            passed: failedGates.length === 0,
+            issueCount: failedGates.length,
+            attempt: repairCount + 1
+          }
+        }
+      }
+    },
+    /** 按确定性、模型、定向重生成和证据扩展阶梯自主修复。 */
+    repair: {
+      async execute() {
+        activateStage(rt, 'st-6')
+        const step = startStep(rt, 'st-6', `诊断并修复第 ${repairCount + 1} 轮质量问题`)
+        if (!draft) {
+          latestError = '没有可修复的业务应用源码草稿'
+          finishStep(rt, step, latestError, 'failed')
+          return { kind: 'failed', error: new Error(latestError) }
+        }
+        if (repairCount >= 4) {
+          latestError = `已依次尝试确定性修复、模型补丁、定向重生成和证据扩展，仍未通过：${latestError}`
+          if (currentIssue) {
+            currentIssue = { ...currentIssue, status: 'failed', detail: latestError }
+            setIssue(rt, currentIssue)
+          }
+          finishStep(rt, step, latestError, 'failed')
+          return { kind: 'suspend', reason: 'idux-quality-strategies-exhausted' }
+        }
+        if (!currentIssue) {
+          currentIssue = {
+            id: nextId('issue'),
+            stageId: 'st-6',
+            title: latestError,
+            attempt: repairCount + 1,
+            status: 'fixing',
+            beforeShotUrl: null,
+            afterShotUrl: null,
+            detail: `${iduxFailureContract(failedGates)}\n正在按策略阶梯自动修复。`
+          }
+          setIssue(rt, currentIssue)
+        }
+        const attempted = new Set(businessAppState.strategiesTried)
+        let repaired = repairBusinessAppDraft(draft, failedGates)
+        let strategy = 'deterministic-repair'
+        if (attempted.has(strategy) || repaired.actions.length === 0) {
+          repaired = { draft, actions: [] }
+          strategy = 'model-source-repair'
+        }
+        if (strategy === 'model-source-repair' && !attempted.has(strategy)) {
+          const modelRepair = await repairBusinessAppWithModel(
+            draft,
+            requirement,
+            failedGates,
+            cachedSettings
+          ).catch(() => null)
+          if (modelRepair) repaired = modelRepair
+        }
+        if (repaired.actions.length === 0) {
+          const issueContract = failedGates
+            .map(gate => `${gate.id}：期望“${gate.title}”；实际“${gate.detail ?? '未通过'}”`)
+            .join('；')
+          strategy = !attempted.has('targeted-regeneration')
+            ? 'targeted-regeneration'
+            : 'evidence-expanded-replan'
+          if (attempted.has(strategy)) {
+            latestError = `全部自主修复策略已经执行且复检失败：${latestError}`
+            finishStep(rt, step, latestError, 'failed')
+            return { kind: 'suspend', reason: 'idux-quality-strategies-exhausted' }
+          }
+          if (!requirementContract) throw new Error('缺少可追踪的需求契约，不能重新规划')
+          const repairContract: BusinessAppRequirementContract = {
+            ...requirementContract,
+            constraints: [
+              ...requirementContract.constraints,
+              `定向修复以下验收问题：${issueContract}`,
+              ...(strategy === 'evidence-expanded-replan'
+                ? ['重新核对所有相关 IDux 组件证据和完整交互状态']
+                : [])
+            ]
+          }
+          generated = await generateBusinessApp(workspace, repairContract, {
+            currentBlueprint: generated?.blueprint ?? businessAppState.candidateBlueprint ?? businessAppState.blueprint,
+            baseRevisionId,
+            settings: cachedSettings,
+            presentation: reference ? {
+              navigation: reference.analysis.navigation === 'none' ? 'side' : reference.analysis.navigation,
+              theme: reference.analysis.theme
+            } : undefined,
+            referenceAnalysis: reference?.analysis,
+            referenceEvidence: reference?.evidence ?? (activeBlueprint ? businessAppState.reference?.evidence : undefined)
+          })
+          repaired = {
+            draft: generated.draft,
+            actions: [strategy === 'evidence-expanded-replan'
+              ? '扩展组件证据后重新规划并生成受控页面'
+              : '依据失败的验收场景定向重新生成受控页面']
+          }
+          businessAppState.candidateBlueprint = generated.blueprint
+          businessAppState.candidateChangePlan = generated.changePlan
+        }
+        draft = repaired.draft
+        validateBusinessAppBuildInput(draft)
+        store.writeArtifactDraft(rt.s.dashboard.id, revisionId, draft)
+        businessAppState.strategiesTried.push(strategy)
+        repairCount += 1
+        finishStep(rt, step, `${repaired.actions.join('；')}（策略：${strategy}）`)
+        finishStage(rt, 'st-6')
+        return {
+          kind: 'done',
+          output: {
+            repairCount,
+            issueCount: failedGates.length
+          }
+        }
+      }
+    },
+    /** 只在质量报告全部通过后允许进入原子提交。 */
+    finish: {
+      async execute() {
+        if (rt.s.stages.find(stage => stage.id === 'st-6')?.state !== 'done') {
+          finishStage(rt, 'st-6')
+        }
+        activateStage(rt, 'st-7')
+        const step = startStep(rt, 'st-7', '固化需求契约、应用蓝图、证据、校验报告与可预览版本')
+        if (!generated || !draft || !runtime || validationReport?.status !== 'passed') {
+          latestError = '质量闭环尚未通过，拒绝提交版本'
+          finishStep(rt, step, latestError, 'failed')
+          return { kind: 'failed', error: new Error(latestError) }
+        }
+        finishStep(rt, step, repairCount > 0 ? `完成 ${repairCount} 轮修复并复检` : '首次验收即通过')
+        finishStage(rt, 'st-7')
+        return { kind: 'done', output: { passed: true, repairCount } }
+      }
+    }
+  }
+
+  try {
+    let engine: ReturnType<typeof createLoop>
+    engine = createLoop({
+      flowId: 'business-app-generation',
+      flowVersion: 2,
+      definition: BUSINESS_APP_FLOW,
+      resume: {
+        resume: {
+          'business-app-clarification': { node: 'requirements' }
+        }
+      },
+      executors,
+      stepTimeoutMs: 10 * 60 * 1000,
+      onNodeComplete: (_nodeId, graphState) => {
+        emitBusinessAppGraph(rt, businessAppGraphSnapshot(graphState))
+        businessAppState.checkpoint = engine.getCheckpoint()
+        save(rt)
+      },
+      onCommit: async graphState => {
+        emitBusinessAppGraph(rt, businessAppGraphSnapshot(graphState))
+        if (!generated || !draft || !runtime || !validationReport || validationReport.status !== 'passed') {
+          throw new Error('业务应用闭环结果不完整，拒绝提交版本')
+        }
+        const url = artifactPreviewUrl(rt.s.dashboard.id, revisionId, Date.now())
+        const n = rt.s.versions.length + 1
+        const coverUrl = runtime.screenshot
+          ? `/covers/${rt.s.dashboard.id}.png?t=${Date.now()}`
+          : rt.s.dashboard.coverUrl
+        const version: Version = {
+          id: revisionId,
+          label: `v${n}`,
+          summary: rt.s.versions.length === 0
+            ? '业务应用初版完成'
+            : truncate(request) || '更新业务应用',
+          createdAt: Date.now(),
+          screenshotUrl: coverUrl,
+          published: false,
+          isCurrent: true,
+          manifest: artifactRegistry.get('business-app').createManifest(draft),
+          validationReport
+        }
+        addVersion(rt, version, url)
+        previewReady(rt, revisionId, url)
+        pushAgent(
+          rt,
+          `业务应用已通过 ${validationReport.gates.length} 项质量门禁`
+            + (repairCount > 0 ? `，并完成 ${repairCount} 轮自动修复与复检。` : '。')
+        )
+        updateDashboard(rt, {
+          status: 'completed',
+          coverUrl,
+          targetProfile: artifactRegistry.get('business-app').createTargetProfile()
+        })
+        committed = true
+        businessAppState.unresolved = false
+        businessAppState.candidateRevisionId = null
+        businessAppState.strategiesTried = []
+        businessAppState.lastFailure = null
+        businessAppState.requirementContract = generated.contract
+        businessAppState.blueprint = generated.blueprint
+        businessAppState.changePlan = generated.changePlan
+        businessAppState.candidateBlueprint = null
+        businessAppState.candidateChangePlan = null
+        businessAppState.pendingClarification = null
+        businessAppState.checkpoint = null
+        save(rt)
+      }
+    })
+    if (resumeCandidate && businessAppState.checkpoint?.awaiting === 'business-app-clarification') {
+      await engine.handleEvent({ kind: 'restore-checkpoint', checkpoint: businessAppState.checkpoint })
+      await engine.handleEvent({ kind: 'resume' })
+    } else {
+      await engine.handleEvent({ kind: 'start', initialNode: 'requirements' })
+    }
+    if (engine.getState() === 'suspended' && businessAppState.pendingClarification) {
+      businessAppState.checkpoint = engine.getCheckpoint()
+      save(rt)
+      return
+    }
+    if (engine.getState() === 'blocked' || !committed) {
+      throw new Error(latestError)
+    }
+  } catch (error) {
+    const message = safeBusinessAppError(error)
+    const issue = currentIssue as Issue | null
+    if (issue) {
+      const failedIssue: Issue = { ...issue, status: 'failed', detail: message }
+      currentIssue = failedIssue
+      setIssue(rt, failedIssue)
+    } else {
+      setIssue(rt, {
+        id: nextId('issue'),
+        stageId: rt.s.stages.find(stage => stage.state === 'active')?.id ?? 'st-1',
+        title: message,
+        attempt: Math.max(1, repairCount + 1),
+        status: 'failed',
+        beforeShotUrl: null,
+        afterShotUrl: null,
+        detail: '质量门禁阻止了不可靠的业务应用进入版本历史。'
+      })
+    }
+    pushAgent(rt, `这次业务应用没有进入版本历史：${message}`)
+    businessAppState.unresolved = true
+    businessAppState.candidateRevisionId = revisionId
+    businessAppState.lastFailure = message
+    save(rt)
+    failActiveStage(rt, message)
+    const exhaustedStrategies = businessAppState.strategiesTried.length >= 3
+    const options: CardOption[] = [
+      ...(!exhaustedStrategies ? [{
+        id: 'opt-idux-retry',
+        title: '继续自主修复',
+        consequence: '保留需求契约、失败候选和验收证据，执行剩余策略',
+        recommended: true,
+        recommendReason: '仍有尚未执行的自主策略',
+        riskLevel: 'low' as const,
+        autoExecuteAt: null
+      }] : []),
+      {
+        id: 'opt-idux-adjust',
+        title: '调整需求',
+        consequence: '补充或改变验收目标后继续，原需求仍会保留在项目上下文中',
+        recommended: exhaustedStrategies,
+        recommendReason: exhaustedStrategies ? '所有自主修复策略已经执行并复检失败，需要新的业务约束才能改变结果' : null,
+        riskLevel: 'medium',
+        autoExecuteAt: null
+      },
+      {
+        id: 'opt-assist',
+        title: '人工协助',
+        consequence: '把完整失败轨迹交给支持人员检查',
+        recommended: false,
+        recommendReason: null,
+        riskLevel: 'medium',
+        autoExecuteAt: null
+      }
+    ]
+    const problem: ProblemMessage = {
+      kind: 'problem',
+      id: nextId('m'),
+      createdAt: Date.now(),
+      title: exhaustedStrategies ? '自主修复策略已全部尝试' : '当前环境无法继续自主修复',
+      description: message,
+      options,
+      chosenOptionId: null,
+      relatedIssueId: currentIssue?.id ?? null
+    }
+    pushMessage(rt, problem)
+    setBlocker(rt, {
+      id: nextId('blk'),
+      type: 'failed',
+      title: problem.title,
+      description: problem.description,
+      options,
+      relatedMessageId: problem.id
+    })
+    setStatus(rt, 'blocked')
+    updateDashboard(rt, { status: 'needs_attention' })
+  } finally {
+    rt.running = false
+    if (committed) setStatus(rt, 'idle')
+    drainQueue(rt)
+  }
+}
+
+/** 返回质量报告展示使用的固定构建运行时版本。 */
+function runtimeVersionLabel(): string {
+  return 'Vite 6.4.3'
 }
 
 function completeRun(rt: Runtime, run: ActiveRun): void {
@@ -2907,7 +3926,11 @@ function drainQueue(rt: Runtime): void {
       updateMessage(rt, m)
     }
   }
-  startEditFlow(rt, text, attachments)
+  if (rt.s.dashboard.artifactKind === 'business-app') {
+    void runBusinessAppGeneration(rt, text, attachments)
+  } else {
+    startEditFlow(rt, text, attachments)
+  }
 }
 
 /* ============================== 主流程：增量修改（精简 3 步） ============================== */
@@ -2986,6 +4009,7 @@ async function runEdit(rt: Runtime, run: ActiveRun): Promise<void> {
 
 /* ============================== 消息入口 ============================== */
 
+/** 接收用户消息，并按当前运行状态路由到新建、增量、澄清或失败恢复流程。 */
 export function handleSendMessage(dashId: string, text: string, attachments: string[] = []): void {
   const rt = mustRuntime(dashId)
   const queued = rt.s.runStatus === 'generating'
@@ -3004,6 +4028,10 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
   }
   switch (rt.s.runStatus) {
     case 'idle':
+      if (rt.s.dashboard.artifactKind === 'business-app') {
+        void runBusinessAppGeneration(rt, text, attachments)
+        break
+      }
       if (rt.s.versions.length === 0) {
         const run: ActiveRun = {
           pending: newPending('create', text, attachments),
@@ -3022,7 +4050,12 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
       resolveClarificationWithText(rt, text)
       break
     case 'blocked':
-      handleFreeTextDuringBlocked(rt, text)
+      if (rt.s.dashboard.artifactKind === 'business-app') {
+        setBlocker(rt, null)
+        void runBusinessAppGeneration(rt, text, attachments)
+      } else {
+        handleFreeTextDuringBlocked(rt, text)
+      }
       break
     case 'assisting':
       pushAgent(rt, '支持人员正在处理，稍等一下～')
@@ -3032,6 +4065,7 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
 
 /* ============================== 澄清回答 ============================== */
 
+/** 保存结构化澄清回答，并恢复对应产物类型的挂起流程。 */
 export function handleAnswerClarification(dashId: string, messageId: string, answers: ClarificationAnswer[]): void {
   const rt = mustRuntime(dashId)
   if (rt.s.runStatus !== 'awaiting_clarification') return
@@ -3043,6 +4077,10 @@ export function handleAnswerClarification(dashId: string, messageId: string, ans
     }
     m.answered = true
     updateMessage(rt, m)
+    if (rt.s.dashboard.artifactKind === 'business-app') {
+      continueBusinessAppAfterClarification(rt, m, answers)
+      return
+    }
     continueAfterClarification(rt, m)
   }
 }
@@ -3057,8 +4095,50 @@ function resolveClarificationWithText(rt: Runtime, text: string): void {
     m.answered = true
     updateMessage(rt, m)
   }
+  if (rt.s.dashboard.artifactKind === 'business-app' && m) {
+    continueBusinessAppAfterClarification(rt, m, [{
+      questionId: m.questions[0]?.id ?? 'business-app-question',
+      optionId: '',
+      customText: text
+    }])
+    return
+  }
   pushAgent(rt, '好的，就按你说的来。')
   continueAfterClarification(rt, m ?? null)
+}
+
+/**
+ * 将单问题回答写入 business-app 决策历史，并触发同一候选版本续跑。
+ * 下一轮仍先重新分析阻塞未知项，不会绕过需求就绪检查直接生成。
+ */
+function continueBusinessAppAfterClarification(
+  rt: Runtime,
+  message: ClarificationMessage,
+  answers: ClarificationAnswer[]
+): void {
+  const state = getBusinessAppState(rt)
+  const clarification = state.pendingClarification
+  const question = message.questions[0]
+  const answer = answers.find(item => item.questionId === question?.id)
+  const option = question?.options.find(item => item.id === answer?.optionId)
+  const value = answer?.customText?.trim() || option?.title || question?.answer?.trim() || ''
+  if (!clarification || !question || !value) {
+    pushAgent(rt, '这项回答还没有有效内容，请重新补充。')
+    return
+  }
+  state.decisions.push({
+    id: nextId('decision'),
+    questionId: clarification.topic,
+    question: clarification.question,
+    answer: value,
+    source: answer?.customText?.trim() ? 'custom' : 'option',
+    createdAt: Date.now()
+  })
+  state.decisions = state.decisions.slice(-30)
+  setBlocker(rt, null)
+  pushAgent(rt, '这项已确认。我会先继续检查剩余关键边界；只有需求契约就绪后才开始生成。')
+  save(rt)
+  void runBusinessAppGeneration(rt, '继续', [])
 }
 
 function continueAfterClarification(rt: Runtime, m: ClarificationMessage | null): void {
@@ -3104,6 +4184,16 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
   rt.activeRun = run
 
   switch (optionId) {
+    case 'opt-idux-retry': {
+      pushAgent(rt, '我会保留失败候选、需求契约和验收证据，继续执行自主诊断与修复。')
+      void runBusinessAppGeneration(rt, '继续', [])
+      break
+    }
+    case 'opt-idux-adjust': {
+      pushAgent(rt, '请直接补充需要调整的业务目标或验收结果；我会把它作为新的变更需求重新收敛。')
+      setStatus(rt, 'idle')
+      break
+    }
     case 'opt-retry':
     case 'opt-retry-alt':
     case 'opt-retry-llm': {
@@ -3276,17 +4366,16 @@ function rebuildActiveRun(rt: Runtime): ActiveRun | null {
 function doRollback(rt: Runtime, versionId: string): void {
   const target = rt.s.versions.find((v) => v.id === versionId)
   if (!target) return
-  const html = store.readPreview(rt.s.dashboard.id, versionId)
-  if (html === null) return
   // 继承原版本的数据来源明细（回退产物是同一份页面，数据来源不变）
   const inheritedMeta = store.readVersionMeta<DataUseEntry[]>(rt.s.dashboard.id, versionId)
   const n = rt.s.versions.length + 1
   const id = nextId('ver')
-  store.writePreview(rt.s.dashboard.id, id, html) // 复制产物生成新节点，历史不删
-  if (inheritedMeta && inheritedMeta.length > 0) {
-    store.writeVersionMeta(rt.s.dashboard.id, id, inheritedMeta)
+  if (target.manifest.kind === 'business-app') {
+    store.copyArtifactRevision(rt.s.dashboard.id, versionId, id)
+  } else {
+    store.copyPreviewRevision(rt.s.dashboard.id, versionId, id)
   }
-  const url = `/preview/${rt.s.dashboard.id}/${id}/index.html`
+  const url = artifactPreviewUrl(rt.s.dashboard.id, id)
   const v: Version = {
     id,
     label: `v${n}`,
@@ -3295,7 +4384,9 @@ function doRollback(rt: Runtime, versionId: string): void {
     screenshotUrl: target.screenshotUrl,
     published: false,
     isCurrent: true,
-    dataSourcesUsed: inheritedMeta && inheritedMeta.length > 0 ? inheritedMeta : undefined
+    dataSourcesUsed: inheritedMeta && inheritedMeta.length > 0 ? inheritedMeta : undefined,
+    manifest: target.manifest,
+    validationReport: target.validationReport
   }
   addVersion(rt, v, url)
   previewReady(rt, id, url)
@@ -3339,16 +4430,112 @@ function emitPublishProgress(
  * 真实发布主流程（异步推进，进度通过 publishProgress 事件实时推给发布弹窗）。
  * 任何环节失败推 failed 进度；成功把 publicUrl 写进当前版本并标记已发布。
  */
+const MAX_PUBLISH_HTML_BYTES = 20 * 1024 * 1024
+
+function trustedPreviewAsset(
+  projectId: string,
+  revisionId: string,
+  reference: string,
+  relativeTo = ''
+): { content: Buffer; filePath: string } {
+  const cleanReference = reference.split(/[?#]/, 1)[0]
+  if (
+    !cleanReference ||
+    /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(cleanReference) ||
+    cleanReference.includes('\0')
+  ) {
+    throw new PublishError(`业务应用发布产物包含不受信任的资源地址：${reference}`)
+  }
+  const root = fs.realpathSync(store.previewDir(projectId, revisionId))
+  const normalizedReference = decodeURIComponent(cleanReference).replace(/^\/+/, '')
+  const candidate = path.resolve(root, relativeTo, normalizedReference)
+  const filePath = fs.realpathSync(candidate)
+  const relative = path.relative(root, filePath)
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new PublishError(`业务应用发布资源越出了受控预览目录：${reference}`)
+  }
+  if (!fs.statSync(filePath).isFile()) {
+    throw new PublishError(`业务应用发布资源不是普通文件：${reference}`)
+  }
+  return { content: fs.readFileSync(filePath), filePath }
+}
+
+function assetMimeType(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase()
+  const types: Record<string, string> = {
+    '.avif': 'image/avif',
+    '.gif': 'image/gif',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.webp': 'image/webp',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2'
+  }
+  const mime = types[extension]
+  if (!mime) throw new PublishError(`业务应用样式引用了不允许内联的资源类型：${extension || '未知'}`)
+  return mime
+}
+
+function inlineCssAssets(
+  projectId: string,
+  revisionId: string,
+  cssFilePath: string,
+  css: string
+): string {
+  const previewRoot = fs.realpathSync(store.previewDir(projectId, revisionId))
+  const relativeDirectory = path.relative(previewRoot, path.dirname(cssFilePath))
+  return css.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi, (match, _quote, reference: string) => {
+    if (/^(?:data:|#)/i.test(reference.trim())) return match
+    const asset = trustedPreviewAsset(projectId, revisionId, reference.trim(), relativeDirectory)
+    return `url("data:${assetMimeType(asset.filePath)};base64,${asset.content.toString('base64')}")`
+  })
+}
+
+function inlineBusinessAppPreview(projectId: string, revisionId: string, html: string): string {
+  let result = html.replace(/<link\b[^>]*>/gi, tag => {
+    if (!/\brel\s*=\s*["']stylesheet["']/i.test(tag)) return tag
+    const href = /\bhref\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1]
+    if (!href) throw new PublishError('业务应用发布产物的样式标签缺少 href')
+    const asset = trustedPreviewAsset(projectId, revisionId, href)
+    const css = inlineCssAssets(projectId, revisionId, asset.filePath, asset.content.toString('utf8'))
+    return `<style data-inlined-from="${path.basename(asset.filePath)}">${css}</style>`
+  })
+  result = result.replace(
+    /<script\b([^>]*)\bsrc\s*=\s*["']([^"']+)["']([^>]*)><\/script>/gi,
+    (_tag, before, source, after) => {
+      const asset = trustedPreviewAsset(projectId, revisionId, source)
+      const script = asset.content.toString('utf8')
+      if (/\b(?:import\s*(?:\(|["'{*])|export\s+(?:\*|{))/m.test(script)) {
+        throw new PublishError('业务应用构建结果包含拆分模块，当前发布器无法安全合并，请重新生成后再试')
+      }
+      return `<script${before}${after}>${script}</script>`
+    }
+  )
+  if (Buffer.byteLength(result, 'utf8') > MAX_PUBLISH_HTML_BYTES) {
+    throw new PublishError('业务应用发布产物内联后超过 20MB 安全上限')
+  }
+  if (/(?:src|href)\s*=\s*["']\s*(?:\.?\/)?assets\//i.test(result)) {
+    throw new PublishError('业务应用发布产物仍包含未内联的本地资源')
+  }
+  return result
+}
+
 async function runPublish(rt: Runtime, cur: Version): Promise<void> {
   const dashId = rt.s.dashboard.id
   try {
+    if (cur.validationReport.status !== 'passed') {
+      throw new PublishError('当前版本没有通过全部质量门禁，已阻止发布')
+    }
     emitPublishProgress(rt, 'uploading', '正在准备云端环境（创建/复用 CodeBox、配置访问）…')
     const html = store.readPreview(dashId, cur.id)
     if (html === null) throw new PublishError('这个版本的页面文件找不到了，可能已被清理')
     // 发布单文件：把 data.json 内联进 HTML（云端只上传 index.html，需自带数据）
-    const dataJson = store.readDataFileText(dashId, cur.id)
-    const htmlToPublish = inlineDataIntoHtml(html, dataJson)
-    const cfg = getPublishConfig()
+    const htmlToPublish = cur.manifest.kind === 'business-app'
+      ? inlineBusinessAppPreview(dashId, cur.id, html)
+      : inlineDataIntoHtml(html, store.readDataFileText(dashId, cur.id))
+    const cfg = { ...cachedPublishConfig }
     const name = codeBoxName(dashId)
     emitPublishProgress(rt, 'uploading', '正在把大屏上传到云端…')
     // 上传完成后切到 serving 阶段（起服务 + 暴露公网）
@@ -3472,7 +4659,8 @@ function emptySession(dash: Dashboard): SessionData {
     graph: null,
     assistSession: null,
     previewResolution: '1920x1080',
-    pendingRun: null
+    pendingRun: null,
+    businessAppState: undefined
   }
 }
 
@@ -3481,10 +4669,38 @@ function makeRuntime(s: SessionData): Runtime {
   if (s.runStatus === 'generating' || s.runStatus === 'assisting') {
     s.runStatus = 'idle'
     s.pendingRun = null
+    const interruptedAt = Date.now()
+    for (const stage of s.stages ?? []) {
+      if (stage.state === 'active') {
+        stage.state = 'failed'
+        stage.finishedAt = interruptedAt
+        stage.detail = '服务重启中断了本轮执行，可继续恢复失败候选'
+      }
+    }
+    for (const step of s.steps ?? []) {
+      if (step.state === 'active') {
+        step.state = 'failed'
+        step.finishedAt = interruptedAt
+        step.detail = '服务重启中断'
+      }
+    }
+  }
+  s.dashboard.artifactKind ??= 'dashboard'
+  s.dashboard.targetProfile ??= targetProfileFor(s.dashboard.artifactKind)
+  const currentRevision = s.versions.find((version) => version.isCurrent) ?? null
+  s.dashboard.currentRevisionId ??= currentRevision?.id ?? null
+  for (const version of s.versions) {
+    version.manifest ??= manifestFor(s.dashboard.artifactKind)
+    version.validationReport ??= passedValidationReport('历史产物按兼容规则登记')
   }
   s.assistSession = null
   s.steps ??= [] // 旧版会话文件没有执行轨迹字段
   s.graph ??= null // 旧版会话文件没有流程图快照字段
+  if (s.dashboard.artifactKind === 'business-app') getBusinessAppState({ s } as Runtime)
+  s.preview.url = normalizePreviewUrl(s.preview.url)
+  for (const [versionId, url] of Object.entries(s.versionUrls)) {
+    s.versionUrls[versionId] = normalizePreviewUrl(url) ?? url
+  }
   const rt: Runtime = { s, running: false, queue: [], activeRun: null, autoTimer: null, timers: new Set(), stepsResetPending: false }
   sessions.set(s.dashboard.id, rt)
   return rt
@@ -3492,7 +4708,7 @@ function makeRuntime(s: SessionData): Runtime {
 
 function mustRuntime(dashId: string): Runtime {
   const rt = sessions.get(dashId)
-  if (!rt) throw new HttpError(404, `大屏不存在：${dashId}`)
+  if (!rt) throw new HttpError(404, `项目不存在：${dashId}`)
   return rt
 }
 
@@ -3528,6 +4744,8 @@ export function snapshotOf(rt: Runtime): WorkbenchSnapshot {
 export function syncAdapterSession(dashId: string, patch: {
   messages?: ChatMessage[]
   stages?: Stage[]
+  steps?: AgentStep[]
+  issues?: Issue[]
   versions?: Version[]
   versionUrls?: Record<string, string>
   runStatus?: RunStatus
@@ -3539,12 +4757,15 @@ export function syncAdapterSession(dashId: string, patch: {
   if (!rt) return
   if (patch.messages !== undefined) rt.s.messages = patch.messages
   if (patch.stages !== undefined) rt.s.stages = patch.stages
+  if (patch.steps !== undefined) rt.s.steps = patch.steps
+  if (patch.issues !== undefined) rt.s.issues = patch.issues
   if (patch.versions !== undefined) rt.s.versions = patch.versions
   if (patch.versionUrls !== undefined) rt.s.versionUrls = patch.versionUrls
   if (patch.runStatus !== undefined) rt.s.runStatus = patch.runStatus
   if (patch.blocker !== undefined) rt.s.blocker = patch.blocker
   if (patch.preview !== undefined) rt.s.preview = patch.preview
   if (patch.graph !== undefined) rt.s.graph = patch.graph
+  save(rt)
 }
 
 /**
@@ -3564,17 +4785,46 @@ export function listDashboards(): Dashboard[] {
   return [...sessions.values()].map((rt) => ({ ...rt.s.dashboard }))
 }
 
+export const listProjects = listDashboards
+
+export function listGenerationCapabilities(): Array<{
+  artifactKind: ArtifactKind
+  targetProfile: TargetProfile
+  skills: Array<{ id: string; name: string; description: string }>
+}> {
+  return artifactRegistry.list().map((adapter) => ({
+    artifactKind: adapter.kind,
+    targetProfile: adapter.createTargetProfile(),
+    skills: skillRegistry.forArtifact(adapter.kind).map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description
+    }))
+  }))
+}
+
 function persistDashboards(): void {
   store.saveDashboards(listDashboards())
 }
 
+export function getArtifactKind(id: string): ArtifactKind {
+  return mustRuntime(id).s.dashboard.artifactKind
+}
+
 export function createDashboard(name: string): Dashboard {
+  return createProject(name, 'dashboard')
+}
+
+export function createProject(name: string, artifactKind: ArtifactKind): Dashboard {
   const dash: Dashboard = {
     id: nextId('dash'),
-    name: name.trim() || '未命名大屏',
+    name: name.trim() || (artifactKind === 'dashboard' ? '未命名大屏' : '未命名页面'),
+    artifactKind,
+    targetProfile: targetProfileFor(artifactKind),
     status: 'completed',
     coverUrl: '',
     currentVersionLabel: null,
+    currentRevisionId: null,
     updatedAt: Date.now()
   }
   const rt = makeRuntime(emptySession(dash))
@@ -3590,12 +4840,10 @@ export function renameDashboard(id: string, name: string): Dashboard {
 }
 
 export function deleteDashboard(id: string): void {
-  const rt = sessions.get(id)
-  if (rt) {
-    for (const t of rt.timers) clearTimeout(t)
-    if (rt.autoTimer) clearTimeout(rt.autoTimer)
-    sessions.delete(id)
-  }
+  const rt = mustRuntime(id)
+  for (const t of rt.timers) clearTimeout(t)
+  if (rt.autoTimer) clearTimeout(rt.autoTimer)
+  sessions.delete(id)
   store.removeDashboardFiles(id)
   persistDashboards()
 }
@@ -3646,15 +4894,33 @@ export function uploadCover(id: string, image: unknown): void {
   updateDashboard(rt, { coverUrl: `/covers/${id}.png?t=${Date.now()}` })
 }
 
-export function exportVersion(id: string, versionId: string): { filename: string; html: string } {
+export async function exportVersion(
+  id: string,
+  versionId: string
+): Promise<{ filename: string; contentType: string; body: Buffer }> {
   const rt = mustRuntime(id)
   const v = rt.s.versions.find((x) => x.id === versionId)
   if (!v) throw new HttpError(404, `版本不存在：${versionId}`)
+  const adapter = artifactRegistry.get(v.manifest.kind)
+  const filename = adapter.exportFileName(rt.s.dashboard.name, v.label)
+  if (v.manifest.kind === 'business-app') {
+    const draft = store.readArtifactDraft(id, versionId)
+    if (!draft) throw new HttpError(404, '这个版本的业务应用源码找不到了，可能已被清理')
+    return {
+      filename,
+      contentType: 'application/zip',
+      body: await createBusinessAppSourceArchive(draft)
+    }
+  }
   const html = store.readPreview(id, versionId)
   if (html === null) throw new HttpError(404, '这个版本的页面文件找不到了，可能已被清理')
   // 下载单文件：把 data.json 内联进 HTML（保持自包含，脱离服务端仍能显示数据）
   const dataJson = store.readDataFileText(id, versionId)
-  return { filename: `${rt.s.dashboard.name}-${v.label}.html`, html: inlineDataIntoHtml(html, dataJson) }
+  return {
+    filename,
+    contentType: 'text/html; charset=utf-8',
+    body: Buffer.from(inlineDataIntoHtml(html, dataJson), 'utf8')
+  }
 }
 
 /* ============================== 初始数据（首次启动种入） ============================== */
@@ -3664,7 +4930,7 @@ const CLIENT_PREVIEW_DIR = path.resolve(process.cwd(), '../client/public/preview
 function seedVersion(rt: Runtime, label: string, summary: string, srcFile: string, published: boolean, isCurrent: boolean, createdAt: number): void {
   const id = `ver-seed-${rt.s.dashboard.id}-${label}`
   store.copyPreview(srcFile, rt.s.dashboard.id, id)
-  const url = `/preview/${rt.s.dashboard.id}/${id}/index.html`
+  const url = artifactPreviewUrl(rt.s.dashboard.id, id)
   rt.s.versions.push({
     id,
     label,
@@ -3672,18 +4938,31 @@ function seedVersion(rt: Runtime, label: string, summary: string, srcFile: strin
     createdAt,
     screenshotUrl: rt.s.dashboard.coverUrl,
     published,
-    isCurrent
+    isCurrent,
+    manifest: manifestFor(rt.s.dashboard.artifactKind),
+    validationReport: passedValidationReport('历史示例产物已按兼容规则登记')
   })
   rt.s.versionUrls[id] = url
   if (isCurrent) {
     rt.s.dashboard.currentVersionLabel = label
+    rt.s.dashboard.currentRevisionId = id
     rt.s.preview = { state: 'ready', url }
   }
 }
 
 function seedDashboard(id: string, name: string, status: Dashboard['status'], coverUrl: string): Runtime {
   const now = Date.now()
-  const dash: Dashboard = { id, name, status, coverUrl, currentVersionLabel: null, updatedAt: now }
+  const dash: Dashboard = {
+    id,
+    name,
+    artifactKind: 'dashboard',
+    targetProfile: targetProfileFor('dashboard'),
+    status,
+    coverUrl,
+    currentVersionLabel: null,
+    currentRevisionId: null,
+    updatedAt: now
+  }
   const rt = makeRuntime(emptySession(dash))
   rt.s.messages.push({
     kind: 'agent',
@@ -3755,6 +5034,7 @@ function seedIfEmpty(): void {
 /* ============================== 启动 ============================== */
 
 export function boot(): void {
+  skillRegistry.load()
   // 同步模板库（client/templates -> data/templates；源缺失时模板匹配自动降级）
   templatesRoot = syncTemplates(dirs.root)
   // 扫描模板 HTML 的 meta 标签构建内存目录（HTML 全文一并读入，供 Coder 注入）

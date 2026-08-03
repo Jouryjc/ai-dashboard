@@ -1,0 +1,4 @@
+interface:
+  display_name: "IDux Style"
+  short_description: "Design complete IDux business applications and task flows"
+  default_prompt: "Use $idux-style to design or replicate a coherent, safe, multi-view IDux business application."

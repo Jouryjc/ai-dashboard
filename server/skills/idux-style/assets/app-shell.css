@@ -1,0 +1,244 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-width: 1200px;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--ix-color-bg, #ffffff);
+  color: var(--ix-color-text);
+  font-family: var(--ix-font-family);
+}
+
+.business-app-shell {
+  min-height: 100vh;
+  background: var(--ix-color-bg, #ffffff);
+}
+
+.business-app-shell.navigation-side {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+}
+
+.app-navigation {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 28px 20px;
+  border-right: 1px solid var(--ix-color-border-secondary);
+  background: var(--ix-color-bg);
+}
+
+.app-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 28px;
+}
+
+.app-brand strong {
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.app-brand span,
+.data-mode-note,
+.view-heading p,
+.table-toolbar p,
+.content-section p {
+  color: var(--ix-color-text-secondary);
+}
+
+.module-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.module-navigation .ix-button {
+  justify-content: flex-start;
+  min-height: 40px;
+}
+
+.data-mode-note {
+  position: absolute;
+  right: 20px;
+  bottom: 24px;
+  left: 20px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.app-workspace {
+  width: min(1664px, 100%);
+  min-width: 0;
+  padding: 32px 48px 56px;
+}
+
+.top-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin: -32px -48px 28px;
+  padding: 16px 48px;
+  border-bottom: 1px solid var(--ix-color-border-secondary);
+  background: var(--ix-color-bg);
+}
+
+.app-brand.compact {
+  margin: 0;
+}
+
+.top-module-list,
+.heading-actions,
+.row-actions,
+.confirmation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.breadcrumb-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--ix-color-text-secondary);
+  font-size: 13px;
+}
+
+.view-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.view-heading h1 {
+  margin: 0 0 8px;
+  font-size: 30px;
+  line-height: 1.25;
+}
+
+.view-heading p,
+.table-toolbar p {
+  margin: 0;
+}
+
+.feedback-alert,
+.confirmation-card {
+  margin-bottom: 20px;
+}
+
+.confirmation-card h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.confirmation-card p {
+  margin: 0 0 16px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.summary-card .ix-card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.summary-card strong {
+  font-size: 28px;
+  line-height: 1.2;
+}
+
+.summary-card strong.success { color: var(--ix-color-success); }
+.summary-card strong.warning { color: var(--ix-color-warning); }
+.summary-card strong.error { color: var(--ix-color-error); }
+
+.summary-card small,
+.field-helper {
+  color: var(--ix-color-text-secondary);
+}
+
+.table-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.table-toolbar h2,
+.content-section h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.table-toolbar .ix-input {
+  width: 320px;
+}
+
+.row-actions {
+  flex-wrap: nowrap;
+}
+
+.form-card,
+.detail-card,
+.content-section {
+  max-width: 1200px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 28px;
+}
+
+.field-control,
+.field-control .ix-input,
+.field-control .ix-select,
+.field-control .ix-textarea {
+  width: 100%;
+}
+
+.content-section + .content-section {
+  margin-top: 16px;
+}
+
+@media (max-width: 1500px) {
+  .business-app-shell.navigation-side {
+    grid-template-columns: 208px minmax(0, 1fr);
+  }
+
+  .app-workspace {
+    padding: 24px 32px 40px;
+  }
+
+  .top-navigation {
+    margin: -24px -32px 24px;
+    padding: 14px 32px;
+  }
+
+  .summary-grid {
+    gap: 12px;
+  }
+
+  .view-heading h1 {
+    font-size: 26px;
+  }
+}

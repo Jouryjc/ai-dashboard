@@ -9,7 +9,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '../api'
-import type { Dashboard } from '../types'
+import type { ArtifactKind, Dashboard } from '../types'
 
 export const useDashboardsStore = defineStore('dashboards', () => {
   /* ---------- state ---------- */
@@ -52,9 +52,9 @@ export const useDashboardsStore = defineStore('dashboards', () => {
   }
 
   /** 新建大屏，返回新建的大屏（用于跳转工作台） */
-  async function create(name: string): Promise<Dashboard> {
+  async function create(name: string, artifactKind: ArtifactKind = 'dashboard'): Promise<Dashboard> {
     ensureSubscribed()
-    const d = await api.createDashboard(name)
+    const d = await api.createProject(name, artifactKind)
     applyUpdate(d)
     return d
   }

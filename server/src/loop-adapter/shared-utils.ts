@@ -4,6 +4,7 @@
  * 这些函数不依赖 Runtime/ActiveRun 状态，是纯数据处理逻辑。
  */
 import type { DataUseEntry } from '../wire'
+import { hasOnlyAllowedDashboardNetwork } from '../artifacts/dashboard/adapter'
 
 /* ============================== 文本工具 ============================== */
 
@@ -44,6 +45,8 @@ export function validateHtml(html: string): string[] {
   if (html.length < 2048) problems.push('内容太少，不像一个完整的大屏页面')
   if (/(?:src|href)\s*=\s*["']\s*https?:\/\//i.test(html) || /url\(\s*["']?\s*https?:\/\//i.test(html))
     problems.push('引用了外部资源（大屏要求所有内容都写在一个文件里）')
+  if (!hasOnlyAllowedDashboardNetwork(html))
+    problems.push("网络访问不安全（仅允许 fetch('./data.json')，禁止其他网络 API、表单和跳转）")
   return problems
 }
 
@@ -170,7 +173,7 @@ export interface DashboardDataItem {
  */
 export function buildDataItems(results: DataItemInput[]): DashboardDataItem[] {
   return results.map((r) => {
-    const norm = normalizeToolResult(r.text, r.tool)
+    const norm = normalizeToolResult(stripUrls(r.text), r.tool)
     const purpose = norm.kind === 'raw' ? `⚠️非标准结构 ${r.purpose}` : r.purpose
     return { source: r.source, 用途: purpose, kind: norm.kind, 数据: norm }
   })

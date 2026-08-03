@@ -38,12 +38,14 @@ onBeforeUnmount(() => window.clearTimeout(hintTimer))
       <div v-if="session.previewUrl" :style="frameStyle" class="shrink-0 overflow-hidden bg-ink">
         <iframe
           :src="session.previewUrl"
-          title="大屏全屏演示"
+          :title="session.artifactKind === 'business-app' ? '业务应用全屏预览' : '大屏全屏演示'"
           class="block h-full w-full border-0 bg-ink"
           sandbox="allow-scripts allow-same-origin"
         />
       </div>
-      <p v-else class="text-sm text-white/70">还没有可以演示的大屏</p>
+      <p v-else class="text-sm text-white/70">
+        还没有可以演示的{{ session.artifactKind === 'business-app' ? '业务应用' : '大屏' }}
+      </p>
     </div>
 
     <Transition name="hint-fade">

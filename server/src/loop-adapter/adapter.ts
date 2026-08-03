@@ -10,6 +10,8 @@
 import type { LoopEngine, GraphState, NodeId, NodeExecutor, FlowDefinition } from '../../../loop-engine/src'
 import { createLoop } from '../../../loop-engine/src'
 import { store } from '../store'
+import { artifactRegistry } from '../artifacts/registry'
+import { artifactPreviewUrl } from '../preview'
 import * as gw from '../gateway'
 import * as mcp from '../mcp'
 import { prompt } from '../prompts'
@@ -25,6 +27,7 @@ import {
 } from '../templates'
 import { probeReplicaEnv, imageSize, cropImageDataUrl, renderShotDataUrl, fetchGeoJson, geojsonToSvgPaths } from '../replica'
 import type {
+  AgentStep,
   ModelSettings,
   McpDataSource,
   Dashboard,
@@ -156,10 +159,15 @@ export class DashboardLoopAdapter {
   private clarificationMessageId: string | null = null
   /** 最近一次流程图快照（每次 emitGraphState 缓存，供 enterDashboard 刷新恢复） */
   private lastGraph: GraphSnapshot | null = null
+  private buildingPreviewLastPush = 0
+  private buildingPreviewSequence = 0
+  private stepsResetPending = false
   /** session 持久化状态（messages/stages/versions 等，与前端契约对齐） */
   private session: {
     messages: ChatMessage[]
     stages: Stage[]
+    steps: AgentStep[]
+    issues: Issue[]
     versions: Version[]
     versionUrls: Record<string, string>
     runStatus: RunStatus
@@ -177,20 +185,23 @@ export class DashboardLoopAdapter {
     // 从磁盘恢复 session（如有）
     const existing = this.storage.loadSession<typeof this.session>(dashId)
     this.session = existing ?? {
-      messages: [], stages: [], versions: [], versionUrls: {},
+      messages: [], stages: [], steps: [], issues: [], versions: [], versionUrls: {},
       runStatus: 'idle', blocker: null, preview: { state: 'empty', url: null }, graph: null
     }
+    this.session.steps ??= []
+    this.session.issues ??= []
     // 恢复 lastGraph（供后续 emitGraphState 增量更新）
     this.lastGraph = this.session.graph ?? null
   }
 
   /** 持久化 session 到磁盘 + 同步到 orchestrator Runtime（供前端 enterDashboard 读） */
   private save(): void {
-    this.storage.saveSession(this.dashId, this.session)
     // 同步到 orchestrator 的内存 Runtime，让 enterDashboard/snapshotOf 能读到最新状态
     syncAdapterSession(this.dashId, {
       messages: this.session.messages,
       stages: this.session.stages,
+      steps: this.session.steps,
+      issues: this.session.issues,
       versions: this.session.versions,
       versionUrls: this.session.versionUrls,
       runStatus: this.session.runStatus,
@@ -218,7 +229,16 @@ export class DashboardLoopAdapter {
       [CREATE_NODES.planner]: new PlannerExecutor({ llm: this.llm, visionOk, replica: { probeReplicaEnv, imageSize, cropImageDataUrl }, inputText: inputText ?? '', inputAttachments: inputAttachments ?? [] }),
       [CREATE_NODES.match]: new MatchExecutor({ llm: this.llm, templates: this.templateAdapter, templatesRoot: templatesRoot ?? '', visionOk }),
       [CREATE_NODES.fetch]: new FetchExecutor(this.llm, this.mcpAdapter, cachedDataSources),
-      [CREATE_NODES.coder]: new CoderExecutor(this.llm, this.templateAdapter, visionOk),
+      [CREATE_NODES.coder]: new CoderExecutor(
+        this.llm,
+        this.templateAdapter,
+        visionOk,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        partial => this.emitBuildingPreview(partial)
+      ),
       [CREATE_NODES.check]: new CheckExecutor(this.llm, checkVision, { renderShotDataUrl }),
       [CREATE_NODES.repair]: new RepairExecutor(this.llm),
       [CREATE_NODES.finish]: new FinishExecutor()
@@ -287,6 +307,9 @@ export class DashboardLoopAdapter {
     // create 流程不走 edit 数据回填，清空避免上一轮 edit 的残留数据落进新版本
     this.editDataFile = null
     this.editDataBlock = ''
+    this.session.steps = []
+    this.session.issues = []
+    this.stepsResetPending = true
     const hasImage = attachments.length > 0
     const hasDs = cachedDataSources.some((s) => s.enabled && s.url)
     this.engine = await this.createCreateEngine(hasImage, text, attachments)
@@ -313,6 +336,9 @@ export class DashboardLoopAdapter {
 
     this.pendingText = text
     this.currentHtml = currentHtml
+    this.session.steps = []
+    this.session.issues = []
+    this.stepsResetPending = true
 
     // 从源版本 data.json 回填数据上下文（修复 edit 图无 fetch 节点导致 dataBlock='' 的 bug）：
     // editDataFile 用于 commit 时写进新版本目录；editDataBlock 给 coder/repair LLM 看数据形状。
@@ -359,7 +385,22 @@ export class DashboardLoopAdapter {
 
     // opt-demo-data：清 dataBlock，继续
     if (optionId === 'opt-demo-data') {
-      this.engine?.patchNode(CREATE_NODES.fetch, { refs: { dataBlock: '' } })
+      const graphState = this.engine?.getGraphState()
+      if (graphState) {
+        void this.continueWithDemoData(graphState).catch(error => this.handleFatalError(error))
+      }
+      return
+    }
+
+    if (optionId === 'opt-custom-generate' || optionId === 'opt-use-nearest') {
+      const graphState = this.engine?.getGraphState()
+      if (graphState) {
+        void this.continueAfterTemplateChoice(
+          graphState,
+          optionId === 'opt-custom-generate'
+        ).catch(error => this.handleFatalError(error))
+      }
+      return
     }
 
     // opt-retry（让 AI 再试一次）：若是修复超预算挂起，重置 repair 的 attempt 计数，
@@ -374,6 +415,56 @@ export class DashboardLoopAdapter {
 
     // 其余选项：恢复流程
     this.runEngine({ kind: 'resume' })
+  }
+
+  private async continueWithDemoData(graphState: GraphState): Promise<void> {
+    graphState.nodes[CREATE_NODES.fetch]!.status = 'done'
+    graphState.nodes[CREATE_NODES.fetch]!.output = {
+      summary: '用户确认改用演示数据',
+      dataSourcesUsed: []
+    }
+    graphState.nodes[CREATE_NODES.fetch]!.refs = {
+      dataBlock: '',
+      dataFile: '[]'
+    }
+    graphState.nodes[CREATE_NODES.coder]!.status = 'pending'
+    graphState.current = CREATE_NODES.coder
+    graphState.awaiting = null
+    this.engine = await this.createCreateEngine(
+      this.pendingAttachments.length > 0,
+      this.pendingText,
+      this.pendingAttachments
+    )
+    this.emitRunStatus('generating')
+    this.emitAgentMessage('好的，这一版先用明确标注的演示数据继续生成。')
+    this.runEngine({ kind: 'restore', graphState })
+  }
+
+  private async continueAfterTemplateChoice(
+    graphState: GraphState,
+    custom: boolean
+  ): Promise<void> {
+    graphState.nodes[CREATE_NODES.match]!.status = 'done'
+    graphState.nodes[CREATE_NODES.match]!.output = {
+      layoutId: null,
+      layoutReason: custom ? '用户选择完全自定义生成' : '用户选择使用最接近的模板',
+      modules: [],
+      useTemplate: !custom
+    }
+    const nextNode = graphState.nodes[CREATE_NODES.fetch]
+      ? CREATE_NODES.fetch
+      : CREATE_NODES.coder
+    graphState.nodes[nextNode]!.status = 'pending'
+    graphState.current = nextNode
+    graphState.awaiting = null
+    this.engine = await this.createCreateEngine(
+      this.pendingAttachments.length > 0,
+      this.pendingText,
+      this.pendingAttachments
+    )
+    this.emitRunStatus('generating')
+    this.emitAgentMessage(custom ? '好的，我不套模板，按你的需求自定义生成。' : '好的，我用最接近的模板打底继续做。')
+    this.runEngine({ kind: 'restore', graphState })
   }
 
   /**
@@ -426,11 +517,24 @@ export class DashboardLoopAdapter {
     if (Array.isArray(inheritedData) && inheritedData.length > 0) {
       this.storage.writeDataFile(this.dashId, id, inheritedData)
     }
-    const url = `/preview/${this.dashId}/${id}/index.html`
+    const url = artifactPreviewUrl(this.dashId, id)
     const v: Version = {
       id, label: `v${n}`, summary: `回退到 ${versionId}`, createdAt: Date.now(),
       screenshotUrl: '', published: false, isCurrent: true,
-      dataSourcesUsed: inheritedMeta && inheritedMeta.length > 0 ? inheritedMeta : undefined
+      dataSourcesUsed: inheritedMeta && inheritedMeta.length > 0 ? inheritedMeta : undefined,
+      manifest: artifactRegistry.get('dashboard').createManifest({
+        entryFile: 'index.html',
+        files: {
+          'index.html': html,
+          ...(Array.isArray(inheritedData) && inheritedData.length > 0
+            ? { 'data.json': JSON.stringify(inheritedData) }
+            : {})
+        }
+      }),
+      validationReport: artifactRegistry.get('dashboard').validateDraft({
+        entryFile: 'index.html',
+        files: { 'index.html': html }
+      })
     }
     this.emitVersionAdded(v, url)
     this.emitPreviewReady(id, url)
@@ -482,12 +586,32 @@ export class DashboardLoopAdapter {
       this.storage.writeDataFile(this.dashId, id, dataFile)
     }
 
-    const url = `/preview/${this.dashId}/${id}/index.html`
+    const url = artifactPreviewUrl(this.dashId, id)
+    const artifactAdapter = artifactRegistry.get('dashboard')
+    const draft = {
+      entryFile: 'index.html',
+      files: {
+        'index.html': html,
+        ...(dataFile ? { 'data.json': JSON.stringify(dataFile) } : {})
+      }
+    }
+    const validationReport = artifactAdapter.validateDraft(draft)
+    if (validationReport.status !== 'passed') {
+      store.removePreviewRevision(this.dashId, id)
+      throw new Error(
+        `产物质量门禁未通过：${validationReport.gates
+          .filter(gate => gate.status === 'failed')
+          .map(gate => gate.title)
+          .join('、')}`
+      )
+    }
     const v: Version = {
       id, label: `v${n}`, summary: this.pendingText ? truncate(this.pendingText) : '完成',
       createdAt: Date.now(), screenshotUrl: coverFor(this.pendingText),
       published: false, isCurrent: true,
-      dataSourcesUsed: dataSourcesUsed && dataSourcesUsed.length > 0 ? dataSourcesUsed : undefined
+      dataSourcesUsed: dataSourcesUsed && dataSourcesUsed.length > 0 ? dataSourcesUsed : undefined,
+      manifest: artifactAdapter.createManifest(draft),
+      validationReport
     }
     this.emitVersionAdded(v, url)
     this.emitPreviewReady(id, url)
@@ -507,13 +631,16 @@ export class DashboardLoopAdapter {
   /** onProgress：节点执行中的实时进展（更新当前阶段的详情行，节流 600ms） */
   private progressLastPush = 0
   private handleProgress(nodeId: NodeId, detail: string): void {
+    this.trackStepProgress(nodeId, detail)
     const now = Date.now()
-    if (now - this.progressLastPush < 600) return // 节流 600ms
-    this.progressLastPush = now
     const stageId = this.nodeToStageId(nodeId)
     if (!stageId) return
+    const currentStage = this.session.stages.find(stage => stage.id === stageId)
+    const enteringStage = currentStage?.state !== 'active'
+    if (!enteringStage && now - this.progressLastPush < 600) return // 同阶段进展节流 600ms
+    this.progressLastPush = now
     // 找到当前阶段，更新 detail + 标记 active；首次进入时补 startedAt（否则耗时永远显示不出来）
-    const stage = this.session.stages.find((s) => s.id === stageId)
+    const stage = currentStage
     if (stage) {
       this.emitStage({
         ...stage,
@@ -534,6 +661,22 @@ export class DashboardLoopAdapter {
 
     // 节点失败：发失败卡片 + 转 blocked（failed 时 awaiting 为空，必须单独检测，否则会被当正常完成处理）
     if (nodeState.status === 'failed') {
+      this.finishStageSteps(nodeId, 'failed', (nodeState.output?.error as string) ?? '执行失败')
+      const nodeError = (nodeState.output?.error as string) ?? ''
+      if (
+        (nodeId === CREATE_NODES.coder || nodeId === EDIT_NODES.editCoder) &&
+        /超时|timeout|abort/i.test(nodeError)
+      ) {
+        void this.recoverCoderTimeout(gs, nodeId).catch(error => this.handleFatalError(error))
+        return
+      }
+      for (const issue of this.session.issues.filter(item => item.status === 'fixing')) {
+        this.emitIssue({
+          ...issue,
+          status: 'failed',
+          detail: (nodeState.output?.error as string) ?? '自动修复未完成。'
+        })
+      }
       const errMsg = (nodeState.output?.error as string) ?? '节点执行失败'
       this.handleFatalError(new Error(`${this.nodeToStageName(nodeId) ?? nodeId} 节点失败：${errMsg}`))
       return
@@ -541,12 +684,21 @@ export class DashboardLoopAdapter {
 
     // 挂起时：clarification 发澄清卡片，其他发 problem 卡片
     if (gs.awaiting) {
+      this.finishStageSteps(nodeId, 'done', '等待用户确认后继续')
       if (gs.awaiting === SUSPEND_TAGS.clarification) {
         this.handleClarification(gs, suspendPayload)
       } else {
         this.handleSuspend(gs.awaiting, gs)
       }
       return
+    }
+
+    this.finishStageSteps(nodeId, 'done', '完成')
+    if (nodeId === CREATE_NODES.match && typeof nodeState.output?.layoutReason === 'string') {
+      this.emitAgentMessage(`模板匹配好了：${nodeState.output.layoutReason}`)
+    }
+    if (nodeId === CREATE_NODES.check || nodeId === EDIT_NODES.editCheck) {
+      this.reconcileIssues(nodeState.output?.issueIds)
     }
 
     // 正常完成：映射引擎节点 -> 阶段 id（与 emitPlanStages 的 st-N 对齐）
@@ -765,6 +917,159 @@ export class DashboardLoopAdapter {
     return this.session.versions
   }
 
+  private stepTitle(nodeId: NodeId, detail: string): string {
+    if (nodeId === CREATE_NODES.planner) {
+      return /精读|裁出|认出了/.test(detail) ? '精读参考图' : '分析你的需求'
+    }
+    if (nodeId === CREATE_NODES.match) return '匹配可用模板'
+    if (nodeId === CREATE_NODES.fetch) {
+      const take = /(?:正在)?取数\s*(\d+\/\d+)/.exec(detail)
+      return take ? `取数 ${take[1]}` : '规划要取哪些数据'
+    }
+    if (nodeId === CREATE_NODES.coder) return '编写页面'
+    if (nodeId === CREATE_NODES.check || nodeId === EDIT_NODES.editCheck) return '硬性规则检查'
+    if (nodeId === CREATE_NODES.repair || nodeId === EDIT_NODES.editRepair) return '自动修复问题'
+    if (nodeId === CREATE_NODES.finish || nodeId === EDIT_NODES.editFinish) return '生成预览'
+    if (nodeId === EDIT_NODES.editCoder) return '修改页面'
+    return this.nodeToStageName(nodeId) ?? nodeId
+  }
+
+  private trackStepProgress(nodeId: NodeId, detail: string): void {
+    const title = this.stepTitle(nodeId, detail)
+    const existing = [...this.session.steps]
+      .reverse()
+      .find(step => step.stageId === nodeId && step.title === title && step.state === 'active')
+    if (existing) return
+    for (const step of this.session.steps.filter(item => item.stageId === nodeId && item.state === 'active')) {
+      this.emitStep({ ...step, state: 'done', finishedAt: Date.now() })
+    }
+    this.emitStep({
+      id: nextId('step'),
+      stageId: nodeId,
+      title,
+      detail,
+      state: 'active',
+      startedAt: Date.now(),
+      finishedAt: null
+    })
+  }
+
+  private finishStageSteps(
+    nodeId: NodeId,
+    state: 'done' | 'failed',
+    detail: string
+  ): void {
+    const active = this.session.steps.filter(step => step.stageId === nodeId && step.state === 'active')
+    if (active.length === 0) {
+      const now = Date.now()
+      this.emitStep({
+        id: nextId('step'),
+        stageId: nodeId,
+        title: this.stepTitle(nodeId, detail),
+        detail,
+        state,
+        startedAt: now,
+        finishedAt: now
+      })
+      return
+    }
+    for (const step of active) {
+      this.emitStep({ ...step, detail, state, finishedAt: Date.now() })
+    }
+  }
+
+  private reconcileIssues(rawIssues: unknown): void {
+    const issues = Array.isArray(rawIssues)
+      ? rawIssues
+          .map(item => item && typeof item === 'object'
+            ? {
+                title: String((item as { title?: unknown }).title ?? '').trim(),
+                detail: String((item as { detail?: unknown }).detail ?? '').trim()
+              }
+            : { title: '', detail: '' })
+          .filter(item => item.title)
+      : []
+    if (issues.length === 0) {
+      for (const issue of this.session.issues.filter(item => item.status === 'fixing')) {
+        this.emitIssue({
+          ...issue,
+          status: 'fixed',
+          detail: '自动修复完成，并已通过复检。'
+        })
+      }
+      return
+    }
+    for (const item of issues) {
+      const existing = this.session.issues.find(
+        issue => issue.title === item.title && issue.status === 'fixing'
+      )
+      this.emitIssue(existing ?? {
+        id: nextId('issue'),
+        stageId: CREATE_NODES.repair,
+        title: item.title,
+        attempt: 1,
+        status: 'fixing',
+        beforeShotUrl: null,
+        afterShotUrl: null,
+        detail: item.detail || '已进入自动修复流程。'
+      })
+    }
+  }
+
+  private async recoverCoderTimeout(
+    graphState: GraphState,
+    nodeId: NodeId
+  ): Promise<void> {
+    this.emitRunStatus('generating')
+    this.emitAgentMessage('这一步内容比较多，我把它拆成几步继续做：先搭骨架，再逐个补齐面板。')
+    const dataBlock = typeof graphState.nodes[CREATE_NODES.fetch]?.refs?.dataBlock === 'string'
+      ? graphState.nodes[CREATE_NODES.fetch]!.refs!.dataBlock
+      : this.editDataBlock
+    const requirement = [this.pendingText, dataBlock].filter(Boolean).join('\n\n')
+    const callCoder = async (userContent: string): Promise<string> => {
+      const reply = await this.llm.chatStream(
+        'coder',
+        [
+          { role: 'system', content: prompt('coder.system') },
+          { role: 'user', content: userContent }
+        ],
+        (_chars, partial) => this.emitBuildingPreview(partial),
+        { maxTokens: 32_000 }
+      )
+      return reply
+    }
+    let html = this.llm.extractHtml(
+      await callCoder(prompt('split.skeleton.user', { requirement }))
+    )
+    const panels = [...html.matchAll(/<!--PANEL:([^>]+?)-->/g)]
+      .map(match => ({ marker: match[0], name: (match[1] ?? '').trim() }))
+      .filter(panel => panel.name)
+      .slice(0, 6)
+    for (const panel of panels) {
+      const fragment = await callCoder(
+        prompt('split.panel.user', {
+          requirement,
+          panelName: panel.name
+        })
+      )
+      html = html.replace(panel.marker, fragment)
+      this.emitBuildingPreview(html)
+    }
+    html = html.replace(/<!--PANEL:[^>]*?-->/g, '<!-- 面板暂未生成 -->')
+    const nextNode = nodeId === CREATE_NODES.coder ? CREATE_NODES.check : EDIT_NODES.editCheck
+    graphState.nodes[nodeId]!.status = 'done'
+    graphState.nodes[nodeId]!.output = { summary: '拆分生成完成' }
+    graphState.nodes[nodeId]!.refs = { html }
+    graphState.nodes[nextNode]!.status = 'pending'
+    graphState.current = nextNode
+    graphState.awaiting = null
+    this.engine = nodeId === CREATE_NODES.coder
+      ? await this.createCreateEngine(this.pendingAttachments.length > 0, this.pendingText, this.pendingAttachments)
+      : await this.createEditEngine(this.currentHtml, this.pendingText, this.pendingAttachments)
+    this.emitAgentMessage('拆分生成完成，各部分已经拼好了。')
+    this.runEngine({ kind: 'restore', graphState })
+  }
+
   /* ---------- SSE 事件发射 + session 持久化 ---------- */
 
   private emitMessage(m: ChatMessage): void {
@@ -807,6 +1112,37 @@ export class DashboardLoopAdapter {
     this.session.versions.unshift(version)
     this.session.versionUrls[version.id] = url
     this.storage.emit(this.dashId, 'versionAdded', { dashboardId: this.dashId, version })
+    this.save()
+  }
+  private emitStep(step: AgentStep): void {
+    const index = this.session.steps.findIndex(item => item.id === step.id)
+    if (index >= 0) this.session.steps[index] = step
+    else this.session.steps.push(step)
+    const reset = this.stepsResetPending
+    this.stepsResetPending = false
+    this.storage.emit(this.dashId, 'step', { dashboardId: this.dashId, step, reset })
+    this.save()
+  }
+  private emitIssue(issue: Issue): void {
+    const index = this.session.issues.findIndex(item => item.id === issue.id)
+    if (index >= 0) this.session.issues[index] = issue
+    else this.session.issues.push(issue)
+    this.storage.emit(this.dashId, 'issue', { dashboardId: this.dashId, issue })
+    this.save()
+  }
+  private emitBuildingPreview(partial: string): void {
+    if (this.session.versions.length > 0) return
+    const now = Date.now()
+    if (now - this.buildingPreviewLastPush < 3000 || partial.length < 1200) return
+    const htmlStart = partial.search(/<!doctype\s+html|<html[\s>]/i)
+    if (htmlStart < 0) return
+    this.buildingPreviewLastPush = now
+    this.buildingPreviewSequence += 1
+    const html = partial.slice(htmlStart).replace(/\n?```\s*$/m, '')
+    this.storage.writePreview(this.dashId, 'building', html)
+    const url = artifactPreviewUrl(this.dashId, 'building', this.buildingPreviewSequence)
+    this.session.preview = { state: 'building', url }
+    this.storage.emit(this.dashId, 'previewBuilding', { dashboardId: this.dashId, url })
     this.save()
   }
   private emitPreviewReady(versionId: string, url: string): void {

@@ -8,7 +8,14 @@ import { HttpError } from './orchestrator'
 import { getOrCreateAdapter } from './loop-adapter/adapter'
 import { store, type StoredEvent } from './store'
 import { probe } from './gateway'
-import type { ClarificationAnswer, ModelSettings, PreviewResolution, PublishConfig } from './wire'
+import { resolveGenerationIntent } from './routing/intent'
+import type {
+  ArtifactKind,
+  ClarificationAnswer,
+  ModelSettings,
+  PreviewResolution,
+  PublishConfig
+} from './wire'
 
 export const router = Router()
 
@@ -37,6 +44,55 @@ function writeEvent(res: Response, e: StoredEvent): void {
 }
 
 /* ------------------------------ 大屏 CRUD ------------------------------ */
+
+router.get('/projects', (_req, res) => {
+  res.json(orch.listProjects())
+})
+
+router.get('/generation-capabilities', (_req, res) => {
+  res.json(orch.listGenerationCapabilities())
+})
+
+router.post(
+  '/generation-intent',
+  wrap((req, res) => {
+    const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+    if (!text) throw new HttpError(400, '请先描述要生成的内容')
+    const explicitKind: ArtifactKind | undefined =
+      req.body?.artifactKind === 'dashboard' || req.body?.artifactKind === 'business-app'
+        ? req.body.artifactKind
+        : undefined
+    res.json(resolveGenerationIntent(text, explicitKind))
+  })
+)
+
+router.post(
+  '/projects',
+  wrap((req, res) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name : ''
+    if (req.body?.artifactKind !== 'dashboard' && req.body?.artifactKind !== 'business-app') {
+      throw new HttpError(400, '创建项目时必须明确选择“数据大屏”或“业务应用”')
+    }
+    const artifactKind: ArtifactKind = req.body.artifactKind
+    res.json(orch.createProject(name, artifactKind))
+  })
+)
+
+router.post(
+  '/projects/:id/rename',
+  wrap((req, res) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name : ''
+    res.json(orch.renameDashboard(req.params.id, name))
+  })
+)
+
+router.delete(
+  '/projects/:id',
+  wrap((req, res) => {
+    orch.deleteDashboard(req.params.id)
+    res.status(204).end()
+  })
+)
 
 router.get('/dashboards', (_req, res) => {
   res.json(orch.listDashboards())
@@ -98,7 +154,11 @@ router.post(
     const attachments = Array.isArray(req.body?.attachments)
       ? (req.body.attachments as unknown[]).filter((a): a is string => typeof a === 'string')
       : []
-    getOrCreateAdapter(req.params.id).handleMessage(text, attachments)
+    if (orch.getArtifactKind(req.params.id) === 'business-app') {
+      orch.handleSendMessage(req.params.id, text, attachments)
+    } else {
+      getOrCreateAdapter(req.params.id).handleMessage(text, attachments)
+    }
     res.status(202).end()
   })
 )
@@ -107,7 +167,11 @@ router.post(
   '/dashboards/:id/messages/:messageId/answers',
   wrap((req, res) => {
     const answers = (Array.isArray(req.body?.answers) ? req.body.answers : []) as ClarificationAnswer[]
-    getOrCreateAdapter(req.params.id).answerClarification(req.params.messageId, answers)
+    if (orch.getArtifactKind(req.params.id) === 'business-app') {
+      orch.handleAnswerClarification(req.params.id, req.params.messageId, answers)
+    } else {
+      getOrCreateAdapter(req.params.id).answerClarification(req.params.messageId, answers)
+    }
     res.status(202).end()
   })
 )
@@ -115,7 +179,11 @@ router.post(
 router.post(
   '/dashboards/:id/options/:optionId',
   wrap((req, res) => {
-    getOrCreateAdapter(req.params.id).chooseOption(req.params.optionId)
+    if (orch.getArtifactKind(req.params.id) === 'business-app') {
+      orch.handleChooseOption(req.params.id, req.params.optionId)
+    } else {
+      getOrCreateAdapter(req.params.id).chooseOption(req.params.optionId)
+    }
     res.status(202).end()
   })
 )
@@ -139,11 +207,12 @@ router.get(
 
 router.get(
   '/dashboards/:id/versions/:versionId/export',
-  wrap((req, res) => {
-    const { filename, html } = orch.exportVersion(req.params.id, req.params.versionId)
-    res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  wrap(async (req, res) => {
+    const { filename, contentType, body } = await orch.exportVersion(req.params.id, req.params.versionId)
+    res.setHeader('Content-Type', contentType)
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
-    res.status(200).send(html)
+    res.setHeader('Content-Length', String(body.length))
+    res.status(200).send(body)
   })
 )
 
@@ -166,7 +235,11 @@ router.post(
 router.post(
   '/dashboards/:id/versions/:versionId/rollback',
   wrap((req, res) => {
-    getOrCreateAdapter(req.params.id).rollback(req.params.versionId)
+    if (orch.getArtifactKind(req.params.id) === 'business-app') {
+      orch.handleRollback(req.params.id, req.params.versionId)
+    } else {
+      getOrCreateAdapter(req.params.id).rollback(req.params.versionId)
+    }
     res.status(202).end()
   })
 )
@@ -177,8 +250,8 @@ router.post(
   '/dashboards/:id/preview-resolution',
   wrap((req, res) => {
     const resolution = req.body?.resolution as PreviewResolution
-    if (resolution !== '1920x1080' && resolution !== '2560x1440') {
-      res.status(400).json({ error: 'resolution 只能是 1920x1080 或 2560x1440' })
+    if (!['1920x1080', '2560x1440', '1366x768'].includes(resolution)) {
+      res.status(400).json({ error: '不支持这个预览分辨率' })
       return
     }
     orch.setPreviewResolution(req.params.id, resolution)
@@ -233,7 +306,9 @@ router.post(
   '/model-gateway/probe',
   wrap(async (req, res) => {
     // 真实探测，永远不抛错：错误体现在 ProbeResult.ok=false
-    const settings = (req.body?.settings ?? orch.getSettings()) as ModelSettings
+    const settings = req.body?.settings
+      ? orch.resolveSettingsSecrets(req.body.settings as ModelSettings)
+      : orch.resolveSettingsSecrets(orch.getSettings())
     const result = await probe(settings).catch((err) => ({
       ok: false,
       supportsVision: false,
@@ -285,6 +360,14 @@ router.post(
 
 router.get('/dashboards/:id/events', (req, res) => {
   const dashId = req.params.id
+  try {
+    orch.getArtifactKind(dashId)
+  } catch (error) {
+    const status = error instanceof HttpError ? error.status : 404
+    const message = error instanceof Error ? error.message : '项目不存在'
+    res.status(status).json({ error: message })
+    return
+  }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',

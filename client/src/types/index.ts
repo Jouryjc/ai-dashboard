@@ -4,38 +4,61 @@
  * 其他模块一律从这里 import，不要自己复制类型定义。
  */
 
-/* ==================== 大屏（首页卡片） ==================== */
+/* ==================== 项目与产物 ==================== */
 
-/** 大屏状态：对应首页卡片的四种大白话徽标 */
-export type DashboardStatus =
+/** 当前支持的产物类型；后续新增类型必须通过 Artifact Adapter 接入。 */
+export type ArtifactKind = 'dashboard' | 'business-app'
+
+/** 产物构建目标；生成、校验、预览和导出都以它为准。 */
+export interface TargetProfile {
+  framework: 'static-html' | 'vue3'
+  uiLibrary: 'none' | 'idux'
+  uiLibraryVersion: string | null
+  viewportProfiles: string[]
+}
+
+/** 项目状态：对应首页卡片的四种大白话徽标 */
+export type ProjectStatus =
   | 'generating'      // 生成中
   | 'completed'       // 已完成
   | 'published'       // 已发布
   | 'needs_attention' // 需要处理（卡点/失败/升级的聚合态）
 
+/** 旧名称兼容层；新代码使用 ProjectStatus。 */
+export type DashboardStatus = ProjectStatus
+
 /** 状态徽标文案（UI 直接查表，禁止另写映射） */
-export const DASHBOARD_STATUS_LABEL: Record<DashboardStatus, string> = {
+export const DASHBOARD_STATUS_LABEL: Record<ProjectStatus, string> = {
   generating: '生成中',
   completed: '已完成',
   published: '已发布',
   needs_attention: '需要处理'
 }
 
-/** 一个大屏（首页卡片 + 工作台顶栏标题的数据源） */
-export interface Dashboard {
-  /** 大屏 ID */
+/** 一个生成项目；数据大屏与业务应用共享同一套会话、版本和审批基础设施。 */
+export interface Project {
+  /** 项目 ID */
   id: string
-  /** 大屏名称（顶栏点击可改名） */
+  /** 项目名称（顶栏点击可改名） */
   name: string
+  /** 创建后锁定的产物类型；跨类型转换必须显式另存。 */
+  artifactKind: ArtifactKind
+  /** 构建目标与依赖版本。 */
+  targetProfile: TargetProfile
   /** 大白话状态徽标 */
-  status: DashboardStatus
+  status: ProjectStatus
   /** 封面截图地址（最近一次构建的缩略图，public/covers/ 下的相对路径） */
   coverUrl: string
   /** 当前版本号标签，如 "v3"；还没有任何版本时为 null */
   currentVersionLabel: string | null
+  /** 当前版本 ID；旧数据迁移时从 isCurrent 版本恢复。 */
+  currentRevisionId: string | null
   /** 最近修改时间（毫秒时间戳） */
   updatedAt: number
 }
+
+/** 旧名称兼容层；现有客户端组件逐步迁移到 Project。 */
+export type Dashboard = Project
 
 /* ==================== 版本（版本时间线节点） ==================== */
 
@@ -61,8 +84,29 @@ export interface DataUseEntry {
   error?: string
 }
 
-/** 一个版本节点：回退 = 生成新节点，历史永不删除（UX §5.3） */
-export interface Version {
+/** 版本内文件清单与导出格式。 */
+export interface ArtifactManifest {
+  schemaVersion: 1
+  kind: ArtifactKind
+  entryFile: string
+  files: string[]
+  exportFormat: 'html' | 'zip'
+}
+
+export interface ValidationGateResult {
+  id: string
+  title: string
+  status: 'passed' | 'failed' | 'skipped'
+  detail: string | null
+}
+
+export interface ValidationReport {
+  status: 'passed' | 'failed' | 'pending'
+  gates: ValidationGateResult[]
+}
+
+/** 一个修订节点：回退 = 生成新节点，历史永不删除（UX §5.3） */
+export interface Revision {
   /** 版本 ID */
   id: string
   /** 展示用版本号，如 "v3" */
@@ -81,7 +125,14 @@ export interface Version {
   publicUrl?: string
   /** 本版本生成时用到的数据源明细（演示数据/无数据源时为 undefined） */
   dataSourcesUsed?: DataUseEntry[]
+  /** 该修订对应的产物清单。 */
+  manifest: ArtifactManifest
+  /** 准确性、体验性和安全性门禁结果。 */
+  validationReport: ValidationReport
 }
+
+/** 旧名称兼容层；新代码使用 Revision。 */
+export type Version = Revision
 
 /* ==================== 运行状态（工作台全局状态机，UX §7.1） ==================== */
 
@@ -104,8 +155,8 @@ export const RUN_STATUS_LABEL: Record<RunStatus, string> = {
 
 /* ==================== 执行过程（右栏面板） ==================== */
 
-/** 阶段节点状态：✓ 已完成 / ● 进行中 / ○ 未开始 */
-export type StageState = 'done' | 'active' | 'pending'
+/** 阶段节点状态：✓ 已完成 / ● 进行中 / ○ 未开始 / ✕ 已失败 */
+export type StageState = 'done' | 'active' | 'pending' | 'failed'
 
 /** 阶段时间线上的一个节点（新建 6~8 步，增量修改收敛为 3 步） */
 export interface Stage {
@@ -320,8 +371,8 @@ export interface Blocker {
 
 /* ==================== 预览区 ==================== */
 
-/** 预览分辨率（仅影响预览缩放，截图与验证始终以 1920×1080 为基准） */
-export type PreviewResolution = '1920x1080' | '2560x1440'
+/** 预览逻辑分辨率：数据大屏支持 1920/2560，业务应用支持 1920/1366。 */
+export type PreviewResolution = '1920x1080' | '2560x1440' | '1366x768'
 
 /** 预览区状态（UX §4.2 中区） */
 export type PreviewState =

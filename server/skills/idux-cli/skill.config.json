@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "idux-cli",
+  "artifactKinds": ["business-app"],
+  "executionAdapter": "idux-cli",
+  "allowedCommands": ["versions", "list", "info", "demo"],
+  "permissions": {
+    "filesystem": "project-read",
+    "network": "deny",
+    "process": "allowlisted"
+  }
+}

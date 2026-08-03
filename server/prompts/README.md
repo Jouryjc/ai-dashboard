@@ -23,6 +23,14 @@
 | `coder.template-context.components-block.md` | 组件样式约束块 | `{{componentLines}}` |
 | `review.system.md` | 布局检查员：结构化视觉审查 | — |
 | `review.user.md` | 审查用户消息 | `{{requirement}}` `{{html}}` |
+| `business-app-reference.system.md` | 业务应用参考图分析：图片转受控应用蓝图 | — |
+| `business-app-reference.user.md` | 业务应用参考图分析用户消息 | `{{request}}` |
+| `business-app-requirements.system.md` | 业务应用需求分析：识别缺失的阻塞决策，每次最多提出一个问题 | — |
+| `business-app-requirements.user.md` | 业务应用需求分析用户消息 | `{{request}}` `{{decisions}}` `{{currentBlueprint}}` |
+| `business-app-blueprint.system.md` | 业务应用蓝图规划：任意领域、多模块、视图、动作与工作流 | — |
+| `business-app-blueprint.user.md` | 业务应用蓝图规划用户消息 | `{{contract}}` `{{currentBlueprint}}` `{{presentationEvidence}}` `{{fallbackShape}}` |
+| `business-app-review.system.md` | 业务应用参考图与双视口视觉复核 | — |
+| `business-app-review.user.md` | 业务应用视觉复核用户消息 | `{{request}}` `{{referenceNote}}` |
 | `split.skeleton.user.md` | 超时拆分第 1 步：页面骨架（PANEL 占位） | `{{requirement}}` |
 | `split.panel.user.md` | 超时拆分第 2..N 步：单个面板 | `{{requirement}}` `{{panelName}}` |
 
@@ -32,4 +40,4 @@
 2. **角色名不能改**：`你是「大屏规划师」/「模板匹配师」/「大屏开发」/「布局检查员」`——联调桩（`scripts/stub-llm.mjs`）靠角色名识别请求类型，改了 stub 会失效。
 3. 输出格式约束（JSON 结构、`<!--PANEL:...-->` 占位约定、自包含/禁外部引用）与代码里的解析器一一对应，改之前先看 orchestrator 的 `normalizePlan` / `extractJson` / `extractHtml` / 拆分拼装逻辑。
 4. 目录位置可用环境变量 `PROMPTS_DIR` 覆盖（默认 `server/prompts`）。
-5. 改完建议跑 `npm run smoke`（30 项断言）确认没有破坏流程。
+5. 改完建议跑 `npm run smoke` 确认没有破坏流程。
