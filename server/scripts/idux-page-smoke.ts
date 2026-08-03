@@ -8,6 +8,7 @@ import {
 import { repairIduxPageDraft } from '../src/artifacts/idux-page/repairer'
 import { loadIduxStyleBundle, renderIduxListPage } from '../src/artifacts/idux-page/style-kit'
 import { validateBuiltIduxPage } from '../src/artifacts/idux-page/validator'
+import type { IduxAcceptanceScenario } from '../src/artifacts/idux-page/spec'
 import { createPreviewApp } from '../src/preview'
 import { skillRegistry } from '../src/skills/registry'
 import { store } from '../src/store'
@@ -26,6 +27,8 @@ interface BuiltCase {
     styleViewports: string[]
   }
   buildDurationMs: number
+  scenarios: IduxAcceptanceScenario[]
+  evidenceCommands: string[]
 }
 
 async function buildCase(
@@ -56,7 +59,9 @@ async function buildCase(
       styleSkill: generated.evidence.style.skill,
       styleViewports: generated.evidence.style.viewports
     },
-    buildDurationMs: result.durationMs
+    buildDurationMs: result.durationMs,
+    scenarios: generated.spec.acceptanceScenarios,
+    evidenceCommands: generated.evidence.queries.map(query => `${query.command}:${query.args.join(':')}`)
   }
 }
 
@@ -140,6 +145,7 @@ async function main(): Promise<void> {
 
   const cases = [
     await buildCase('idux-build-cloud-check', '生成包含云主机相关信息的表格'),
+    await buildCase('idux-build-cloud-detail-check', '生成包含云主机相关信息的表格，并支持查看详情页面'),
     await buildCase('idux-build-generic-check', '生成订单管理列表，包含编号、客户、金额和状态'),
     await buildCase(
       'idux-build-reference-dark-check',
@@ -189,13 +195,16 @@ async function main(): Promise<void> {
   ]
   if (
     !cases[0].appSource.includes('"title": "云主机管理"') ||
-    !cases[1].appSource.includes('"title": "订单管理"') ||
-    cases.slice(0, 2).some(item =>
+    !cases[1].appSource.includes('"enabled": true') ||
+    !cases[1].appSource.includes('data-testid="detail-view"') ||
+    !cases[1].evidenceCommands.some(command => command.includes('desc')) ||
+    !cases[2].appSource.includes('"title": "订单管理"') ||
+    cases.slice(0, 3).some(item =>
       item.evidence.styleSkill !== 'idux-style' ||
       JSON.stringify(item.evidence.styleViewports) !== JSON.stringify(['1920x1080', '1366x768'])
     ) ||
-    cases[2].evidence.theme !== 'dark' ||
-    !cases[2].appSource.includes('"navigation": "side"')
+    cases[3].evidence.theme !== 'dark' ||
+    !cases[3].appSource.includes('"navigation": "side"')
   ) {
     throw new Error('受控页面规格或 idux-style 双视口证据没有生效')
   }
@@ -209,7 +218,8 @@ async function main(): Promise<void> {
     if (!address || typeof address === 'string') throw new Error('无法获取 IDux 冒烟预览端口')
     for (const item of cases) {
       const runtime = await validateBuiltIduxPage(
-        `http://127.0.0.1:${address.port}/preview/${item.projectId}/${item.revisionId}/index.html`
+        `http://127.0.0.1:${address.port}/preview/${item.projectId}/${item.revisionId}/index.html`,
+        item.scenarios
       )
       if (runtime.gates.some(gate => gate.status !== 'passed')) {
         throw new Error(JSON.stringify(runtime.gates))

@@ -34,7 +34,7 @@
         >{{ item }}</span>
       </nav>
 
-      <header class="page-heading" aria-labelledby="page-title">
+      <header v-if="!selectedRow" class="page-heading" aria-labelledby="page-title">
         <div class="heading-copy">
           <p class="eyebrow">业务管理 / {{ spec.entityName }}</p>
           <h1 id="page-title">{{ spec.title }}</h1>
@@ -44,7 +44,7 @@
       </header>
 
       <section
-        v-if="spec.summaryCards.length > 0"
+        v-if="!selectedRow && spec.summaryCards.length > 0"
         class="summary-grid"
         :style="{ '--summary-columns': String(spec.summaryCards.length) }"
         aria-label="页面概览"
@@ -63,7 +63,7 @@
         </IxCard>
       </section>
 
-      <IxCard class="table-card" aria-labelledby="records-title">
+      <IxCard v-if="!selectedRow" class="table-card" aria-labelledby="records-title" data-testid="list-view">
         <div class="table-toolbar" :class="`toolbar-${spec.presentation.toolbar}`">
           <div>
             <h2 id="records-title">{{ spec.entityName }}列表</h2>
@@ -97,6 +97,33 @@
         </IxTable>
       </IxCard>
 
+      <section v-else class="detail-view" data-testid="detail-view" aria-labelledby="detail-title">
+        <div class="detail-heading">
+          <div>
+            <p class="eyebrow">{{ spec.entityName }} / 详情</p>
+            <h1 id="detail-title">{{ spec.detail.title }}</h1>
+            <p class="subtitle">正在查看 {{ selectedIdentity }} 的安全演示数据。</p>
+          </div>
+          <IxButton data-testid="back-to-list" @click="closeDetail">返回列表</IxButton>
+        </div>
+        <IxCard class="detail-card">
+          <IxDesc :header="`${spec.entityName}基本信息`" :col="2">
+            <IxDescItem
+              v-for="field in spec.detailFields"
+              :key="field.key"
+              :label="field.label"
+            >
+              <IxTag
+                v-if="/状态/.test(field.label)"
+                :status="statusTone(String(selectedRow[field.key]))"
+                filled
+              >{{ selectedRow[field.key] }}</IxTag>
+              <span v-else>{{ selectedRow[field.key] }}</span>
+            </IxDescItem>
+          </IxDesc>
+        </IxCard>
+      </section>
+
       <p class="feedback" role="status" aria-live="polite">{{ feedback }}</p>
     </div>
     </main>
@@ -107,6 +134,7 @@
 import { computed, ref } from 'vue'
 import { IxButton } from '@idux/components/button'
 import { IxCard } from '@idux/components/card'
+import { IxDesc, IxDescItem } from '@idux/components/desc'
 import { IxInput } from '@idux/components/input'
 import { IxTable } from '@idux/components/table'
 import type { TableColumn } from '@idux/components/table'
@@ -122,6 +150,9 @@ const tableScrollWidth = __IDUX_SCROLL_WIDTH__
 const keyword = ref('')
 const loading = ref(false)
 const feedback = ref('')
+const selectedRow = ref<Row | null>(null)
+
+const selectedIdentity = computed(() => selectedRow.value ? firstValue(selectedRow.value) : '')
 
 const filteredRows = computed(() => {
   const search = keyword.value.trim().toLowerCase()
@@ -147,7 +178,17 @@ function triggerPrimaryAction(): void {
 }
 
 function openDetail(row: Row): void {
-  feedback.value = `正在查看：${firstValue(row)}`
+  if (!spec.detail.enabled) {
+    feedback.value = `正在查看：${firstValue(row)}（当前需求未启用详情视图）`
+    return
+  }
+  selectedRow.value = row
+  feedback.value = `已打开：${firstValue(row)}`
+}
+
+function closeDetail(): void {
+  selectedRow.value = null
+  feedback.value = '已返回列表'
 }
 
 function refresh(): void {

@@ -40,9 +40,14 @@ import {
 } from './secrets'
 import { artifactRegistry } from './artifacts/registry'
 import { buildIduxPage, validateIduxBuildInput } from './artifacts/idux-page/builder'
+import { repairIduxPageWithModel } from './artifacts/idux-page/coder'
 import { createIduxSourceArchive } from './artifacts/idux-page/exporter'
 import { generateIduxPage } from './artifacts/idux-page/generator'
 import { analyzeIduxPageReference } from './artifacts/idux-page/reference'
+import type {
+  IduxReferenceAnalysis,
+  IduxReferenceEvidence
+} from './artifacts/idux-page/reference'
 import { repairIduxPageDraft } from './artifacts/idux-page/repairer'
 import { reviewIduxPageVisual } from './artifacts/idux-page/reviewer'
 import { validateBuiltIduxPage } from './artifacts/idux-page/validator'
@@ -186,6 +191,21 @@ interface SessionData {
   lastDataBlock?: string
   /** 最近一次生成期取数的明细（与 lastDataBlock 同源；编辑流复用，让新版本也能展示数据来源） */
   lastDataSourcesUsed?: DataUseEntry[]
+  /** IDux 普通页面的累计需求与未完成候选，保证“继续”不会开启一轮失忆的全量生成。 */
+  iduxState?: IduxProjectState
+}
+
+interface IduxProjectState {
+  requirements: string[]
+  activeRequirement: string | null
+  candidateRevisionId: string | null
+  unresolved: boolean
+  strategiesTried: string[]
+  lastFailure: string | null
+  reference?: {
+    analysis: IduxReferenceAnalysis
+    evidence: IduxReferenceEvidence
+  }
 }
 
 /** 运行中任务的内存态（不落盘） */
@@ -1914,6 +1934,13 @@ function validateHtml(html: string): string[] {
     .map((gate) => gate.detail ? `${gate.title}：${gate.detail}` : gate.title)
 }
 
+function failActiveStage(rt: Runtime, detail: string): void {
+  const stage = rt.s.stages.find(item => item.state === 'active')
+  if (!stage) return
+  closeOrphanSteps(rt, stage.id, 'failed', detail)
+  setStage(rt, { ...stage, state: 'failed', finishedAt: Date.now(), detail })
+}
+
 /** 确定性清洗（人工协助修好时用）：剥掉外部资源引用，保证校验能过 */
 function sanitizeHtml(html: string): string {
   return html
@@ -3041,14 +3068,38 @@ function emitIduxGraphSkeleton(rt: Runtime): void {
   })
 }
 
-function effectiveIduxRequest(rt: Runtime, request: string): string {
-  const original = rt.s.messages.find(
-    message => message.kind === 'user' && message.text.trim().length > 0
-  )
-  if (!original || original.kind !== 'user' || original.text.trim() === request.trim()) {
-    return request.trim()
+const IDUX_CONTINUE_REQUEST = /^(?:继续|重试|再试(?:一次)?|继续修复|接着修|恢复)(?:吧|一下|看看|检查)?[。！!]?$/i
+
+function getIduxState(rt: Runtime): IduxProjectState {
+  rt.s.iduxState ??= {
+    requirements: [],
+    activeRequirement: null,
+    candidateRevisionId: null,
+    unresolved: false,
+    strategiesTried: [],
+    lastFailure: null
   }
-  return `原始需求：${truncate(original.text.trim(), 500)}\n本轮要求：${request.trim()}`
+  return rt.s.iduxState
+}
+
+function effectiveIduxRequest(rt: Runtime, request: string): string {
+  const state = getIduxState(rt)
+  const current = request.trim()
+  const resume = IDUX_CONTINUE_REQUEST.test(current) && state.unresolved
+  if (!resume && current.length > 0 && !state.requirements.includes(current)) {
+    state.requirements.push(truncate(current, 500))
+    state.requirements = state.requirements.slice(-20)
+  }
+  if (state.requirements.length === 0 && current.length > 0) {
+    state.requirements.push(truncate(current, 500))
+  }
+  const cumulative = state.requirements
+    .map((item, index) => `${index + 1}. ${item}`)
+    .join('\n')
+  state.activeRequirement = cumulative
+  state.unresolved = true
+  save(rt)
+  return `项目累计需求（后出现的要求在不冲突时增量叠加）：\n${cumulative}`
 }
 
 function safeGenerationError(error: unknown): string {
@@ -3060,6 +3111,12 @@ function safeGenerationError(error: unknown): string {
     .replace(/[A-Za-z]:\\[^\r\n]+/g, '[本地路径]')
     .replace(/\s+/g, ' ')
     .slice(0, 300)
+}
+
+function iduxFailureContract(gates: ValidationGateResult[]): string {
+  return gates.slice(0, 4).map(gate =>
+    `【${gate.id}】期望：${gate.title}；实际：${gate.detail ?? '门禁未通过'}；复现：按该门禁对应的双视口任务场景执行；验收：复检状态必须为 passed。`
+  ).join('\n')
 }
 
 function iduxReferenceRegions(width: number, height: number): Region[] {
@@ -3093,13 +3150,31 @@ async function runIduxPageGeneration(
   emitPlan(rt, attachments.length > 0 ? IDUX_IMAGE_STAGE_TITLES : IDUX_STAGE_TITLES)
   emitIduxGraphSkeleton(rt)
 
+  const iduxState = getIduxState(rt)
+  const resumeCandidate = IDUX_CONTINUE_REQUEST.test(request.trim()) && iduxState.unresolved
+  const baseRevisionId = resumeCandidate
+    ? iduxState.candidateRevisionId
+    : rt.s.dashboard.currentRevisionId
+  const baseDraft = baseRevisionId
+    ? store.readArtifactDraft(rt.s.dashboard.id, baseRevisionId)
+    : null
   const requirement = effectiveIduxRequest(rt, request)
   const revisionId = nextId('ver')
+  iduxState.candidateRevisionId = revisionId
+  iduxState.strategiesTried = []
+  iduxState.lastFailure = null
+  save(rt)
   const workspace = store.artifactWorkspaceDir(rt.s.dashboard.id, revisionId)
   const outputDir = store.previewDir(rt.s.dashboard.id, revisionId)
   let generated: Awaited<ReturnType<typeof generateIduxPage>> | null = null
-  let reference: Awaited<ReturnType<typeof analyzeIduxPageReference>> | null = null
-  let referenceImage: string | null = null
+  let reference: Awaited<ReturnType<typeof analyzeIduxPageReference>> | null =
+    attachments.length === 0 ? iduxState.reference ?? null : null
+  let referenceImage: string | null = attachments.length === 0 && reference
+    ? [...rt.s.messages]
+        .reverse()
+        .flatMap(message => message.kind === 'user' ? message.attachmentUrls : [])
+        .find(item => /^data:image\//i.test(item)) ?? null
+    : null
   let draft: Awaited<ReturnType<typeof generateIduxPage>>['draft'] | null = null
   let staticReport: ValidationReport | null = null
   let build: Awaited<ReturnType<typeof buildIduxPage>> | null = null
@@ -3150,6 +3225,8 @@ async function runIduxPageGeneration(
               referenceImage,
               crops
             )
+            iduxState.reference = reference
+            save(rt)
           } catch (error) {
             latestError = safeGenerationError(error)
             throw error
@@ -3160,7 +3237,13 @@ async function runIduxPageGeneration(
             `识别为管理列表页：${reference.analysis.columns.length} 列、${reference.analysis.summaryCards.length} 个概览，置信度 ${reference.analysis.confidence}`
           )
         } else {
-          finishStep(rt, step, '已锁定 Vue 3 + IDux 2.11.0 普通页面')
+          finishStep(
+            rt,
+            step,
+            reference
+              ? '已恢复累计需求、失败候选与上一轮参考图蓝图'
+              : '已锁定 Vue 3 + IDux 2.11.0 普通页面'
+          )
         }
         finishStage(rt, 'st-1')
 
@@ -3172,11 +3255,20 @@ async function runIduxPageGeneration(
           cachedSettings,
           reference ? { reference } : {}
         )
-        draft = generated.draft
+        draft = baseDraft
+          ? {
+              entryFile: baseDraft.entryFile,
+              files: {
+                ...baseDraft.files,
+                'generation-evidence.json': generated.draft.files['generation-evidence.json']
+              }
+            }
+          : generated.draft
         finishStep(
           rt,
           step,
           `证据版本 ${generated.evidence.iduxVersion}，提交 ${generated.evidence.sourceCommit.slice(0, 8)}`
+            + (baseDraft ? `；已恢复${resumeCandidate ? '失败候选' : '当前版本'}作为增量修改基线` : '')
         )
         finishStage(rt, 'st-2')
         return {
@@ -3241,17 +3333,18 @@ async function runIduxPageGeneration(
       async execute() {
         activateStage(rt, 'st-4')
         const step = startStep(rt, 'st-4', '在 1920×1080 与 1366×768 执行浏览器与视觉验收')
-        if (!staticReport || !build || !draft) {
+        if (!generated || !staticReport || !build || !draft) {
           return { kind: 'failed', error: new Error('IDux 构建结果不完整，不能执行浏览器验收') }
         }
         const url = artifactPreviewUrl(rt.s.dashboard.id, revisionId, Date.now())
-        runtime = await validateBuiltIduxPage(url)
+        runtime = await validateBuiltIduxPage(url, generated.spec.acceptanceScenarios)
         const visualReview = await reviewIduxPageVisual(
           cachedSettings,
           requirement,
           runtime.screenshot,
           runtime.smallScreenshot,
-          referenceImage
+          referenceImage,
+          runtime.scenarioScreenshots
         )
         validationReport = {
           status: 'pending',
@@ -3289,7 +3382,7 @@ async function runIduxPageGeneration(
                   )
                 : null,
               afterShotUrl: null,
-              detail: `检测到 ${failedGates.length} 项阻断问题，正在执行有边界的自动修复。`
+              detail: `${iduxFailureContract(failedGates)}\n当前策略：执行有边界的自动修复。`
             }
           } else {
             currentIssue = {
@@ -3297,7 +3390,7 @@ async function runIduxPageGeneration(
               title: latestError,
               attempt: repairCount + 1,
               status: 'fixing',
-              detail: `第 ${repairCount + 1} 轮复检仍有 ${failedGates.length} 项阻断问题。`
+              detail: `${iduxFailureContract(failedGates)}\n第 ${repairCount + 1} 轮复检仍有 ${failedGates.length} 项阻断问题。`
             }
           }
           setIssue(rt, currentIssue)
@@ -3342,14 +3435,14 @@ async function runIduxPageGeneration(
           finishStep(rt, step, latestError, 'failed')
           return { kind: 'failed', error: new Error(latestError) }
         }
-        if (repairCount >= 2) {
-          latestError = `自动修复已达到 2 轮上限：${latestError}`
+        if (repairCount >= 4) {
+          latestError = `已依次尝试确定性修复、模型补丁、定向重生成和证据扩展，仍未通过：${latestError}`
           if (currentIssue) {
             currentIssue = { ...currentIssue, status: 'failed', detail: latestError }
             setIssue(rt, currentIssue)
           }
           finishStep(rt, step, latestError, 'failed')
-          return { kind: 'failed', error: new Error(latestError) }
+          return { kind: 'suspend', reason: 'idux-quality-strategies-exhausted' }
         }
         if (!currentIssue) {
           currentIssue = {
@@ -3360,23 +3453,60 @@ async function runIduxPageGeneration(
             status: 'fixing',
             beforeShotUrl: null,
             afterShotUrl: null,
-            detail: `源码或构建门禁发现 ${failedGates.length} 项问题，正在自动修复。`
+            detail: `${iduxFailureContract(failedGates)}\n正在按策略阶梯自动修复。`
           }
           setIssue(rt, currentIssue)
         }
-        const repaired = repairIduxPageDraft(draft, failedGates)
+        const attempted = new Set(iduxState.strategiesTried)
+        let repaired = repairIduxPageDraft(draft, failedGates)
+        let strategy = 'deterministic-repair'
+        if (attempted.has(strategy) || repaired.actions.length === 0) {
+          repaired = { draft, actions: [] }
+          strategy = 'model-source-repair'
+        }
+        if (strategy === 'model-source-repair' && !attempted.has(strategy)) {
+          const modelRepair = await repairIduxPageWithModel(
+            draft,
+            requirement,
+            failedGates,
+            cachedSettings
+          ).catch(() => null)
+          if (modelRepair) repaired = modelRepair
+        }
         if (repaired.actions.length === 0) {
-          latestError = `没有可审计的安全修复规则：${latestError}`
-          if (currentIssue) {
-            currentIssue = { ...currentIssue, status: 'failed', detail: latestError }
-            setIssue(rt, currentIssue)
+          const issueContract = failedGates
+            .map(gate => `${gate.id}：期望“${gate.title}”；实际“${gate.detail ?? '未通过'}”`)
+            .join('；')
+          strategy = !attempted.has('targeted-regeneration')
+            ? 'targeted-regeneration'
+            : 'evidence-expanded-replan'
+          if (attempted.has(strategy)) {
+            latestError = `全部自主修复策略已经执行且复检失败：${latestError}`
+            finishStep(rt, step, latestError, 'failed')
+            return { kind: 'suspend', reason: 'idux-quality-strategies-exhausted' }
           }
-          finishStep(rt, step, latestError, 'failed')
-          return { kind: 'failed', error: new Error(latestError) }
+          generated = await generateIduxPage(
+            workspace,
+            `${requirement}\n\n必须定向修复以下验收问题：${issueContract}`
+              + (strategy === 'evidence-expanded-replan'
+                  ? '\n必须重新核对所有相关 IDux 组件证据和完整交互状态后再规划。'
+                  : ''),
+            cachedSettings,
+            reference ? { reference } : {}
+          )
+          repaired = {
+            draft: generated.draft,
+            actions: [strategy === 'evidence-expanded-replan'
+              ? '扩展组件证据后重新规划并生成受控页面'
+              : '依据失败的验收场景定向重新生成受控页面']
+          }
         }
         draft = repaired.draft
+        validateIduxBuildInput(draft)
+        store.writeArtifactDraft(rt.s.dashboard.id, revisionId, draft)
+        iduxState.strategiesTried.push(strategy)
         repairCount += 1
-        finishStep(rt, step, repaired.actions.join('；'))
+        finishStep(rt, step, `${repaired.actions.join('；')}（策略：${strategy}）`)
         finishStage(rt, 'st-5')
         return {
           kind: 'done',
@@ -3449,6 +3579,11 @@ async function runIduxPageGeneration(
           targetProfile: artifactRegistry.get('idux-page').createTargetProfile()
         })
         committed = true
+        iduxState.unresolved = false
+        iduxState.candidateRevisionId = null
+        iduxState.strategiesTried = []
+        iduxState.lastFailure = null
+        save(rt)
       }
     })
     await engine.handleEvent({ kind: 'start', initialNode: 'planner' })
@@ -3475,10 +3610,65 @@ async function runIduxPageGeneration(
       })
     }
     pushAgent(rt, `这次 IDux 页面没有进入版本历史：${message}`)
+    iduxState.unresolved = true
+    iduxState.candidateRevisionId = revisionId
+    iduxState.lastFailure = message
+    save(rt)
+    failActiveStage(rt, message)
+    const options: CardOption[] = [
+      {
+        id: 'opt-idux-retry',
+        title: '继续自主修复',
+        consequence: '保留累计需求和失败候选，再执行一轮完整策略链',
+        recommended: true,
+        recommendReason: '失败候选和验收证据都已保留，不会从空白重新生成',
+        riskLevel: 'low',
+        autoExecuteAt: null
+      },
+      {
+        id: 'opt-idux-adjust',
+        title: '调整需求',
+        consequence: '补充或改变验收目标后继续，原需求仍会保留在项目上下文中',
+        recommended: false,
+        recommendReason: null,
+        riskLevel: 'medium',
+        autoExecuteAt: null
+      },
+      {
+        id: 'opt-assist',
+        title: '人工协助',
+        consequence: '把完整失败轨迹交给支持人员检查',
+        recommended: false,
+        recommendReason: null,
+        riskLevel: 'medium',
+        autoExecuteAt: null
+      }
+    ]
+    const exhaustedStrategies = iduxState.strategiesTried.length >= 3
+    const problem: ProblemMessage = {
+      kind: 'problem',
+      id: nextId('m'),
+      createdAt: Date.now(),
+      title: exhaustedStrategies ? '自主修复策略已全部尝试' : '当前环境无法继续自主修复',
+      description: message,
+      options,
+      chosenOptionId: null,
+      relatedIssueId: currentIssue?.id ?? null
+    }
+    pushMessage(rt, problem)
+    setBlocker(rt, {
+      id: nextId('blk'),
+      type: 'failed',
+      title: problem.title,
+      description: problem.description,
+      options,
+      relatedMessageId: problem.id
+    })
+    setStatus(rt, 'blocked')
     updateDashboard(rt, { status: 'needs_attention' })
   } finally {
     rt.running = false
-    setStatus(rt, 'idle')
+    if (committed) setStatus(rt, 'idle')
     drainQueue(rt)
   }
 }
@@ -3638,7 +3828,12 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
       resolveClarificationWithText(rt, text)
       break
     case 'blocked':
-      handleFreeTextDuringBlocked(rt, text)
+      if (rt.s.dashboard.artifactKind === 'idux-page') {
+        setBlocker(rt, null)
+        void runIduxPageGeneration(rt, text, attachments)
+      } else {
+        handleFreeTextDuringBlocked(rt, text)
+      }
       break
     case 'assisting':
       pushAgent(rt, '支持人员正在处理，稍等一下～')
@@ -4185,7 +4380,8 @@ function emptySession(dash: Dashboard): SessionData {
     graph: null,
     assistSession: null,
     previewResolution: '1920x1080',
-    pendingRun: null
+    pendingRun: null,
+    iduxState: undefined
   }
 }
 
@@ -4194,6 +4390,21 @@ function makeRuntime(s: SessionData): Runtime {
   if (s.runStatus === 'generating' || s.runStatus === 'assisting') {
     s.runStatus = 'idle'
     s.pendingRun = null
+    const interruptedAt = Date.now()
+    for (const stage of s.stages ?? []) {
+      if (stage.state === 'active') {
+        stage.state = 'failed'
+        stage.finishedAt = interruptedAt
+        stage.detail = '服务重启中断了本轮执行，可继续恢复失败候选'
+      }
+    }
+    for (const step of s.steps ?? []) {
+      if (step.state === 'active') {
+        step.state = 'failed'
+        step.finishedAt = interruptedAt
+        step.detail = '服务重启中断'
+      }
+    }
   }
   s.dashboard.artifactKind ??= 'dashboard'
   s.dashboard.targetProfile ??= targetProfileFor(s.dashboard.artifactKind)
@@ -4206,6 +4417,7 @@ function makeRuntime(s: SessionData): Runtime {
   s.assistSession = null
   s.steps ??= [] // 旧版会话文件没有执行轨迹字段
   s.graph ??= null // 旧版会话文件没有流程图快照字段
+  if (s.dashboard.artifactKind === 'idux-page') getIduxState({ s } as Runtime)
   s.preview.url = normalizePreviewUrl(s.preview.url)
   for (const [versionId, url] of Object.entries(s.versionUrls)) {
     s.versionUrls[versionId] = normalizePreviewUrl(url) ?? url

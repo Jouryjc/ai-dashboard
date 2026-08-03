@@ -60,4 +60,4 @@ import '@idux/components/default.full.css'
 
 ## Repair conservatively
 
-Use [quality-overrides.css](assets/quality-overrides.css) only for known layout failures. If a failure cannot be mapped to a bounded rule, stop and report it instead of applying broad CSS.
+Use [quality-overrides.css](assets/quality-overrides.css) only for known layout failures. For other failures, return a structured expected/observed difference to the Loop Engineer. A model repair may replace only approved `src` files and must pass the same static, build, runtime, network, viewport, and task-scenario gates before it is accepted.

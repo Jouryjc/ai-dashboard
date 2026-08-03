@@ -308,6 +308,46 @@ async function main() {
     fail('IDux ZIP 含可复现源码与精确依赖', Object.keys(iduxFiles).join('、'))
   }
   ok('IDux 参考图 → 结构化规格 → 双视口源码 ZIP', Object.keys(iduxFiles).join('、'))
+
+  // 增量需求必须保留首轮业务目标与参考图蓝图，并以真实交互场景验收详情页。
+  await api('POST', `/dashboards/${iduxProject.id}/messages`, { text: '增加详情页面' })
+  const iduxDetailReady = await iduxSse.waitFor(
+    'previewReady',
+    event => event.data?.versionId !== iduxVersion.id,
+    180_000,
+    'IDux 累计需求详情页 previewReady'
+  )
+  const detailVersions = (await api('GET', `/dashboards/${iduxProject.id}/versions`)).json
+  const detailVersion = detailVersions?.[0]
+  const detailGateIds = detailVersion?.validationReport?.gates
+    ?.filter(gate => gate.status === 'passed')
+    .map(gate => gate.id) ?? []
+  if (
+    detailVersion?.validationReport?.status !== 'passed' ||
+    !detailGateIds.includes('scenario-open-detail-large') ||
+    !detailGateIds.includes('scenario-open-detail-small')
+  ) {
+    fail('IDux 详情增量通过双视口任务场景', JSON.stringify(detailVersion?.validationReport))
+  }
+  const detailExport = await fetch(
+    `${BASE}/api/v1/dashboards/${iduxProject.id}/versions/${detailVersion.id}/export`
+  )
+  const detailFiles = unzipSync(new Uint8Array(await detailExport.arrayBuffer()))
+  const detailApp = strFromU8(detailFiles['src/App.vue'])
+  const detailEvidence = JSON.parse(strFromU8(detailFiles['generation-evidence.json']))
+  if (
+    !detailApp.includes('data-testid="detail-view"') ||
+    !detailApp.includes('"enabled": true') ||
+    !detailApp.includes('"title": "云主机管理"') ||
+    !detailApp.includes('"navigation": "side"') ||
+    !detailEvidence.componentQueries?.some(query => query.args?.includes('desc'))
+  ) {
+    fail('IDux 增量修改保留累计需求、参考图与动态组件证据')
+  }
+  ok(
+    'IDux 累计需求 → 真实详情页 → 双视口交互复检',
+    `${iduxDetailReady.data.url}；${detailGateIds.filter(id => id.startsWith('scenario-')).join('、')}`
+  )
   await api('POST', `/dashboards/${iduxProject.id}/versions/${iduxVersion.id}/rollback`)
   const iduxRollback = await iduxSse.waitFor(
     'versionAdded',
@@ -360,7 +400,18 @@ async function main() {
   ) {
     fail('IDux 图片复刻不允许静默降级', JSON.stringify(noVisionIssue.data))
   }
-  ok('IDux 模型不支持看图时明确失败，不产出无关页面')
+  const noVisionSnapshot = (await api('POST', `/dashboards/${noVisionProject.id}/enter`)).json
+  if (
+    noVisionSnapshot?.runStatus !== 'blocked' ||
+    noVisionSnapshot?.stages?.some(stage => stage.state === 'active') ||
+    !noVisionSnapshot?.stages?.some(stage => stage.state === 'failed')
+  ) {
+    fail('IDux 失败状态保持一致', JSON.stringify({
+      runStatus: noVisionSnapshot?.runStatus,
+      stages: noVisionSnapshot?.stages
+    }))
+  }
+  ok('IDux 模型不支持看图时明确失败，且无 idle + active 假状态')
   noVisionSse.close()
   await api('DELETE', `/projects/${noVisionProject.id}`)
   await api('PUT', '/settings', {

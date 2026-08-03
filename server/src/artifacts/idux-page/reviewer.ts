@@ -63,14 +63,14 @@ function parseReview(value: unknown): IduxVisualFinding[] {
   return findings
 }
 
-function fallbackReview(detail: string): IduxVisualReview {
+function fallbackReview(detail: string, required: boolean): IduxVisualReview {
   return {
     reviewedByModel: false,
     findings: [],
     gates: [{
       id: 'model-visual-review',
       title: '视觉模型复核',
-      status: 'passed',
+      status: required ? 'failed' : 'skipped',
       detail
     }]
   }
@@ -81,7 +81,8 @@ export async function reviewIduxPageVisual(
   request: string,
   screenshot: Buffer | null,
   smallScreenshot: Buffer | null,
-  referenceImage: string | null = null
+  referenceImage: string | null = null,
+  scenarioScreenshots: Buffer[] = []
 ): Promise<IduxVisualReview> {
   if (
     !screenshot ||
@@ -90,7 +91,12 @@ export async function reviewIduxPageVisual(
     !settings.apiKey?.trim() ||
     !settings.model?.trim()
   ) {
-    return fallbackReview('模型或双视口截图不可用，已由确定性视觉门禁覆盖')
+    return fallbackReview(
+      referenceImage
+        ? '参考图生成必须完成视觉模型对比，但模型或双视口截图不可用'
+        : '视觉模型或双视口截图不可用；本轮仅记录为跳过，不计作通过',
+      Boolean(referenceImage)
+    )
   }
   try {
     const content: Array<
@@ -125,6 +131,12 @@ export async function reviewIduxPageVisual(
         image_url: { url: `data:image/png;base64,${smallScreenshot.toString('base64')}` }
       }
     )
+    scenarioScreenshots.slice(0, 4).forEach((shot, index) => {
+      content.push(
+        { type: 'text', text: `截图 ${index + 1}D：执行详情交互后的页面状态。` },
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${shot.toString('base64')}` } }
+      )
+    })
     const reply = await gw.chatCompletion(settings, {
       role: 'vision',
       temperature: 0,
@@ -154,6 +166,11 @@ export async function reviewIduxPageVisual(
         }]
     return { reviewedByModel: true, findings, gates }
   } catch {
-    return fallbackReview('视觉模型未返回可信结构，已由确定性视觉门禁覆盖')
+    return fallbackReview(
+      referenceImage
+        ? '参考图生成必须完成视觉模型对比，但模型没有返回可信结构'
+        : '视觉模型没有返回可信结构；本轮仅记录为跳过，不计作通过',
+      Boolean(referenceImage)
+    )
   }
 }

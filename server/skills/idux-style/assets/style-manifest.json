@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "skill": "idux-style",
-  "profile": "management-list",
+  "profile": "business-page",
   "iduxVersion": "2.11.0",
   "source": {
     "repository": "https://github.com/IDuxFE/idux",

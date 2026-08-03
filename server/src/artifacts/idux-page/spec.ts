@@ -26,6 +26,18 @@ export interface IduxSummaryCard {
   tone: 'normal' | 'success' | 'warning'
 }
 
+export interface IduxDetailSpec {
+  enabled: boolean
+  title: string
+  fields: string[]
+}
+
+export interface IduxAcceptanceScenario {
+  id: 'open-detail'
+  action: 'open-detail'
+  requiredFieldLabels: string[]
+}
+
 export interface IduxPageSpec {
   title: string
   description: string
@@ -35,7 +47,11 @@ export interface IduxPageSpec {
   summaryCards: IduxSummaryCard[]
   columns: Array<{ key: string; label: string; type: IduxColumnType }>
   rows: Array<Record<string, string | number>>
+  detail: IduxDetailSpec
+  acceptanceScenarios: IduxAcceptanceScenario[]
 }
+
+type IduxPageBaseSpec = Omit<IduxPageSpec, 'detail' | 'acceptanceScenarios'>
 
 const SAFE_FIELD = /^[a-z][A-Za-z0-9]{0,31}$/
 const COLUMN_TYPES = new Set<IduxColumnType>(['text', 'number', 'status', 'datetime'])
@@ -68,6 +84,30 @@ function safeDemoString(value: string): string {
     .replace(/\b172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}\b/g, '192.0.2.30')
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, 'demo@example.invalid')
     .replace(/\b1[3-9]\d{9}\b/g, '138****0000')
+}
+
+function detailRequested(request: string): boolean {
+  return /详情|明细|查看.*(?:记录|信息)|detail/i.test(request)
+}
+
+function defaultDetail(
+  columns: IduxPageSpec['columns'],
+  entityName: string,
+  enabled: boolean
+): Pick<IduxPageSpec, 'detail' | 'acceptanceScenarios'> {
+  const fields = enabled ? columns.slice(0, 6).map(column => column.key) : []
+  return {
+    detail: { enabled, title: `${entityName}详情`, fields },
+    acceptanceScenarios: enabled
+      ? [{
+          id: 'open-detail',
+          action: 'open-detail',
+          requiredFieldLabels: columns
+            .filter(column => fields.includes(column.key))
+            .map(column => column.label)
+        }]
+      : []
+  }
 }
 
 function parsePageSpec(value: unknown): IduxPageSpec {
@@ -170,6 +210,33 @@ function parsePageSpec(value: unknown): IduxPageSpec {
       }
     })
 
+  const detailRaw = raw.detail && typeof raw.detail === 'object'
+    ? raw.detail as Partial<IduxDetailSpec>
+    : null
+  const detailEnabled = detailRaw?.enabled === true
+  const requestedFields = Array.isArray(detailRaw?.fields)
+    ? detailRaw.fields.filter((field): field is string => typeof field === 'string' && keys.has(field))
+    : []
+  const detailFields = [...new Set(requestedFields)].slice(0, 8)
+  const detail = {
+    enabled: detailEnabled,
+    title: detailEnabled && validText(detailRaw?.title, 2, 30)
+      ? detailRaw.title.trim()
+      : `${raw.entityName.trim()}详情`,
+    fields: detailEnabled
+      ? (detailFields.length > 0 ? detailFields : columns.slice(0, 6).map(column => column.key))
+      : []
+  }
+  const acceptanceScenarios: IduxAcceptanceScenario[] = detail.enabled
+    ? [{
+        id: 'open-detail',
+        action: 'open-detail',
+        requiredFieldLabels: columns
+          .filter(column => detail.fields.includes(column.key))
+          .map(column => column.label)
+      }]
+    : []
+
   return {
     title: raw.title.trim(),
     description: raw.description.trim(),
@@ -178,7 +245,9 @@ function parsePageSpec(value: unknown): IduxPageSpec {
     presentation,
     summaryCards,
     columns,
-    rows
+    rows,
+    detail,
+    acceptanceScenarios
   }
 }
 
@@ -192,7 +261,7 @@ function standardSummary(entityName: string, total: number): IduxSummaryCard[] {
 }
 
 function cloudHostSpec(): IduxPageSpec {
-  return {
+  const base: IduxPageBaseSpec = {
     title: '云主机管理',
     description: '集中查看演示实例的运行状态、地域、规格、公网地址和创建时间。',
     entityName: '云主机',
@@ -217,12 +286,16 @@ function cloudHostSpec(): IduxPageSpec {
       { instanceId: 'ecs-demo-18ac', name: '监控节点-01', status: '运行中', region: '华北 2（北京）', specification: '4 核 8 GB', publicIp: '198.51.100.96', createdAt: '2026-07-08 19:20:00' }
     ]
   }
+  return { ...base, ...defaultDetail(base.columns, base.entityName, false) }
 }
 
 function fallbackSpec(request: string): IduxPageSpec {
-  if (/云主机|云服务器|ecs|cloud\s*host/i.test(request)) return cloudHostSpec()
+  if (/云主机|云服务器|ecs|cloud\s*host/i.test(request)) {
+    const base = cloudHostSpec()
+    return { ...base, ...defaultDetail(base.columns, base.entityName, detailRequested(request)) }
+  }
   if (/订单|交易/.test(request)) {
-    return {
+    const base: IduxPageBaseSpec = {
       title: '订单管理',
       description: '查看演示订单的状态、金额和创建时间，支持关键词过滤。',
       entityName: '订单',
@@ -243,8 +316,9 @@ function fallbackSpec(request: string): IduxPageSpec {
         { orderNo: 'DEMO-20260731-004', customer: '演示客户 D', amount: 399, status: '已取消', createdAt: '2026-07-31 13:42:00' }
       ]
     }
+    return { ...base, ...defaultDetail(base.columns, base.entityName, detailRequested(request)) }
   }
-  return {
+  const base: IduxPageBaseSpec = {
     title: '业务记录管理',
     description: '用于查看和筛选安全演示数据，可在确认真实字段后继续调整。',
     entityName: '记录',
@@ -265,6 +339,7 @@ function fallbackSpec(request: string): IduxPageSpec {
       { name: '演示记录 D', category: '其他分类', owner: '演示成员 4', status: '已暂停', updatedAt: '2026-07-31 14:10:00' }
     ]
   }
+  return { ...base, ...defaultDetail(base.columns, base.entityName, detailRequested(request)) }
 }
 
 function referenceFallbackSpec(request: string, reference: IduxReferenceAnalysis): IduxPageSpec {
@@ -316,7 +391,8 @@ function referenceFallbackSpec(request: string, reference: IduxReferenceAnalysis
     },
     summaryCards: reference.summaryCards,
     columns: safeColumns,
-    rows
+    rows,
+    ...defaultDetail(safeColumns, entityName, detailRequested(request))
   }
 }
 
@@ -350,7 +426,10 @@ export async function planIduxPageSpec(
         }
       ]
     })
-    return parsePageSpec(gw.extractJson(response))
+    const planned = parsePageSpec(gw.extractJson(response))
+    return detailRequested(request) && !planned.detail.enabled
+      ? { ...planned, ...defaultDetail(planned.columns, planned.entityName, true) }
+      : planned
   } catch {
     return reference ? referenceFallbackSpec(request, reference) : fallbackSpec(request)
   }

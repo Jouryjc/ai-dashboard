@@ -7,7 +7,7 @@ import type { IduxPageSpec } from './spec'
 interface IduxStyleManifest {
   schemaVersion: 1
   skill: 'idux-style'
-  profile: 'management-list'
+  profile: 'business-page'
   iduxVersion: string
   source: {
     repository: string
@@ -20,7 +20,7 @@ interface IduxStyleManifest {
 
 export interface IduxStyleEvidence {
   skill: 'idux-style'
-  profile: 'management-list'
+  profile: 'business-page'
   iduxVersion: string
   sourceCommit: string
   repository: string
@@ -59,7 +59,7 @@ function parseManifest(source: string): IduxStyleManifest {
   if (
     value.schemaVersion !== 1 ||
     value.skill !== 'idux-style' ||
-    value.profile !== 'management-list' ||
+    value.profile !== 'business-page' ||
     typeof value.iduxVersion !== 'string' ||
     typeof value.source?.repository !== 'string' ||
     typeof value.source.website !== 'string' ||
@@ -133,6 +133,7 @@ export function renderIduxListPage(
   bundle: IduxStyleBundle,
   spec: IduxPageSpec
 ): { appVue: string; pageCss: string } {
+  const detail = spec.detail ?? { enabled: false, title: `${spec.entityName}详情`, fields: [] }
   const columns = spec.columns.map((column, index) => ({
     title: column.label,
     dataKey: column.key,
@@ -151,7 +152,11 @@ export function renderIduxListPage(
     entityName: spec.entityName,
     primaryAction: spec.primaryAction,
     presentation: spec.presentation,
-    summaryCards: spec.summaryCards
+    summaryCards: spec.summaryCards,
+    detail,
+    detailFields: spec.columns
+      .filter(column => detail.fields.includes(column.key))
+      .map(column => ({ key: column.key, label: column.label }))
   }
 
   let appVue = bundle.appTemplate

@@ -45,7 +45,7 @@ function stepsOf(stageId: string): AgentStep[] {
 /** 阶段耗时：进行中算到现在，已完成算到完成时间 */
 function elapsedOf(s: Stage): string {
   if (!s.startedAt) return ''
-  const end = s.state === 'done' && s.finishedAt ? s.finishedAt : now.value
+  const end = (s.state === 'done' || s.state === 'failed') && s.finishedAt ? s.finishedAt : now.value
   return formatElapsed(end - s.startedAt)
 }
 </script>
@@ -65,6 +65,12 @@ function elapsedOf(s: Stage): string {
           v-else-if="s.state === 'active'"
           class="h-4 w-4 rounded-full bg-status-generating ring-4 ring-primary-soft animate-pulse-blue"
         />
+        <AppIcon
+          v-else-if="s.state === 'failed'"
+          name="close"
+          :size="16"
+          class="text-status-attention"
+        />
         <span
           v-else
           class="h-4 w-4 rounded-full border-2 border-line-strong bg-card"
@@ -81,6 +87,8 @@ function elapsedOf(s: Stage): string {
               ? 'font-medium text-ink'
               : s.state === 'done'
                 ? 'text-ink-secondary'
+                : s.state === 'failed'
+                  ? 'text-status-attention'
                 : 'text-ink-faint'"
           >{{ s.title }}</p>
           <span v-if="s.state === 'active' && elapsedOf(s)" class="shrink-0 text-xs text-status-generating">
@@ -88,6 +96,9 @@ function elapsedOf(s: Stage): string {
           </span>
           <span v-else-if="s.state === 'done' && elapsedOf(s)" class="shrink-0 text-xs text-ink-faint">
             用时 {{ elapsedOf(s) }}
+          </span>
+          <span v-else-if="s.state === 'failed' && elapsedOf(s)" class="shrink-0 text-xs text-status-attention">
+            失败于 {{ elapsedOf(s) }}
           </span>
         </div>
 

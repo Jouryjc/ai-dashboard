@@ -1,11 +1,13 @@
 import fs from 'node:fs'
 import { chromium, type Page } from 'playwright'
 import type { ValidationGateResult } from '../../wire'
+import type { IduxAcceptanceScenario } from './spec'
 
 export interface IduxRuntimeValidation {
   gates: ValidationGateResult[]
   screenshot: Buffer | null
   smallScreenshot: Buffer | null
+  scenarioScreenshots: Buffer[]
 }
 
 interface IduxStyleAudit {
@@ -82,7 +84,10 @@ function collectRuntimeSignals(
   })
 }
 
-export async function validateBuiltIduxPage(url: string): Promise<IduxRuntimeValidation> {
+export async function validateBuiltIduxPage(
+  url: string,
+  scenarios: IduxAcceptanceScenario[] = []
+): Promise<IduxRuntimeValidation> {
   const executablePath = browserExecutable()
   if (!executablePath) {
     throw new Error('浏览器验收环境不可用：请安装 Chromium、Chrome 或 Edge')
@@ -92,6 +97,7 @@ export async function validateBuiltIduxPage(url: string): Promise<IduxRuntimeVal
   const externalRequests = new Set<string>()
   let screenshot: Buffer | null = null
   let smallScreenshot: Buffer | null = null
+  const scenarioScreenshots: Buffer[] = []
   try {
     const expectedOrigin = new URL(url).origin
     const large = await browser.newPage({ viewport: { width: 1920, height: 1080 } })
@@ -190,6 +196,27 @@ export async function validateBuiltIduxPage(url: string): Promise<IduxRuntimeVal
       rowsBeforeSearch > 1 &&
       rowsAfterSearch > 0 &&
       rowsAfterSearch < rowsBeforeSearch
+    await searchInput.fill('')
+
+    const detailScenario = scenarios.find(scenario => scenario.action === 'open-detail')
+    let largeDetailWorks = detailScenario ? false : true
+    let largeDetailDetail: string | null = null
+    if (detailScenario) {
+      const identity = (await tableRows.first().locator('td').first().textContent())?.trim() ?? ''
+      const detailButton = tableRows.first().getByRole('button', { name: '详情', exact: true })
+      await detailButton.click()
+      const detailView = large.locator('[data-testid="detail-view"]')
+      const visible = await detailView.isVisible().catch(() => false)
+      const content = visible ? (await detailView.textContent()) ?? '' : ''
+      const missingLabels = detailScenario.requiredFieldLabels.filter(label => !content.includes(label))
+      largeDetailWorks = visible && identity.length > 0 && content.includes(identity) && missingLabels.length === 0
+      largeDetailDetail = largeDetailWorks
+        ? null
+        : `详情可见：${visible ? '是' : '否'}；记录标识：${identity || '缺失'}；缺少字段：${missingLabels.join('、') || '无'}`
+      if (visible) scenarioScreenshots.push(await large.screenshot({ type: 'png', fullPage: false }))
+      await large.locator('[data-testid="back-to-list"]').click().catch(() => undefined)
+      largeDetailWorks = largeDetailWorks && await large.locator('[data-testid="list-view"]').isVisible().catch(() => false)
+    }
     await large.close()
 
     const small = await browser.newPage({ viewport: { width: 1366, height: 768 } })
@@ -230,6 +257,24 @@ export async function validateBuiltIduxPage(url: string): Promise<IduxRuntimeVal
       }
     })()`) as IduxSmallAudit
     smallScreenshot = await small.screenshot({ type: 'png', fullPage: false })
+    let smallDetailWorks = detailScenario ? false : true
+    let smallDetailDetail: string | null = null
+    if (detailScenario) {
+      const firstSmallRow = small.locator('tbody tr').first()
+      const identity = (await firstSmallRow.locator('td').first().textContent())?.trim() ?? ''
+      await firstSmallRow.getByRole('button', { name: '详情', exact: true }).click()
+      const detailView = small.locator('[data-testid="detail-view"]')
+      const visible = await detailView.isVisible().catch(() => false)
+      const content = visible ? (await detailView.textContent()) ?? '' : ''
+      const missingLabels = detailScenario.requiredFieldLabels.filter(label => !content.includes(label))
+      smallDetailWorks = visible && identity.length > 0 && content.includes(identity) && missingLabels.length === 0
+      smallDetailDetail = smallDetailWorks
+        ? null
+        : `详情可见：${visible ? '是' : '否'}；记录标识：${identity || '缺失'}；缺少字段：${missingLabels.join('、') || '无'}`
+      if (visible) scenarioScreenshots.push(await small.screenshot({ type: 'png', fullPage: false }))
+      await small.locator('[data-testid="back-to-list"]').click().catch(() => undefined)
+      smallDetailWorks = smallDetailWorks && await small.locator('[data-testid="list-view"]').isVisible().catch(() => false)
+    }
     await small.close()
 
     const iduxStylesLoaded =
@@ -353,9 +398,25 @@ export async function validateBuiltIduxPage(url: string): Promise<IduxRuntimeVal
         '页面主操作有明确反馈',
         primaryActionWorks,
         '点击主操作后页面没有可感知的状态反馈'
-      )
+      ),
+      ...(detailScenario
+        ? [
+            gate(
+              'scenario-open-detail-large',
+              '1920×1080 可打开所选记录详情并返回列表',
+              largeDetailWorks,
+              largeDetailDetail
+            ),
+            gate(
+              'scenario-open-detail-small',
+              '1366×768 可打开所选记录详情并返回列表',
+              smallDetailWorks,
+              smallDetailDetail
+            )
+          ]
+        : [])
     ]
-    return { gates, screenshot, smallScreenshot }
+    return { gates, screenshot, smallScreenshot, scenarioScreenshots }
   } finally {
     await browser.close()
   }

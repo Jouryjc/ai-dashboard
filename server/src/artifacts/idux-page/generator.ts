@@ -7,7 +7,7 @@ import type {
   IduxReferenceAnalysis,
   IduxReferenceEvidence
 } from './reference'
-import { planIduxPageSpec } from './spec'
+import { planIduxPageSpec, type IduxPageSpec } from './spec'
 import {
   loadIduxStyleBundle,
   renderIduxListPage,
@@ -16,6 +16,7 @@ import {
 
 export interface IduxPageGeneration {
   draft: ArtifactDraft
+  spec: IduxPageSpec
   evidence: {
     schemaVersion: 1
     iduxVersion: string
@@ -164,7 +165,10 @@ export default defineConfig({
   }
 }
 
-async function collectComponentEvidence(workspaceRoot: string): Promise<IduxEvidence[]> {
+async function collectComponentEvidence(
+  workspaceRoot: string,
+  spec: IduxPageSpec
+): Promise<IduxEvidence[]> {
   // The local IDux cache uses a file lock. Keep queries sequential so evidence
   // ordering and the combined hash remain deterministic.
   const queries: IduxEvidence[] = []
@@ -176,6 +180,12 @@ async function collectComponentEvidence(workspaceRoot: string): Promise<IduxEvid
   queries.push(await iduxCli.info(workspaceRoot, 'button', 'props', { api: 'IxButton', version: 'bundled' }))
   queries.push(await iduxCli.info(workspaceRoot, 'card', 'props', { api: 'IxCard', version: 'bundled' }))
   queries.push(await iduxCli.info(workspaceRoot, 'theme', 'props', { api: 'IxThemeProvider', version: 'bundled' }))
+  if (spec.detail.enabled) {
+    queries.push(await iduxCli.list(workspaceRoot, 'desc', 'bundled'))
+    queries.push(await iduxCli.info(workspaceRoot, 'desc', 'props', { api: 'IxDesc', version: 'bundled' }))
+    queries.push(await iduxCli.info(workspaceRoot, 'desc', 'props', { api: 'IxDescItem', version: 'bundled' }))
+    queries.push(await iduxCli.demo(workspaceRoot, 'desc', 'Basic', 'bundled'))
+  }
   return queries
 }
 
@@ -187,7 +197,13 @@ export async function generateIduxPage(
 ): Promise<IduxPageGeneration> {
   fs.mkdirSync(workspaceRoot, { recursive: true })
   const styleBundle = loadIduxStyleBundle()
-  const queries = await collectComponentEvidence(workspaceRoot)
+  const spec = await planIduxPageSpec(
+    request,
+    styleBundle.plannerGuidance,
+    settings,
+    options.reference?.analysis
+  )
+  const queries = await collectComponentEvidence(workspaceRoot, spec)
   const sources = queries.map(evidenceSource)
   const [source] = sources
   if (!source || !sources.every(item => item.version === source.version && item.commit === source.commit)) {
@@ -205,12 +221,6 @@ export async function generateIduxPage(
     throw new Error('idux-style 设计基线与 IDux 组件证据版本不一致')
   }
 
-  const spec = await planIduxPageSpec(
-    request,
-    styleBundle.plannerGuidance,
-    settings,
-    options.reference?.analysis
-  )
   const rendered = renderIduxListPage(styleBundle, spec)
   const combinedSha256 = crypto
     .createHash('sha256')
@@ -233,6 +243,7 @@ export async function generateIduxPage(
   }
 
   return {
+    spec,
     draft: projectFiles(
       runtimeVersion,
       spec.title,

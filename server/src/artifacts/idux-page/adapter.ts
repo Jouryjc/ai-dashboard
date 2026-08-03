@@ -123,7 +123,7 @@ function styleEvidencePolicy(
       /^[0-9a-f]{64}$/.test(value.combinedSha256) &&
       (value.theme === 'light' || value.theme === 'dark') &&
       style?.skill === 'idux-style' &&
-      style.profile === 'management-list' &&
+      style.profile === 'business-page' &&
       style.iduxVersion === expectedVersion &&
       style.sourceCommit === value.sourceCommit &&
       style.repository === 'https://github.com/IDuxFE/idux' &&

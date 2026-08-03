@@ -249,6 +249,38 @@ h1 {
   font-size: var(--ix-font-size-sm);
 }
 
+.detail-view {
+  display: grid;
+  gap: 20px;
+}
+
+.detail-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.detail-heading h1 {
+  margin: 6px 0 8px;
+  font-size: 32px;
+  line-height: 1.2;
+}
+
+.detail-card {
+  min-height: 280px;
+}
+
+.detail-card .ix-desc {
+  width: 100%;
+}
+
+@media (max-width: 1500px) {
+  .detail-heading h1 {
+    font-size: 28px;
+  }
+}
+
 @media (max-width: 1500px) {
   .page-shell {
     padding: 24px 32px;

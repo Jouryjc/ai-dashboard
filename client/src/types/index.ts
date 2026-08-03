@@ -155,8 +155,8 @@ export const RUN_STATUS_LABEL: Record<RunStatus, string> = {
 
 /* ==================== 执行过程（右栏面板） ==================== */
 
-/** 阶段节点状态：✓ 已完成 / ● 进行中 / ○ 未开始 */
-export type StageState = 'done' | 'active' | 'pending'
+/** 阶段节点状态：✓ 已完成 / ● 进行中 / ○ 未开始 / ✕ 已失败 */
+export type StageState = 'done' | 'active' | 'pending' | 'failed'
 
 /** 阶段时间线上的一个节点（新建 6~8 步，增量修改收敛为 3 步） */
 export interface Stage {
