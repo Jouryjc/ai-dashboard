@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Dashboard 工程指南"
+  short_description: "维护双产物生成架构、Loop 工程闭环以及质量安全边界"
+  default_prompt: "使用 $ai-dashboard-skill 分析并完成这个 ai-dashboard 项目任务。"
