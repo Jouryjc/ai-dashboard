@@ -1,7 +1,13 @@
+/**
+ * business-app 视觉复核器。
+ *
+ * 将双视口首屏、场景结果页和可选参考图提交给视觉模型，只接受结构化且级别一致的复核结论。
+ */
 import * as gw from '../../gateway'
 import { prompt } from '../../prompts'
 import type { ModelSettings, ValidationGateResult } from '../../wire'
 
+/** 视觉问题的受控分类。 */
 export type BusinessAppVisualCategory =
   | 'idux-style'
   | 'hierarchy'
@@ -11,12 +17,14 @@ export type BusinessAppVisualCategory =
   | 'content'
   | 'interaction'
 
+/** 单条视觉问题及其阻断级别。 */
 export interface BusinessAppVisualFinding {
   category: BusinessAppVisualCategory
   severity: 'major' | 'minor'
   detail: string
 }
 
+/** 模型视觉复核结果及转换后的质量门禁。 */
 export interface BusinessAppVisualReview {
   gates: ValidationGateResult[]
   findings: BusinessAppVisualFinding[]
@@ -33,6 +41,7 @@ const CATEGORIES = new Set<BusinessAppVisualCategory>([
   'interaction'
 ])
 
+/** 解析并校验视觉模型结论，拒绝未知分类和自相矛盾的 verdict。 */
 function parseReview(value: unknown): BusinessAppVisualFinding[] {
   if (!value || typeof value !== 'object') throw new Error('视觉验收结果不是对象')
   const raw = value as { verdict?: unknown; issues?: unknown }
@@ -63,6 +72,7 @@ function parseReview(value: unknown): BusinessAppVisualFinding[] {
   return findings
 }
 
+/** 在视觉模型不可用或输出不可信时生成明确的降级门禁。 */
 function fallbackReview(detail: string, required: boolean): BusinessAppVisualReview {
   return {
     reviewedByModel: false,
@@ -76,6 +86,7 @@ function fallbackReview(detail: string, required: boolean): BusinessAppVisualRev
   }
 }
 
+/** 对业务应用双视口、关键场景和可选参考图执行视觉复核。 */
 export async function reviewBusinessAppVisual(
   settings: ModelSettings,
   request: string,
@@ -133,7 +144,7 @@ export async function reviewBusinessAppVisual(
     )
     scenarioScreenshots.slice(0, 4).forEach((shot, index) => {
       content.push(
-        { type: 'text', text: `截图 ${index + 1}D：执行详情交互后的页面状态。` },
+        { type: 'text', text: `截图 ${index + 1}D：执行需求验收场景后的业务视图或结果状态。` },
         { type: 'image_url', image_url: { url: `data:image/png;base64,${shot.toString('base64')}` } }
       )
     })

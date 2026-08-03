@@ -43,6 +43,14 @@ import { buildBusinessApp, validateBusinessAppBuildInput } from './artifacts/bus
 import { repairBusinessAppWithModel } from './artifacts/business-app/coder'
 import { createBusinessAppSourceArchive } from './artifacts/business-app/exporter'
 import { generateBusinessApp } from './artifacts/business-app/generator'
+import { analyzeBusinessAppRequirement } from './artifacts/business-app/requirements/analyzer'
+import type {
+  BusinessApplicationBlueprint,
+  BusinessAppChangePlan,
+  BusinessAppClarificationTurn,
+  BusinessAppRequirementContract,
+  BusinessAppRequirementDecision
+} from './artifacts/business-app/domain/model'
 import { analyzeBusinessAppReference } from './artifacts/business-app/reference'
 import type {
   BusinessAppReferenceAnalysis,
@@ -55,6 +63,7 @@ import { skillRegistry } from './skills/registry'
 import {
   createLoop,
   type FlowDefinition,
+  type GraphCheckpoint,
   type GraphState,
   type NodeExecutor
 } from '../../loop-engine/src'
@@ -195,6 +204,11 @@ interface SessionData {
   businessAppState?: BusinessAppProjectState
 }
 
+/**
+ * business-app 跨轮次持久化状态。
+ *
+ * 已提交蓝图与未通过验收的候选蓝图分开保存；澄清问题、用户决策和纯 JSON 检查点用于服务重启后续跑。
+ */
 interface BusinessAppProjectState {
   requirements: string[]
   activeRequirement: string | null
@@ -202,6 +216,14 @@ interface BusinessAppProjectState {
   unresolved: boolean
   strategiesTried: string[]
   lastFailure: string | null
+  decisions: BusinessAppRequirementDecision[]
+  requirementContract: BusinessAppRequirementContract | null
+  blueprint: BusinessApplicationBlueprint | null
+  changePlan: BusinessAppChangePlan | null
+  candidateBlueprint: BusinessApplicationBlueprint | null
+  candidateChangePlan: BusinessAppChangePlan | null
+  pendingClarification: BusinessAppClarificationTurn | null
+  checkpoint: GraphCheckpoint | null
   reference?: {
     analysis: BusinessAppReferenceAnalysis
     evidence: BusinessAppReferenceEvidence
@@ -2968,33 +2990,44 @@ function commitVersion(rt: Runtime, run: ActiveRun): void {
   previewReady(rt, id, url)
 }
 
+/** 无参考图时展示的业务应用七阶段执行计划。 */
 const BUSINESS_APP_STAGE_TITLES = [
-  '确认页面目标',
+  '收敛业务需求契约',
+  '规划应用模块与业务流程',
   '查询 IDux 组件证据',
-  '生成并构建页面',
-  '检查准确性、体验与安全',
-  '自动修复并复检',
+  '生成并构建业务应用',
+  '验收准确性、体验与安全',
+  '自动诊断、修复并复检',
   '生成可交付版本'
 ]
 
+/** 有参考图时展示的业务应用七阶段执行计划。 */
 const BUSINESS_APP_IMAGE_STAGE_TITLES = [
-  '分析页面参考图',
+  '收敛业务需求契约',
+  '分析参考图并规划应用',
   '映射 IDux 组件与样式',
-  '生成并构建页面',
-  '对比参考图与双视口',
-  '自动修复并复检',
+  '生成并构建业务应用',
+  '验收流程、参考图与双视口',
+  '自动诊断、修复并复检',
   '生成可交付版本'
 ]
 
+/**
+ * business-app 声明式 Loop 拓扑。
+ *
+ * 需求节点可挂起等待单问题回答；构建或验收失败统一进入修复节点，只有全部门禁通过才能到达 finish。
+ */
 const BUSINESS_APP_FLOW: FlowDefinition = {
   nodes: [
-    { id: 'planner', name: '理解页面目标' },
+    { id: 'requirements', name: '收敛需求契约' },
+    { id: 'planner', name: '规划业务应用' },
     { id: 'coder', name: '生成并构建业务应用' },
     { id: 'check', name: '浏览器质量验收' },
     { id: 'repair', name: '自动修复' },
     { id: 'finish', name: '闭环交付' }
   ],
   edges: [
+    { from: 'requirements', to: 'planner' },
     { from: 'planner', to: 'coder' },
     { from: 'coder', to: 'check', guard: 'buildPassed' },
     { from: 'coder', to: 'repair' },
@@ -3008,6 +3041,7 @@ const BUSINESS_APP_FLOW: FlowDefinition = {
   }
 }
 
+/** 将 LoopEngine 图状态转换成工作台可展示、可落盘的精简快照。 */
 function businessAppGraphSnapshot(gs: GraphState): GraphSnapshot {
   const finished = !gs.awaiting && gs.nodes.finish?.status === 'done'
   return {
@@ -3044,18 +3078,20 @@ function businessAppGraphSnapshot(gs: GraphState): GraphSnapshot {
   }
 }
 
+/** 持久化并广播业务应用流程图状态。 */
 function emitBusinessAppGraph(rt: Runtime, graph: GraphSnapshot): void {
   rt.s.graph = graph
   store.emit(rt.s.dashboard.id, 'graph', { dashboardId: rt.s.dashboard.id, graph })
   save(rt)
 }
 
+/** 在执行器启动前发送完整图骨架，避免界面阶段信息延迟出现。 */
 function emitBusinessAppGraphSkeleton(rt: Runtime): void {
   emitBusinessAppGraph(rt, {
     nodes: BUSINESS_APP_FLOW.nodes.map(node => ({
       id: node.id,
       name: node.name,
-      status: node.id === 'planner' ? 'active' : 'pending',
+      status: node.id === 'requirements' ? 'active' : 'pending',
       summary: {}
     })),
     edges: BUSINESS_APP_FLOW.edges.map(edge => ({
@@ -3063,13 +3099,15 @@ function emitBusinessAppGraphSkeleton(rt: Runtime): void {
       to: edge.to,
       guard: edge.guard
     })),
-    current: 'planner',
+    current: 'requirements',
     awaiting: null
   })
 }
 
+/** 不创建新需求、而是继续当前失败候选的用户短语。 */
 const BUSINESS_APP_CONTINUE_REQUEST = /^(?:继续|重试|再试(?:一次)?|继续修复|接着修|恢复)(?:吧|一下|看看|检查)?[。！!]?$/i
 
+/** 获取并补齐旧会话中可能缺少字段的 business-app 状态。 */
 function getBusinessAppState(rt: Runtime): BusinessAppProjectState {
   rt.s.businessAppState ??= {
     requirements: [],
@@ -3077,31 +3115,96 @@ function getBusinessAppState(rt: Runtime): BusinessAppProjectState {
     candidateRevisionId: null,
     unresolved: false,
     strategiesTried: [],
-    lastFailure: null
+    lastFailure: null,
+    decisions: [],
+    requirementContract: null,
+    blueprint: null,
+    changePlan: null,
+    candidateBlueprint: null,
+    candidateChangePlan: null,
+    pendingClarification: null,
+    checkpoint: null
   }
+  rt.s.businessAppState.decisions ??= []
+  rt.s.businessAppState.requirementContract ??= null
+  rt.s.businessAppState.blueprint ??= null
+  rt.s.businessAppState.changePlan ??= null
+  rt.s.businessAppState.candidateBlueprint ??= null
+  rt.s.businessAppState.candidateChangePlan ??= null
+  rt.s.businessAppState.pendingClarification ??= null
+  rt.s.businessAppState.checkpoint ??= null
   return rt.s.businessAppState
 }
 
+/** 解析新需求或续跑指令，并记录当前轮唯一有效的需求文本。 */
 function effectiveBusinessAppRequest(rt: Runtime, request: string): string {
   const state = getBusinessAppState(rt)
   const current = request.trim()
   const resume = BUSINESS_APP_CONTINUE_REQUEST.test(current) && state.unresolved
-  if (!resume && current.length > 0 && !state.requirements.includes(current)) {
-    state.requirements.push(truncate(current, 500))
+  if (!resume && current.length > 0) {
+    const requirement = truncate(current, 500)
+    if (!state.requirements.includes(requirement)) state.requirements.push(requirement)
     state.requirements = state.requirements.slice(-20)
+    state.activeRequirement = requirement
   }
-  if (state.requirements.length === 0 && current.length > 0) {
-    state.requirements.push(truncate(current, 500))
+  if (!state.activeRequirement && state.requirements.length > 0) {
+    state.activeRequirement = state.requirements[state.requirements.length - 1]
   }
-  const cumulative = state.requirements
-    .map((item, index) => `${index + 1}. ${item}`)
-    .join('\n')
-  state.activeRequirement = cumulative
   state.unresolved = true
   save(rt)
-  return `项目累计需求（后出现的要求在不冲突时增量叠加）：\n${cumulative}`
+  return state.activeRequirement || current || '继续完成当前业务应用目标'
 }
 
+/** 将领域层的单问题澄清契约转换成工作台消息和阻断卡片。 */
+function emitBusinessAppClarification(
+  rt: Runtime,
+  clarification: BusinessAppClarificationTurn
+): void {
+  const question: ClarificationQuestion = {
+    id: clarification.topic,
+    question: clarification.question,
+    options: clarification.options.map(option => ({
+      id: option.id,
+      title: option.title,
+      consequence: option.consequence,
+      recommended: option.recommended,
+      recommendReason: option.recommendReason,
+      riskLevel: option.riskLevel,
+      autoExecuteAt: null
+    })),
+    allowCustomInput: clarification.allowCustomInput,
+    answer: null
+  }
+  const card: ClarificationMessage = {
+    kind: 'clarification',
+    id: nextId('m'),
+    createdAt: Date.now(),
+    intro: clarification.intro,
+    questions: [question],
+    answered: false
+  }
+  pushMessage(rt, card)
+  setStatus(rt, 'awaiting_clarification')
+  setBlocker(rt, {
+    id: nextId('blk'),
+    type: 'clarification',
+    title: '需要确认一个关键问题',
+    description: '本轮只确认这一项；回答后会继续判断是否还有下一个阻断问题。',
+    options: [{
+      id: 'opt-goto-answer',
+      title: '去回答',
+      consequence: '跳到对话中的单问题澄清卡片',
+      recommended: true,
+      recommendReason: '确认关键边界后再生成，避免做出错误业务流程',
+      riskLevel: 'low',
+      autoExecuteAt: null
+    }],
+    relatedMessageId: card.id
+  })
+  save(rt)
+}
+
+/** 将内部异常转换为不泄漏本地路径、长度受限的用户可见错误。 */
 function safeBusinessAppError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error)
   if (/Executable doesn't exist|playwright install/i.test(raw)) {
@@ -3113,12 +3216,14 @@ function safeBusinessAppError(error: unknown): string {
     .slice(0, 300)
 }
 
+/** 把失败门禁整理为包含期望、实际、复现与验收条件的修复契约。 */
 function iduxFailureContract(gates: ValidationGateResult[]): string {
   return gates.slice(0, 4).map(gate =>
     `【${gate.id}】期望：${gate.title}；实际：${gate.detail ?? '门禁未通过'}；复现：按该门禁对应的双视口任务场景执行；验收：复检状态必须为 passed。`
   ).join('\n')
 }
 
+/** 按图片实际尺寸生成参考图精读区域，并保证所有区域不越界。 */
 function businessAppReferenceRegions(width: number, height: number): Region[] {
   const clamp = (left: number, top: number, regionWidth: number, regionHeight: number): Region => {
     const safeLeft = Math.min(Math.max(0, Math.round(left)), width - 1)
@@ -3138,6 +3243,12 @@ function businessAppReferenceRegions(width: number, height: number): Region[] {
   ]
 }
 
+/**
+ * 执行完整 business-app Loop。
+ *
+ * 流程覆盖逐问澄清、参考图分析、增量规划、受控构建、双视口场景验收、策略化修复和原子提交。
+ * 未通过全部门禁的候选只保留在工作状态中，不会污染已提交版本。
+ */
 async function runBusinessAppGeneration(
   rt: Runtime,
   request: string,
@@ -3152,6 +3263,14 @@ async function runBusinessAppGeneration(
 
   const businessAppState = getBusinessAppState(rt)
   const resumeCandidate = BUSINESS_APP_CONTINUE_REQUEST.test(request.trim()) && businessAppState.unresolved
+  if (!resumeCandidate) {
+    businessAppState.decisions = []
+    businessAppState.requirementContract = null
+    businessAppState.pendingClarification = null
+    businessAppState.checkpoint = null
+    businessAppState.candidateBlueprint = null
+    businessAppState.candidateChangePlan = null
+  }
   const baseRevisionId = resumeCandidate
     ? businessAppState.candidateRevisionId
     : rt.s.dashboard.currentRevisionId
@@ -3159,17 +3278,23 @@ async function runBusinessAppGeneration(
     ? store.readArtifactDraft(rt.s.dashboard.id, baseRevisionId)
     : null
   const requirement = effectiveBusinessAppRequest(rt, request)
-  const revisionId = nextId('ver')
+  const revisionId = resumeCandidate && businessAppState.candidateRevisionId
+    ? businessAppState.candidateRevisionId
+    : nextId('ver')
   businessAppState.candidateRevisionId = revisionId
-  businessAppState.strategiesTried = []
+  if (!resumeCandidate) businessAppState.strategiesTried = []
   businessAppState.lastFailure = null
   save(rt)
   const workspace = store.artifactWorkspaceDir(rt.s.dashboard.id, revisionId)
   const outputDir = store.previewDir(rt.s.dashboard.id, revisionId)
   let generated: Awaited<ReturnType<typeof generateBusinessApp>> | null = null
+  let requirementContract = businessAppState.requirementContract
+  const activeBlueprint = resumeCandidate
+    ? businessAppState.candidateBlueprint ?? businessAppState.blueprint
+    : businessAppState.blueprint
   let reference: Awaited<ReturnType<typeof analyzeBusinessAppReference>> | null =
-    attachments.length === 0 ? businessAppState.reference ?? null : null
-  let referenceImage: string | null = attachments.length === 0 && reference
+    attachments.length === 0 && resumeCandidate ? businessAppState.reference ?? null : null
+  let referenceImage: string | null = attachments.length === 0 && resumeCandidate && reference
     ? [...rt.s.messages]
         .reverse()
         .flatMap(message => message.kind === 'user' ? message.attachmentUrls : [])
@@ -3187,11 +3312,52 @@ async function runBusinessAppGeneration(
   let committed = false
 
   const executors: Record<string, NodeExecutor> = {
+    /** 收敛需求契约；存在阻塞未知项时携带持久化产出挂起。 */
+    requirements: {
+      async execute() {
+        activateStage(rt, 'st-1')
+        const step = startStep(rt, 'st-1', '把业务目标收敛为可追踪、可验收的需求契约')
+        const analysis = await analyzeBusinessAppRequirement(requirement, {
+          decisions: businessAppState.decisions,
+          currentBlueprint: activeBlueprint,
+          settings: cachedSettings
+        })
+        requirementContract = analysis.contract
+        businessAppState.requirementContract = analysis.contract
+        businessAppState.pendingClarification = analysis.clarification
+        save(rt)
+        if (analysis.clarification) {
+          finishStep(rt, step, `发现关键阻断项：${analysis.clarification.topic}；等待本轮一个回答`)
+          emitBusinessAppClarification(rt, analysis.clarification)
+          return {
+            kind: 'suspend',
+            reason: 'business-app-clarification',
+            output: {
+              contractStatus: analysis.contract.status,
+              clarificationTopic: analysis.clarification.topic
+            }
+          }
+        }
+        businessAppState.pendingClarification = null
+        finishStep(rt, step, `需求契约已就绪：${analysis.contract.capabilities.length} 项能力、${analysis.contract.acceptanceCriteria.length} 条验收标准`)
+        finishStage(rt, 'st-1')
+        return {
+          kind: 'done',
+          output: {
+            contractStatus: 'ready',
+            capabilityCount: analysis.contract.capabilities.length,
+            acceptanceCount: analysis.contract.acceptanceCriteria.length
+          }
+        }
+      }
+    },
+    /** 分析可选参考图，规划完整应用蓝图并收集 IDux 证据。 */
     planner: {
       async execute() {
+        activateStage(rt, 'st-2')
         let step = startStep(
           rt,
-          'st-1',
+          'st-2',
           attachments.length > 0 ? '分析业务应用参考图与业务目标' : '锁定产物类型与原始业务目标'
         )
         if (attachments.length > 0) {
@@ -3234,7 +3400,7 @@ async function runBusinessAppGeneration(
           finishStep(
             rt,
             step,
-            `识别为管理列表页：${reference.analysis.columns.length} 列、${reference.analysis.summaryCards.length} 个概览，置信度 ${reference.analysis.confidence}`
+            `已提取参考图的应用结构、导航、内容层级与视觉证据，置信度 ${reference.analysis.confidence}`
           )
         } else {
           finishStep(
@@ -3245,32 +3411,39 @@ async function runBusinessAppGeneration(
               : '已锁定 Vue 3 + IDux 2.11.0 业务应用技术栈'
           )
         }
-        finishStage(rt, 'st-1')
+        finishStage(rt, 'st-2')
 
-        activateStage(rt, 'st-2')
-        step = startStep(rt, 'st-2', '通过 idux-cli 查询组件 API，并加载 idux-style 页面规范')
+        activateStage(rt, 'st-3')
+        step = startStep(rt, 'st-3', '通过 idux-cli 查询所需组件 API，并加载 idux-style 应用规范')
+        if (!requirementContract || requirementContract.status !== 'ready') {
+          throw new Error('需求契约未就绪，拒绝规划业务应用')
+        }
         generated = await generateBusinessApp(
           workspace,
-          requirement,
-          cachedSettings,
-          reference ? { reference } : {}
+          requirementContract,
+          {
+            currentBlueprint: activeBlueprint,
+            baseRevisionId,
+            settings: cachedSettings,
+            presentation: reference ? {
+              navigation: reference.analysis.navigation === 'none' ? 'side' : reference.analysis.navigation,
+              theme: reference.analysis.theme
+            } : undefined,
+            referenceAnalysis: reference?.analysis,
+            referenceEvidence: reference?.evidence ?? (activeBlueprint ? businessAppState.reference?.evidence : undefined)
+          }
         )
-        draft = baseDraft
-          ? {
-              entryFile: baseDraft.entryFile,
-              files: {
-                ...baseDraft.files,
-                'generation-evidence.json': generated.draft.files['generation-evidence.json']
-              }
-            }
-          : generated.draft
+        draft = generated.draft
+        businessAppState.candidateBlueprint = generated.blueprint
+        businessAppState.candidateChangePlan = generated.changePlan
+        save(rt)
         finishStep(
           rt,
           step,
           `证据版本 ${generated.evidence.iduxVersion}，提交 ${generated.evidence.sourceCommit.slice(0, 8)}`
-            + (baseDraft ? `；已恢复${resumeCandidate ? '失败候选' : '当前版本'}作为增量修改基线` : '')
+            + (baseDraft ? `；已在${resumeCandidate ? '失败候选' : '当前应用蓝图'}上执行增量变更计划` : '')
         )
-        finishStage(rt, 'st-2')
+        finishStage(rt, 'st-3')
         return {
           kind: 'done',
           output: {
@@ -3280,12 +3453,13 @@ async function runBusinessAppGeneration(
         }
       }
     },
+    /** 执行静态准入、保存候选草稿并进行受控生产构建。 */
     coder: {
       async execute() {
-        activateStage(rt, 'st-3')
+        activateStage(rt, 'st-4')
         const step = startStep(
           rt,
-          'st-3',
+          'st-4',
           repairCount === 0 ? '校验源码并执行受控离线构建' : `应用第 ${repairCount} 轮修复后重新构建`
         )
         try {
@@ -3296,7 +3470,7 @@ async function runBusinessAppGeneration(
           if (failedGates.length > 0) {
             latestError = failedGates[0]?.detail || failedGates[0]?.title || '业务应用源码门禁未通过'
             finishStep(rt, step, `发现 ${failedGates.length} 项源码问题，进入自动修复`)
-            finishStage(rt, 'st-3')
+            finishStage(rt, 'st-4')
             return {
               kind: 'done',
               output: { passed: false, issueCount: failedGates.length, attempt: repairCount + 1 }
@@ -3307,7 +3481,7 @@ async function runBusinessAppGeneration(
           store.writeArtifactEvidence(rt.s.dashboard.id, revisionId, generated.evidence)
           build = await buildBusinessApp(workspace, outputDir)
           finishStep(rt, step, `构建完成，用时 ${(build.durationMs / 1000).toFixed(1)} 秒`)
-          finishStage(rt, 'st-3')
+          finishStage(rt, 'st-4')
           return {
             kind: 'done',
             output: { passed: true, issueCount: 0, attempt: repairCount + 1 }
@@ -3321,7 +3495,7 @@ async function runBusinessAppGeneration(
             detail: latestError
           }]
           finishStep(rt, step, `${latestError}；进入自动修复`)
-          finishStage(rt, 'st-3')
+          finishStage(rt, 'st-4')
           return {
             kind: 'done',
             output: { passed: false, issueCount: 1, attempt: repairCount + 1 }
@@ -3329,15 +3503,16 @@ async function runBusinessAppGeneration(
         }
       }
     },
+    /** 执行双视口结构、交互场景、安全网络和视觉模型复核。 */
     check: {
       async execute() {
-        activateStage(rt, 'st-4')
-        const step = startStep(rt, 'st-4', '在 1920×1080 与 1366×768 执行浏览器与视觉验收')
+        activateStage(rt, 'st-5')
+        const step = startStep(rt, 'st-5', '在 1920×1080 与 1366×768 执行需求场景、浏览器与视觉验收')
         if (!generated || !staticReport || !build || !draft) {
           return { kind: 'failed', error: new Error('业务应用构建结果不完整，不能执行浏览器验收') }
         }
         const url = artifactPreviewUrl(rt.s.dashboard.id, revisionId, Date.now())
-        runtime = await validateBuiltBusinessApp(url, generated.spec.acceptanceScenarios)
+        runtime = await validateBuiltBusinessApp(url, generated.blueprint.acceptanceScenarios)
         const visualReview = await reviewBusinessAppVisual(
           cachedSettings,
           requirement,
@@ -3369,7 +3544,7 @@ async function runBusinessAppGeneration(
             const issueId = nextId('issue')
             currentIssue = {
               id: issueId,
-              stageId: 'st-5',
+              stageId: 'st-6',
               title: latestError,
               attempt: repairCount + 1,
               status: 'fixing',
@@ -3415,7 +3590,7 @@ async function runBusinessAppGeneration(
           }
           finishStep(rt, step, `共 ${validationReport.gates.length} 项质量门禁通过`)
         }
-        finishStage(rt, 'st-4')
+        finishStage(rt, 'st-5')
         return {
           kind: 'done',
           output: {
@@ -3426,10 +3601,11 @@ async function runBusinessAppGeneration(
         }
       }
     },
+    /** 按确定性、模型、定向重生成和证据扩展阶梯自主修复。 */
     repair: {
       async execute() {
-        activateStage(rt, 'st-5')
-        const step = startStep(rt, 'st-5', `修复第 ${repairCount + 1} 轮质量问题`)
+        activateStage(rt, 'st-6')
+        const step = startStep(rt, 'st-6', `诊断并修复第 ${repairCount + 1} 轮质量问题`)
         if (!draft) {
           latestError = '没有可修复的业务应用源码草稿'
           finishStep(rt, step, latestError, 'failed')
@@ -3447,7 +3623,7 @@ async function runBusinessAppGeneration(
         if (!currentIssue) {
           currentIssue = {
             id: nextId('issue'),
-            stageId: 'st-5',
+            stageId: 'st-6',
             title: latestError,
             attempt: repairCount + 1,
             status: 'fixing',
@@ -3485,21 +3661,36 @@ async function runBusinessAppGeneration(
             finishStep(rt, step, latestError, 'failed')
             return { kind: 'suspend', reason: 'idux-quality-strategies-exhausted' }
           }
-          generated = await generateBusinessApp(
-            workspace,
-            `${requirement}\n\n必须定向修复以下验收问题：${issueContract}`
-              + (strategy === 'evidence-expanded-replan'
-                  ? '\n必须重新核对所有相关 IDux 组件证据和完整交互状态后再规划。'
-                  : ''),
-            cachedSettings,
-            reference ? { reference } : {}
-          )
+          if (!requirementContract) throw new Error('缺少可追踪的需求契约，不能重新规划')
+          const repairContract: BusinessAppRequirementContract = {
+            ...requirementContract,
+            constraints: [
+              ...requirementContract.constraints,
+              `定向修复以下验收问题：${issueContract}`,
+              ...(strategy === 'evidence-expanded-replan'
+                ? ['重新核对所有相关 IDux 组件证据和完整交互状态']
+                : [])
+            ]
+          }
+          generated = await generateBusinessApp(workspace, repairContract, {
+            currentBlueprint: generated?.blueprint ?? businessAppState.candidateBlueprint ?? businessAppState.blueprint,
+            baseRevisionId,
+            settings: cachedSettings,
+            presentation: reference ? {
+              navigation: reference.analysis.navigation === 'none' ? 'side' : reference.analysis.navigation,
+              theme: reference.analysis.theme
+            } : undefined,
+            referenceAnalysis: reference?.analysis,
+            referenceEvidence: reference?.evidence ?? (activeBlueprint ? businessAppState.reference?.evidence : undefined)
+          })
           repaired = {
             draft: generated.draft,
             actions: [strategy === 'evidence-expanded-replan'
               ? '扩展组件证据后重新规划并生成受控页面'
               : '依据失败的验收场景定向重新生成受控页面']
           }
+          businessAppState.candidateBlueprint = generated.blueprint
+          businessAppState.candidateChangePlan = generated.changePlan
         }
         draft = repaired.draft
         validateBusinessAppBuildInput(draft)
@@ -3507,7 +3698,7 @@ async function runBusinessAppGeneration(
         businessAppState.strategiesTried.push(strategy)
         repairCount += 1
         finishStep(rt, step, `${repaired.actions.join('；')}（策略：${strategy}）`)
-        finishStage(rt, 'st-5')
+        finishStage(rt, 'st-6')
         return {
           kind: 'done',
           output: {
@@ -3517,32 +3708,44 @@ async function runBusinessAppGeneration(
         }
       }
     },
+    /** 只在质量报告全部通过后允许进入原子提交。 */
     finish: {
       async execute() {
-        if (rt.s.stages.find(stage => stage.id === 'st-5')?.state !== 'done') {
-          finishStage(rt, 'st-5')
+        if (rt.s.stages.find(stage => stage.id === 'st-6')?.state !== 'done') {
+          finishStage(rt, 'st-6')
         }
-        activateStage(rt, 'st-6')
-        const step = startStep(rt, 'st-6', '固化证据、校验报告与可预览版本')
+        activateStage(rt, 'st-7')
+        const step = startStep(rt, 'st-7', '固化需求契约、应用蓝图、证据、校验报告与可预览版本')
         if (!generated || !draft || !runtime || validationReport?.status !== 'passed') {
           latestError = '质量闭环尚未通过，拒绝提交版本'
           finishStep(rt, step, latestError, 'failed')
           return { kind: 'failed', error: new Error(latestError) }
         }
         finishStep(rt, step, repairCount > 0 ? `完成 ${repairCount} 轮修复并复检` : '首次验收即通过')
-        finishStage(rt, 'st-6')
+        finishStage(rt, 'st-7')
         return { kind: 'done', output: { passed: true, repairCount } }
       }
     }
   }
 
   try {
-    const engine = createLoop({
+    let engine: ReturnType<typeof createLoop>
+    engine = createLoop({
+      flowId: 'business-app-generation',
+      flowVersion: 2,
       definition: BUSINESS_APP_FLOW,
-      resume: { resume: {} },
+      resume: {
+        resume: {
+          'business-app-clarification': { node: 'requirements' }
+        }
+      },
       executors,
       stepTimeoutMs: 10 * 60 * 1000,
-      onNodeComplete: (_nodeId, graphState) => emitBusinessAppGraph(rt, businessAppGraphSnapshot(graphState)),
+      onNodeComplete: (_nodeId, graphState) => {
+        emitBusinessAppGraph(rt, businessAppGraphSnapshot(graphState))
+        businessAppState.checkpoint = engine.getCheckpoint()
+        save(rt)
+      },
       onCommit: async graphState => {
         emitBusinessAppGraph(rt, businessAppGraphSnapshot(graphState))
         if (!generated || !draft || !runtime || !validationReport || validationReport.status !== 'passed') {
@@ -3583,10 +3786,27 @@ async function runBusinessAppGeneration(
         businessAppState.candidateRevisionId = null
         businessAppState.strategiesTried = []
         businessAppState.lastFailure = null
+        businessAppState.requirementContract = generated.contract
+        businessAppState.blueprint = generated.blueprint
+        businessAppState.changePlan = generated.changePlan
+        businessAppState.candidateBlueprint = null
+        businessAppState.candidateChangePlan = null
+        businessAppState.pendingClarification = null
+        businessAppState.checkpoint = null
         save(rt)
       }
     })
-    await engine.handleEvent({ kind: 'start', initialNode: 'planner' })
+    if (resumeCandidate && businessAppState.checkpoint?.awaiting === 'business-app-clarification') {
+      await engine.handleEvent({ kind: 'restore-checkpoint', checkpoint: businessAppState.checkpoint })
+      await engine.handleEvent({ kind: 'resume' })
+    } else {
+      await engine.handleEvent({ kind: 'start', initialNode: 'requirements' })
+    }
+    if (engine.getState() === 'suspended' && businessAppState.pendingClarification) {
+      businessAppState.checkpoint = engine.getCheckpoint()
+      save(rt)
+      return
+    }
     if (engine.getState() === 'blocked' || !committed) {
       throw new Error(latestError)
     }
@@ -3615,22 +3835,23 @@ async function runBusinessAppGeneration(
     businessAppState.lastFailure = message
     save(rt)
     failActiveStage(rt, message)
+    const exhaustedStrategies = businessAppState.strategiesTried.length >= 3
     const options: CardOption[] = [
-      {
+      ...(!exhaustedStrategies ? [{
         id: 'opt-idux-retry',
         title: '继续自主修复',
-        consequence: '保留累计需求和失败候选，再执行一轮完整策略链',
+        consequence: '保留需求契约、失败候选和验收证据，执行剩余策略',
         recommended: true,
-        recommendReason: '失败候选和验收证据都已保留，不会从空白重新生成',
-        riskLevel: 'low',
+        recommendReason: '仍有尚未执行的自主策略',
+        riskLevel: 'low' as const,
         autoExecuteAt: null
-      },
+      }] : []),
       {
         id: 'opt-idux-adjust',
         title: '调整需求',
         consequence: '补充或改变验收目标后继续，原需求仍会保留在项目上下文中',
-        recommended: false,
-        recommendReason: null,
+        recommended: exhaustedStrategies,
+        recommendReason: exhaustedStrategies ? '所有自主修复策略已经执行并复检失败，需要新的业务约束才能改变结果' : null,
         riskLevel: 'medium',
         autoExecuteAt: null
       },
@@ -3644,7 +3865,6 @@ async function runBusinessAppGeneration(
         autoExecuteAt: null
       }
     ]
-    const exhaustedStrategies = businessAppState.strategiesTried.length >= 3
     const problem: ProblemMessage = {
       kind: 'problem',
       id: nextId('m'),
@@ -3673,6 +3893,7 @@ async function runBusinessAppGeneration(
   }
 }
 
+/** 返回质量报告展示使用的固定构建运行时版本。 */
 function runtimeVersionLabel(): string {
   return 'Vite 6.4.3'
 }
@@ -3788,6 +4009,7 @@ async function runEdit(rt: Runtime, run: ActiveRun): Promise<void> {
 
 /* ============================== 消息入口 ============================== */
 
+/** 接收用户消息，并按当前运行状态路由到新建、增量、澄清或失败恢复流程。 */
 export function handleSendMessage(dashId: string, text: string, attachments: string[] = []): void {
   const rt = mustRuntime(dashId)
   const queued = rt.s.runStatus === 'generating'
@@ -3843,6 +4065,7 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
 
 /* ============================== 澄清回答 ============================== */
 
+/** 保存结构化澄清回答，并恢复对应产物类型的挂起流程。 */
 export function handleAnswerClarification(dashId: string, messageId: string, answers: ClarificationAnswer[]): void {
   const rt = mustRuntime(dashId)
   if (rt.s.runStatus !== 'awaiting_clarification') return
@@ -3854,6 +4077,10 @@ export function handleAnswerClarification(dashId: string, messageId: string, ans
     }
     m.answered = true
     updateMessage(rt, m)
+    if (rt.s.dashboard.artifactKind === 'business-app') {
+      continueBusinessAppAfterClarification(rt, m, answers)
+      return
+    }
     continueAfterClarification(rt, m)
   }
 }
@@ -3868,8 +4095,50 @@ function resolveClarificationWithText(rt: Runtime, text: string): void {
     m.answered = true
     updateMessage(rt, m)
   }
+  if (rt.s.dashboard.artifactKind === 'business-app' && m) {
+    continueBusinessAppAfterClarification(rt, m, [{
+      questionId: m.questions[0]?.id ?? 'business-app-question',
+      optionId: '',
+      customText: text
+    }])
+    return
+  }
   pushAgent(rt, '好的，就按你说的来。')
   continueAfterClarification(rt, m ?? null)
+}
+
+/**
+ * 将单问题回答写入 business-app 决策历史，并触发同一候选版本续跑。
+ * 下一轮仍先重新分析阻塞未知项，不会绕过需求就绪检查直接生成。
+ */
+function continueBusinessAppAfterClarification(
+  rt: Runtime,
+  message: ClarificationMessage,
+  answers: ClarificationAnswer[]
+): void {
+  const state = getBusinessAppState(rt)
+  const clarification = state.pendingClarification
+  const question = message.questions[0]
+  const answer = answers.find(item => item.questionId === question?.id)
+  const option = question?.options.find(item => item.id === answer?.optionId)
+  const value = answer?.customText?.trim() || option?.title || question?.answer?.trim() || ''
+  if (!clarification || !question || !value) {
+    pushAgent(rt, '这项回答还没有有效内容，请重新补充。')
+    return
+  }
+  state.decisions.push({
+    id: nextId('decision'),
+    questionId: clarification.topic,
+    question: clarification.question,
+    answer: value,
+    source: answer?.customText?.trim() ? 'custom' : 'option',
+    createdAt: Date.now()
+  })
+  state.decisions = state.decisions.slice(-30)
+  setBlocker(rt, null)
+  pushAgent(rt, '这项已确认。我会先继续检查剩余关键边界；只有需求契约就绪后才开始生成。')
+  save(rt)
+  void runBusinessAppGeneration(rt, '继续', [])
 }
 
 function continueAfterClarification(rt: Runtime, m: ClarificationMessage | null): void {
@@ -3915,6 +4184,16 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
   rt.activeRun = run
 
   switch (optionId) {
+    case 'opt-idux-retry': {
+      pushAgent(rt, '我会保留失败候选、需求契约和验收证据，继续执行自主诊断与修复。')
+      void runBusinessAppGeneration(rt, '继续', [])
+      break
+    }
+    case 'opt-idux-adjust': {
+      pushAgent(rt, '请直接补充需要调整的业务目标或验收结果；我会把它作为新的变更需求重新收敛。')
+      setStatus(rt, 'idle')
+      break
+    }
     case 'opt-retry':
     case 'opt-retry-alt':
     case 'opt-retry-llm': {

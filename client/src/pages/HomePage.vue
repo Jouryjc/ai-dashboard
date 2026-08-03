@@ -233,7 +233,7 @@ async function confirmDelete(): Promise<void> {
               <AppIcon name="database" :size="22" />
             </span>
             <strong class="block text-base text-ink">业务应用</strong>
-            <span class="mt-1 block text-sm leading-6 text-ink-secondary">可交互的列表、详情、表单和业务操作，可导出 Vue 源码。</span>
+            <span class="mt-1 block text-sm leading-6 text-ink-secondary">可持续增加模块、视图、表单和业务流程，并导出可复现的 Vue 源码。</span>
           </button>
         </div>
       </section>

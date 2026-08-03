@@ -291,25 +291,29 @@ async function main() {
   const businessAppFiles = unzipSync(businessAppZip)
   const businessAppPackage = JSON.parse(strFromU8(businessAppFiles['package.json']))
   const businessAppSource = strFromU8(businessAppFiles['src/App.vue'])
+  const businessAppBlueprint = JSON.parse(strFromU8(businessAppFiles['src/contracts/application-blueprint.json']))
   const businessAppEvidence = JSON.parse(strFromU8(businessAppFiles['generation-evidence.json']))
   if (
     businessAppPackage.dependencies?.['@idux/components'] !== '2.11.0' ||
     !businessAppSource.includes('<IxTable') ||
-    !businessAppFiles['src/page-shell.css'] ||
+    !businessAppFiles['src/styles/app-shell.css'] ||
+    !businessAppFiles['src/contracts/requirement-contract.json'] ||
+    !businessAppFiles['src/contracts/change-plan.json'] ||
+    !businessAppFiles['src/contracts/acceptance-plan.json'] ||
     !businessAppEvidence.skills?.includes('idux-cli') ||
     !businessAppEvidence.skills?.includes('idux-style') ||
     JSON.stringify(businessAppEvidence.style?.viewports) !== JSON.stringify(['1920x1080', '1366x768']) ||
     businessAppEvidence.reference?.mode !== 'vision-structured-spec' ||
-    businessAppEvidence.reference?.analyzer !== 'business-app-reference-v1' ||
+    businessAppEvidence.reference?.analyzer !== 'business-app-reference-v2' ||
     !/^[0-9a-f]{64}$/.test(businessAppEvidence.reference?.imageSha256 ?? '') ||
-    !businessAppSource.includes('"navigation": "side"') ||
+    businessAppBlueprint.shell?.navigation !== 'side' ||
     /data:image\//i.test(strFromU8(businessAppFiles['generation-evidence.json']))
   ) {
     fail('业务应用 ZIP 含可复现源码与精确依赖', Object.keys(businessAppFiles).join('、'))
   }
   ok('业务应用参考图 → 结构化规格 → 双视口源码 ZIP', Object.keys(businessAppFiles).join('、'))
 
-  // 增量需求必须保留首轮业务目标与参考图蓝图，并以真实交互场景验收详情页。
+  // 增量需求必须保留首轮业务目标与参考图蓝图，并以真实交互场景验收详情视图。
   await api('POST', `/dashboards/${businessAppProject.id}/messages`, { text: '增加详情页面' })
   const businessAppDetailReady = await businessAppSse.waitFor(
     'previewReady',
@@ -324,8 +328,8 @@ async function main() {
     .map(gate => gate.id) ?? []
   if (
     detailVersion?.validationReport?.status !== 'passed' ||
-    !detailGateIds.includes('scenario-open-detail-large') ||
-    !detailGateIds.includes('scenario-open-detail-small')
+    !detailGateIds.includes('scenario-cloud-host-scenario-detail-1920x1080') ||
+    !detailGateIds.includes('scenario-cloud-host-scenario-detail-1366x768')
   ) {
     fail('业务应用详情增量通过双视口任务场景', JSON.stringify(detailVersion?.validationReport))
   }
@@ -334,12 +338,14 @@ async function main() {
   )
   const detailFiles = unzipSync(new Uint8Array(await detailExport.arrayBuffer()))
   const detailApp = strFromU8(detailFiles['src/App.vue'])
+  const detailBlueprint = JSON.parse(strFromU8(detailFiles['src/contracts/application-blueprint.json']))
   const detailEvidence = JSON.parse(strFromU8(detailFiles['generation-evidence.json']))
+  const cloudModule = detailBlueprint.modules?.find(module => module.id === 'cloud-host')
   if (
-    !detailApp.includes('data-testid="detail-view"') ||
-    !detailApp.includes('"enabled": true') ||
-    !detailApp.includes('"title": "云主机管理"') ||
-    !detailApp.includes('"navigation": "side"') ||
+    !detailApp.includes("activeView.kind === 'detail'") ||
+    !cloudModule?.views?.some(view => view.kind === 'detail') ||
+    detailBlueprint.shell?.navigation !== 'side' ||
+    detailEvidence.reference?.analyzer !== 'business-app-reference-v2' ||
     !detailEvidence.componentQueries?.some(query => query.args?.includes('desc'))
   ) {
     fail('业务应用增量修改保留累计需求、参考图与动态组件证据')
@@ -368,6 +374,46 @@ async function main() {
   ok('业务应用回退复制多文件构建产物与源码，不破坏历史版本')
   businessAppSse.close()
   await api('DELETE', `/projects/${businessAppProject.id}`)
+
+  // 关键歧义一次只问一个，并通过持久化 Loop 检查点逐轮恢复。
+  const clarificationProject = (await api('POST', '/projects', {
+    name: '库存业务应用澄清', artifactKind: 'business-app'
+  })).json
+  const clarificationSse = openSse(clarificationProject.id)
+  await api('POST', `/dashboards/${clarificationProject.id}/messages`, {
+    text: '新增一个完整的库存管理模块'
+  })
+  const businessClarification1 = await clarificationSse.waitFor(
+    'message', event => event.data?.message?.kind === 'clarification', 60_000, '业务应用第一轮单问题澄清'
+  )
+  if (businessClarification1.data.message.questions?.length !== 1) {
+    fail('业务应用第一轮只询问一个关键问题', JSON.stringify(businessClarification1.data.message))
+  }
+  const question1 = businessClarification1.data.message.questions[0]
+  await api('POST', `/dashboards/${clarificationProject.id}/messages/${businessClarification1.data.message.id}/answers`, {
+    answers: [{ questionId: question1.id, optionId: question1.options.find(option => option.recommended).id, customText: '' }]
+  })
+  const businessClarification2 = await clarificationSse.waitFor(
+    'message',
+    event => event.data?.message?.kind === 'clarification' && event.data.message.id !== businessClarification1.data.message.id,
+    60_000,
+    '业务应用第二轮单问题澄清'
+  )
+  if (businessClarification2.data.message.questions?.length !== 1) {
+    fail('业务应用第二轮仍只询问一个关键问题', JSON.stringify(businessClarification2.data.message))
+  }
+  const question2 = businessClarification2.data.message.questions[0]
+  await api('POST', `/dashboards/${clarificationProject.id}/messages/${businessClarification2.data.message.id}/answers`, {
+    answers: [{ questionId: question2.id, optionId: question2.options.find(option => option.recommended).id, customText: '' }]
+  })
+  await clarificationSse.waitFor('previewReady', null, 180_000, '业务应用澄清完成后恢复 Loop 并交付')
+  const clarificationSnapshot = (await api('POST', `/dashboards/${clarificationProject.id}/enter`)).json
+  if (clarificationSnapshot?.runStatus !== 'idle') {
+    fail('业务应用澄清检查点在交付后正确收尾', JSON.stringify(clarificationSnapshot?.runStatus))
+  }
+  ok('业务应用逐轮单问题澄清 → JSON 检查点恢复 → 完整 Loop 交付')
+  clarificationSse.close()
+  await api('DELETE', `/projects/${clarificationProject.id}`)
 
   // 1.4 图片复刻不能静默降级：模型不支持看图时明确失败，不生成无关通用页面
   await api('PUT', '/settings', {

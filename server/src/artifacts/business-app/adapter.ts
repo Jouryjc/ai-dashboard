@@ -1,3 +1,8 @@
+/**
+ * business-app 产物适配器。
+ *
+ * 负责声明目标运行环境，并在构建前验证文件完整性、领域契约、依赖白名单、IDux 证据与蓝图一致性。
+ */
 import type {
   ArtifactManifest,
   TargetProfile,
@@ -5,7 +10,19 @@ import type {
   ValidationReport
 } from '../../wire'
 import type { ArtifactAdapter, ArtifactDraft } from '../types'
+import type {
+  BusinessApplicationBlueprint,
+  BusinessAppChangePlan,
+  BusinessAppRequirementContract
+} from './domain/model'
+import {
+  validateBusinessApplicationBlueprint,
+  validateBusinessAppChangePlan,
+  validateRequirementContract
+} from './domain/validation'
+import { renderBlueprintSource } from './generation/renderer'
 
+/** 创建统一的静态门禁结果。 */
 function result(
   id: string,
   title: string,
@@ -15,6 +32,7 @@ function result(
   return { id, title, status: passed ? 'passed' : 'failed', detail: passed ? null : detail }
 }
 
+/** 从依赖清单中读取精确的 IDux 版本，拒绝版本范围。 */
 function exactIduxVersion(packageJsonText: string): string | null {
   try {
     const pkg = JSON.parse(packageJsonText) as { dependencies?: Record<string, unknown> }
@@ -25,6 +43,7 @@ function exactIduxVersion(packageJsonText: string): string | null {
   }
 }
 
+/** 校验依赖和 npm scripts 均处于受控白名单内。 */
 function dependencyPolicy(packageJsonText: string): { passed: boolean; detail: string | null } {
   try {
     const pkg = JSON.parse(packageJsonText) as {
@@ -67,6 +86,7 @@ function dependencyPolicy(packageJsonText: string): { passed: boolean; detail: s
   }
 }
 
+/** 校验组件证据、设计基线和参考图证据的版本及摘要链。 */
 function styleEvidencePolicy(
   evidenceText: string,
   expectedVersion: string | null
@@ -102,7 +122,7 @@ function styleEvidencePolicy(
     const reference = value.reference
     const validReference = reference === undefined || (
       reference.mode === 'vision-structured-spec' &&
-      reference.analyzer === 'business-app-reference-v1' &&
+      reference.analyzer === 'business-app-reference-v2' &&
       reference.imageCount === 1 &&
       typeof reference.imageSha256 === 'string' &&
       /^[0-9a-f]{64}$/.test(reference.imageSha256) &&
@@ -111,7 +131,7 @@ function styleEvidencePolicy(
     )
     const valid =
       !/\bdata:image\//i.test(evidenceText) &&
-      value.schemaVersion === 1 &&
+      value.schemaVersion === 2 &&
       skills.length === 2 &&
       skills.includes('idux-cli') &&
       skills.includes('idux-style') &&
@@ -123,7 +143,7 @@ function styleEvidencePolicy(
       /^[0-9a-f]{64}$/.test(value.combinedSha256) &&
       (value.theme === 'light' || value.theme === 'dark') &&
       style?.skill === 'idux-style' &&
-      style.profile === 'business-page' &&
+      style.profile === 'business-app' &&
       style.iduxVersion === expectedVersion &&
       style.sourceCommit === value.sourceCommit &&
       style.repository === 'https://github.com/IDuxFE/idux' &&
@@ -152,6 +172,7 @@ function styleEvidencePolicy(
 export const businessAppArtifactAdapter: ArtifactAdapter = {
   kind: 'business-app',
 
+  /** 返回业务应用固定的框架、组件库和双视口目标。 */
   createTargetProfile(): TargetProfile {
     return {
       framework: 'vue3',
@@ -161,6 +182,7 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
     }
   },
 
+  /** 根据草稿生成标准产物清单。 */
   createManifest(draft?: ArtifactDraft): ArtifactManifest {
     return {
       schemaVersion: 1,
@@ -171,20 +193,26 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
     }
   },
 
+  /** 执行生成草稿的全部静态质量与安全门禁。 */
   validateDraft(draft: ArtifactDraft): ValidationReport {
     const required = [
       'index.html',
       'package.json',
       'src/main.ts',
       'src/App.vue',
-      'src/page-shell.css',
+      'src/app/blueprint.ts',
+      'src/styles/app-shell.css',
+      'src/contracts/requirement-contract.json',
+      'src/contracts/application-blueprint.json',
+      'src/contracts/change-plan.json',
+      'src/contracts/acceptance-plan.json',
       'generation-evidence.json'
     ]
     const missing = required.filter(file => !(file in draft.files))
     const combined = Object.values(draft.files).join('\n')
     const mainSource = draft.files['src/main.ts'] ?? ''
     const appSource = draft.files['src/App.vue'] ?? ''
-    const pageCss = draft.files['src/page-shell.css'] ?? ''
+    const pageCss = draft.files['src/styles/app-shell.css'] ?? ''
     const iduxVersion = exactIduxVersion(draft.files['package.json'] ?? '')
     const dependencies = dependencyPolicy(draft.files['package.json'] ?? '')
     const evidence = styleEvidencePolicy(
@@ -196,12 +224,63 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
       [...appSource.matchAll(/<Ix([A-Z][A-Za-z0-9]*)\b/g)].map(match => match[1])
     )
     const nativeInteractive = /<(?:button|input|select|textarea)\b/i.test(appSource)
+    let contractPassed = false
+    let blueprintPassed = false
+    let planPassed = false
+    let blueprintSourcePassed = false
+    let acceptancePlanPassed = false
+    let traceabilityDetail: string | null = null
+    try {
+      const contract = JSON.parse(draft.files['src/contracts/requirement-contract.json'] ?? '') as BusinessAppRequirementContract
+      const blueprint = JSON.parse(draft.files['src/contracts/application-blueprint.json'] ?? '') as BusinessApplicationBlueprint
+      const plan = JSON.parse(draft.files['src/contracts/change-plan.json'] ?? '') as BusinessAppChangePlan
+      validateRequirementContract(contract)
+      contractPassed = contract.status === 'ready'
+      validateBusinessApplicationBlueprint(blueprint)
+      blueprintPassed = blueprint.acceptanceScenarios.length > 0
+      blueprintSourcePassed = draft.files['src/app/blueprint.ts'] === renderBlueprintSource(blueprint)
+      acceptancePlanPassed = JSON.stringify(JSON.parse(draft.files['src/contracts/acceptance-plan.json'] ?? '')) === JSON.stringify(blueprint.acceptanceScenarios)
+      validateBusinessAppChangePlan(plan, blueprint)
+      planPassed = plan.requirementIds.every(id => id in blueprint.requirementCoverage)
+    } catch (error) {
+      traceabilityDetail = error instanceof Error ? error.message : String(error)
+    }
     const gates = [
       result(
         'required-files',
         '项目文件完整',
         missing.length === 0,
         missing.length > 0 ? `缺少：${missing.join('、')}` : null
+      ),
+      result(
+        'requirement-contract',
+        '需求已经收敛为可执行契约',
+        contractPassed,
+        traceabilityDetail ?? '需求契约未就绪'
+      ),
+      result(
+        'application-blueprint',
+        '应用蓝图包含模块、视图、实体和验收场景',
+        blueprintPassed,
+        traceabilityDetail ?? '应用蓝图缺少完整结构或验收场景'
+      ),
+      result(
+        'blueprint-source-integrity',
+        '运行时蓝图与已验收蓝图完全一致',
+        blueprintSourcePassed,
+        'src/app/blueprint.ts 与 application-blueprint.json 不一致'
+      ),
+      result(
+        'acceptance-plan-integrity',
+        '运行时验收计划与应用蓝图一致',
+        acceptancePlanPassed,
+        'acceptance-plan.json 与应用蓝图中的验收场景不一致'
+      ),
+      result(
+        'change-plan-traceability',
+        '变更计划可以追溯到需求与现有应用',
+        planPassed,
+        traceabilityDetail ?? '变更计划没有覆盖需求'
       ),
       result(
         'exact-idux-version',
@@ -260,6 +339,7 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
     }
   },
 
+  /** 生成不含路径字符的导出文件名。 */
   exportFileName(projectName: string, revisionLabel: string): string {
     return `${projectName}-${revisionLabel}.zip`
   }

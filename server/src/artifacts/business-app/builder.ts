@@ -1,3 +1,8 @@
+/**
+ * business-app 受控构建器。
+ *
+ * 所有模型产物必须经过路径、体积、依赖、动态 API、外部地址和凭据检查后，才能进入隔离的 Vite 构建流程。
+ */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -12,13 +17,16 @@ const ALLOWED_FILE = /^(?:index\.html|package\.json|tsconfig\.json|vite\.config\
 const ALLOWED_IMPORT = /^(?:vue|vite|@vitejs\/plugin-vue|@idux\/components(?:\/[A-Za-z0-9_./-]+)?|@idux\/cdk(?:\/[A-Za-z0-9_./-]+)?)$/
 const IMPORT_SPECIFIER = /(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/g
 const FORBIDDEN_RUNTIME_API = /\b(?:eval|Function|fetch|WebSocket|XMLHttpRequest|EventSource|SharedWorker|Worker)\s*(?:\(|\.)|sendBeacon\s*\(|window\.open\s*\(|(?:window\.)?location\.(?:assign|replace)\s*\(/i
+const FORBIDDEN_SECRET = /\bsk-[A-Za-z0-9_-]{12,}\b|\bBearer\s+[A-Za-z0-9._~+/-]{12,}=*|(?:password|passwd|secret|token|api[_ -]?key|密码|密钥)\s*[:：=]\s*["']?[^\s"']{8,}/i
 
+/** 构建输出目录、受限日志和耗时。 */
 export interface BusinessAppBuildResult {
   outputDir: string
   log: string
   durationMs: number
 }
 
+/** 定位包含固定 Vite 与 IDux 依赖的服务端运行时根目录。 */
 function runtimeRoot(): string {
   const candidates = [
     path.resolve(process.cwd()),
@@ -32,6 +40,7 @@ function runtimeRoot(): string {
   return found
 }
 
+/** 返回受信任且不允许模型修改的 Vite 配置。 */
 function trustedConfigFile(): string {
   const candidates = [
     path.join(runtimeRoot(), 'scripts', 'idux-vite.config.mjs'),
@@ -42,18 +51,21 @@ function trustedConfigFile(): string {
   return fs.realpathSync(found)
 }
 
+/** 返回固定版本的 Vite CLI 入口。 */
 function viteEntry(): string {
   const file = path.join(runtimeRoot(), 'node_modules', 'vite', 'bin', 'vite.js')
   if (!fs.existsSync(file)) throw new Error('服务端缺少固定版本的 Vite 构建运行时')
   return fs.realpathSync(file)
 }
 
+/** 返回构建时只读复用的服务端依赖目录。 */
 function runtimeNodeModules(): string {
   const directory = path.join(runtimeRoot(), 'node_modules')
   if (!fs.existsSync(directory)) throw new Error('服务端构建依赖目录不存在')
   return fs.realpathSync(directory)
 }
 
+/** 规范化产物相对路径并阻止目录穿越。 */
 function normalizeFileName(fileName: string): string {
   const normalized = fileName.replaceAll('\\', '/')
   if (
@@ -67,6 +79,7 @@ function normalizeFileName(fileName: string): string {
   return normalized
 }
 
+/** 校验源码只能导入相对模块或受控依赖。 */
 function validateImports(fileName: string, source: string): void {
   for (const match of source.matchAll(IMPORT_SPECIFIER)) {
     const specifier = match[1] || match[2]
@@ -83,6 +96,7 @@ function validateImports(fileName: string, source: string): void {
   }
 }
 
+/** 对完整项目草稿执行构建前静态安全检查。 */
 export function validateBusinessAppBuildInput(draft: ArtifactDraft): void {
   const entries = Object.entries(draft.files)
   if (entries.length === 0 || entries.length > MAX_SOURCE_FILES) {
@@ -93,9 +107,7 @@ export function validateBusinessAppBuildInput(draft: ArtifactDraft): void {
     const fileName = normalizeFileName(rawName)
     sourceBytes += Buffer.byteLength(source, 'utf8')
     if (sourceBytes > MAX_SOURCE_BYTES) throw new Error('业务应用源码超过 2MB 安全上限')
-    // generation-evidence.json is inert provenance metadata. Its two official
-    // source URLs are validated by the adapter and are never bundled or loaded
-    // by the preview runtime.
+    // generation-evidence.json 是不会被打包执行的来源元数据，其中两个官网地址由适配器单独校验。
     if (
       fileName !== 'generation-evidence.json' &&
       /\b(?:https?:|file:|data:text\/html|javascript:)/i.test(source)
@@ -105,10 +117,14 @@ export function validateBusinessAppBuildInput(draft: ArtifactDraft): void {
     if (FORBIDDEN_RUNTIME_API.test(source)) {
       throw new Error(`业务应用包含未授权的动态代码、网络或导航 API：${fileName}`)
     }
+    if (FORBIDDEN_SECRET.test(source)) {
+      throw new Error(`业务应用包含疑似凭据或密钥：${fileName}`)
+    }
     validateImports(fileName, source)
   }
 }
 
+/** 仅继承构建必需环境变量，避免子进程读取模型密钥等服务端配置。 */
 function safeBuildEnv(projectRoot: string, outputRoot: string): NodeJS.ProcessEnv {
   const inherited = ['SystemRoot', 'TEMP', 'TMP'].flatMap((name) =>
     process.env[name] === undefined ? [] : [[name, process.env[name]]]
@@ -122,6 +138,7 @@ function safeBuildEnv(projectRoot: string, outputRoot: string): NodeJS.ProcessEn
   }
 }
 
+/** 确认项目目录真实位于服务端受控工作区。 */
 function assertWorkspacePath(input: string): string {
   const resolved = fs.realpathSync(input)
   const relative = path.relative(path.resolve(dirs.workspaces), resolved)
@@ -131,6 +148,7 @@ function assertWorkspacePath(input: string): string {
   return resolved
 }
 
+/** 在受控子进程中构建业务应用，并限制时间和日志体积。 */
 export async function buildBusinessApp(projectRoot: string, outputDir: string): Promise<BusinessAppBuildResult> {
   const safeProjectRoot = assertWorkspacePath(projectRoot)
   const safeOutputDir = path.resolve(outputDir)

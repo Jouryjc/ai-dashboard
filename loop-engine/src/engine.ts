@@ -9,13 +9,15 @@
  * 这是架构性约束：业务在节点执行链路上拿不到引擎引用（只有只读 NodeContext），
  * 无法绕过转移表。引擎规则靠"声明式接入 + private 内部 + 执行器隔离"保证。
  */
-import type { EngineState, GraphState, NodeId } from './types'
+import type { EngineState, GraphCheckpoint, GraphState, NodeId } from './types'
 import type { NodeExecutor, NodeContext, NodeResult } from './node-executor'
 import type { ResumeTable } from './definition'
 import type { LoopEvent } from './events'
 import {
   createGraphState,
+  createGraphCheckpoint,
   cloneGraphState,
+  restoreGraphState,
   setNodeStatus,
   setNodeOutput,
   selectEdge
@@ -23,6 +25,10 @@ import {
 
 /** 业务声明的一切，传给 createLoop，引擎接管 */
 export interface LoopConfig {
+  /** 用于重新绑定持久化检查点的稳定流程标识。 */
+  flowId?: string
+  /** 节点拓扑或检查点语义变化时必须递增的流程版本。 */
+  flowVersion?: number
   /** 流程定义：节点 + edges + guards */
   definition: import('./types').FlowDefinition
   /** 恢复表 */
@@ -48,6 +54,7 @@ export class LoopEngine {
   /** 看门狗定时器 */
   private watchdog: ReturnType<typeof setTimeout> | null = null
 
+  /** 创建一个尚未启动的 Loop 引擎实例。 */
   constructor(config: LoopConfig) {
     this.config = config
   }
@@ -60,6 +67,16 @@ export class LoopEngine {
   /** 获取图状态快照（深拷贝，onCommit/回退时用；引擎未启动时返回 null） */
   getGraphState(): GraphState | null {
     return this.graphState ? cloneGraphState(this.graphState) : null
+  }
+
+  /** 导出不包含可执行 guard 函数、可直接 JSON 持久化的检查点。 */
+  getCheckpoint(): GraphCheckpoint | null {
+    if (!this.graphState) return null
+    return createGraphCheckpoint(
+      this.graphState,
+      this.config.flowId ?? 'anonymous-flow',
+      this.config.flowVersion ?? 1
+    )
   }
 
   /**
@@ -90,17 +107,22 @@ export class LoopEngine {
       case 'restore':
         await this.handleRestore(event.graphState)
         break
+      case 'restore-checkpoint':
+        await this.handleRestoreCheckpoint(event.checkpoint)
+        break
     }
   }
 
   /* ============================== 事件处理 ============================== */
 
+  /** 启动新流程并从初始节点持续推进。 */
   private async handleStart(initialNode: NodeId): Promise<void> {
     this.graphState = createGraphState(this.config.definition, initialNode)
     this.state = 'running'
     await this.run()
   }
 
+  /** 根据 awaiting 标签查找可信恢复点，并继续执行主循环。 */
   private async handleResume(): Promise<void> {
     if (!this.graphState) return
     const reason = this.graphState.awaiting
@@ -114,6 +136,7 @@ export class LoopEngine {
     await this.run()
   }
 
+  /** 恢复同一进程内的完整图快照；主要服务于历史版本回退。 */
   private async handleRestore(graphState: GraphState): Promise<void> {
     this.graphState = cloneGraphState(graphState)
     if (this.graphState.awaiting) {
@@ -123,6 +146,24 @@ export class LoopEngine {
       await this.run()
     } else {
       this.state = 'idle'
+    }
+  }
+
+  /** 校验流程身份后，从纯 JSON 检查点重建可信图状态。 */
+  private async handleRestoreCheckpoint(checkpoint: GraphCheckpoint): Promise<void> {
+    const expectedFlowId = this.config.flowId ?? 'anonymous-flow'
+    const expectedFlowVersion = this.config.flowVersion ?? 1
+    if (checkpoint.flowId !== expectedFlowId || checkpoint.flowVersion !== expectedFlowVersion) {
+      throw new Error(
+        `checkpoint 流程版本不匹配：${checkpoint.flowId}@${checkpoint.flowVersion}，期望 ${expectedFlowId}@${expectedFlowVersion}`
+      )
+    }
+    this.graphState = restoreGraphState(this.config.definition, checkpoint)
+    if (this.graphState.awaiting) {
+      this.state = 'suspended'
+    } else {
+      this.state = 'running'
+      await this.run()
     }
   }
 
@@ -170,6 +211,7 @@ export class LoopEngine {
           break
 
         case 'suspend':
+          setNodeOutput(this.graphState, nodeId, result.output, result.refs)
           this.graphState.awaiting = result.reason
           this.state = 'suspended'
           // suspend 也要通知业务层（发挂起卡片），携带 payload（如澄清问题）

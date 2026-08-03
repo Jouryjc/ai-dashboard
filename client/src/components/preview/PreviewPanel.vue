@@ -88,7 +88,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
             在左侧描述你想要的{{ session.artifactKind === 'business-app' ? '业务应用' : '大屏' }}
           </p>
           <p class="mt-1 text-sm text-ink-faint">
-            {{ session.artifactKind === 'business-app' ? '描述列表、详情、表单或业务操作，做好后会显示在这里' : '说句话就行，做好后会显示在这里' }}
+            {{ session.artifactKind === 'business-app' ? '描述业务目标、模块和核心流程；关键边界确认后会完成并验收整个应用' : '说句话就行，做好后会显示在这里' }}
           </p>
         </div>
       </div>

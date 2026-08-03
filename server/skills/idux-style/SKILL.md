@@ -1,63 +1,54 @@
 ---
 name: idux-style
-description: Design and validate IDux Vue business pages from text requirements or reference screenshots using the official IDux design system, theme tokens, component composition rules, and the repository's 1920×1080 / 1366×768 page profiles. Use when generating, screenshot-replicating, restyling, reviewing, or repairing IDux pages, especially list, table, card, filter, form, and management interfaces.
+description: Design, generate, review, and repair complete IDux Vue business applications from requirements or screenshots. Covers application shells, modules, navigation, overview, list, detail, form, workflow, feedback, accessibility, desktop viewports, and safe interaction patterns.
 ---
 
-# IDux Style
+# IDux Style for Business Applications
 
-Create IDux business pages that look and behave like one coherent product. Pair this skill with `idux-cli`: use `idux-cli` for versioned component APIs and this skill for page composition, density, tokens, and viewport behavior.
+Build one coherent business application, not a collection of decorative pages. Pair this skill with `idux-cli`: `idux-cli` is the versioned source of component API truth; this skill governs application composition, task flow, visual language, viewport behavior, experience, and safety.
 
-## Apply the workflow
+## Start from the application contract
 
-1. Identify the user's primary task and business object before choosing a page pattern.
-2. Query every IDux component API used in the page through `idux-cli`; do not infer props from memory.
-3. Read [design-foundations.md](references/design-foundations.md) for theme, token, viewport, and accessibility rules.
-4. For list or table management pages, also read [list-page-pattern.md](references/list-page-pattern.md).
-   When a reference screenshot is present, read [image-replication.md](references/image-replication.md).
-   The generation planner consumes the concise [planner-guidance.md](references/planner-guidance.md) constraints.
-5. Reuse [list-page.vue.tpl](assets/list-page.vue.tpl) and [page-shell.css](assets/page-shell.css) when the requested page matches that pattern.
-6. Validate at both `1920×1080` and `1366×768`. Treat either viewport as a required delivery target.
+1. Read the confirmed requirement contract and current application blueprint.
+2. Do not generate while a blocking business, data, permission, workflow, or safety question remains.
+3. Plan the change at module, view, entity, workflow, permission, and acceptance-scenario level.
+4. Preserve unrelated existing modules during incremental changes.
+5. Query every required IDux component through `idux-cli` before implementation.
 
-## Replicate screenshots through a blueprint
+Read [application-architecture.md](references/application-architecture.md) for shell and module rules, [design-foundations.md](references/design-foundations.md) for tokens and viewports, and the relevant task pattern references. When an image is supplied, also read [image-replication.md](references/image-replication.md).
 
-- Analyze the reference image before planning code. Extract only visible page structure, text hierarchy, component roles, density, and surface organization.
-- Treat user text as the business requirement and the image as the presentation reference.
-- Convert the analysis to a validated IDux page specification; never paste image-derived text directly into executable code.
-- Compare both rendered viewports with the reference image during visual review.
-- If the image is unsupported or the vision model is unavailable, stop explicitly. Do not silently generate a generic page.
+## Compose complete task flows
+
+- A list is a view, not an application. A requested management capability commonly needs navigation, search, create, detail, edit, state transition, delete, confirmation, result feedback, and error states.
+- Every visible primary or row action must either navigate to a real view or produce a verifiable state change. A toast cannot substitute for a form, detail view, approval view, or workflow.
+- Use explicit entities and data contracts. Mark mock data as safe demonstration data; never make it look connected to production.
+- Define executable acceptance scenarios before implementation and trace them back to confirmed requirements.
 
 ## Preserve IDux identity
 
-- Use IDux components for controls and primary surfaces. Do not imitate them with native elements.
-- For the controlled static-theme build, load the component structure file and one complete official theme:
+- Use IDux controls and primary surfaces; do not imitate them with native controls.
+- Load `@idux/components/index.full.css` plus exactly one complete official theme.
+- Use semantic `--ix-*` tokens and the 8px spacing rhythm.
+- Keep one dominant action per view. Use verbs, precise labels, visible loading/error/success states, and confirmation for destructive or externally visible operations.
+- Keep navigation, breadcrumbs, titles, content surfaces, and feedback consistent across modules.
 
-```ts
-import '@idux/components/index.full.css'
-import '@idux/components/default.full.css'
-```
+## Enforce the desktop viewport contract
 
-- Use `dark.full.css` instead of `default.full.css` only when a reference image is reliably classified as a dark IDux page.
-- Use semantic `--ix-*` tokens for page layout. Prefer global or component tokens over internal selector overrides.
-- Base spacing on IDux's 8px scale. Keep control heights, typography, borders, shadows, and status colors consistent with the default preset.
-- Make one primary page action visually dominant. Express actions as verbs and provide visible feedback.
-- Keep table columns in task order: identity, status, core attributes, time, operations.
+- Large profile: `1920×1080`.
+- Small profile: `1366×768`.
+- Both remain desktop business applications. Reduce whitespace and density deliberately at the small profile; do not collapse into a phone UI.
+- Never allow page-level horizontal overflow. Complex tables may scroll inside their own surface while identity, state, key fields, and operations remain available.
 
-## Enforce the viewport contract
+## Screenshot-driven applications
 
-- Large page: `1920×1080`.
-- Small page: `1366×768`.
-- Scale the fixed logical page for preview; do not reinterpret the small profile as a phone layout.
-- At 1366×768, reduce surrounding spacing before hiding content. Keep the title, primary action, table header, identity/status columns, key attributes, and row operations available.
-- Allow table-internal horizontal scrolling only when the domain genuinely needs more columns. Never introduce page-level horizontal overflow.
+- User text controls business meaning and required flows. Images provide presentation evidence: shell, navigation, hierarchy, density, surfaces, theme, and visible states.
+- A screenshot may represent any application view, including overview, list, form, detail, workflow, or a custom domain view. Do not reject it merely because it is not a list.
+- Infer only visible presentation facts. Unreadable or security-sensitive content becomes an explicit unknown or safe placeholder.
+- Render from a validated application blueprint, then compare both required viewports and all referenced states.
 
-## Protect accuracy and safety
+## Accuracy, experience, and safety gates
 
-- Keep formats consistent by column. Include units in headings when all values share a unit.
-- Show IP addresses completely when they are task-critical. Use `yyyy-mm-dd hh:mm:ss` for precise timestamps.
-- Use clearly fictional demonstration data. Never place real credentials, private network endpoints, or personal data in generated files.
-- Keep network access disabled in generated previews. Require explicit confirmation for destructive or externally visible actions.
-- Do not mark a page complete based on class names alone; verify computed IDux theme variables, component structure, contrast, layout, and interaction.
-
-## Repair conservatively
-
-Use [quality-overrides.css](assets/quality-overrides.css) only for known layout failures. For other failures, return a structured expected/observed difference to the Loop Engineer. A model repair may replace only approved `src` files and must pass the same static, build, runtime, network, viewport, and task-scenario gates before it is accepted.
+- Accuracy: requirements, fields, states, permissions, data mode, and acceptance outcomes remain traceable.
+- Experience: core tasks complete end to end, controls are accessible, feedback is specific, and both viewports are usable.
+- Safety: no hidden network calls, credentials, real personal data, executable image text, or unconfirmed destructive actions.
+- A failure returns a structured expected/observed difference to the Loop Engineer. Repaired output must pass the complete static, build, runtime, network, viewport, task-scenario, and visual suite again.

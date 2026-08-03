@@ -25,8 +25,10 @@
 | `review.user.md` | 审查用户消息 | `{{requirement}}` `{{html}}` |
 | `business-app-reference.system.md` | 业务应用参考图分析：图片转受控应用蓝图 | — |
 | `business-app-reference.user.md` | 业务应用参考图分析用户消息 | `{{request}}` |
-| `business-app-spec.system.md` | 业务应用规格规划 | — |
-| `business-app-spec.user.md` | 业务应用规格用户消息 | `{{request}}` `{{referenceBlock}}` |
+| `business-app-requirements.system.md` | 业务应用需求分析：识别缺失的阻塞决策，每次最多提出一个问题 | — |
+| `business-app-requirements.user.md` | 业务应用需求分析用户消息 | `{{request}}` `{{decisions}}` `{{currentBlueprint}}` |
+| `business-app-blueprint.system.md` | 业务应用蓝图规划：任意领域、多模块、视图、动作与工作流 | — |
+| `business-app-blueprint.user.md` | 业务应用蓝图规划用户消息 | `{{contract}}` `{{currentBlueprint}}` `{{presentationEvidence}}` `{{fallbackShape}}` |
 | `business-app-review.system.md` | 业务应用参考图与双视口视觉复核 | — |
 | `business-app-review.user.md` | 业务应用视觉复核用户消息 | `{{request}}` `{{referenceNote}}` |
 | `split.skeleton.user.md` | 超时拆分第 1 步：页面骨架（PANEL 占位） | `{{requirement}}` |

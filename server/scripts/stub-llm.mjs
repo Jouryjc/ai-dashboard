@@ -16,7 +16,6 @@
  *   - system 含「大屏验收员」→ 返回截图审查 JSON：需求文本带「演示视觉修复」时
  *     同一需求首次报一个问题（之后的复查放行），否则空清单
  *   - system 含「业务应用的参考图分析器」→ 返回受控管理列表视觉清单
- *   - system 含「企业级业务应用的产品分析器」→ 返回包含呈现规格的云主机列表 JSON
  */
 import http from 'node:http'
 
@@ -249,70 +248,35 @@ const server = http.createServer((req, res) => {
       let content
       if (payload.max_tokens === 1) {
         content = image ? '一个小点。' : 'ok'
-      } else if (sys.includes('业务应用的参考图分析器')) {
+      } else if (sys.includes('业务应用参考图分析器')) {
         content = JSON.stringify({
-          pagePattern: 'management-list',
-          title: '云主机管理',
+          viewKind: 'list',
+          applicationName: '云资源管理平台',
+          moduleName: '云主机',
+          viewTitle: '云主机管理',
           description: '集中查看云主机的状态、规格、地域和创建时间。',
-          entityName: '云主机',
-          primaryAction: '创建云主机',
           navigation: 'side',
           navigationItems: ['实例管理', '镜像', '安全组'],
-          summaryCards: [
-            { label: '实例总数', value: '6', helper: '当前演示数据', tone: 'normal' },
-            { label: '运行中', value: '4', helper: '状态正常', tone: 'success' }
+          primaryActions: ['创建云主机'],
+          componentRoles: ['模块导航', '概览卡片', '搜索区', '数据表格'],
+          sections: [
+            { title: '云主机列表', role: '实例查询与管理', visibleTexts: ['实例总数', '运行中'] }
           ],
-          columns: [
-            { label: '实例 ID', type: 'text' },
-            { label: '实例名称', type: 'text' },
-            { label: '状态', type: 'status' },
-            { label: '地域', type: 'text' },
-            { label: '规格', type: 'text' },
-            { label: '公网 IP', type: 'text' },
-            { label: '创建时间', type: 'datetime' }
+          fields: [
+            { label: '实例 ID', role: 'identity' },
+            { label: '实例名称', role: 'attribute' },
+            { label: '状态', role: 'status' },
+            { label: '地域', role: 'attribute' },
+            { label: '规格', role: 'attribute' },
+            { label: '公网 IP', role: 'attribute' },
+            { label: '创建时间', role: 'time' }
           ],
           density: 'compact',
           surface: 'flat',
-          toolbar: 'inline',
           theme: 'light',
-          visibleTexts: ['云主机列表', '刷新'],
           unreadable: [],
           redactions: [],
           confidence: 'high'
-        })
-      } else if (sys.includes('企业级业务应用的产品分析器')) {
-        content = JSON.stringify({
-          title: '云主机管理',
-          description: '集中查看演示实例的运行状态、地域、规格、公网地址和创建时间。',
-          entityName: '云主机',
-          primaryAction: '创建云主机',
-          presentation: {
-            navigation: 'side',
-            navigationItems: ['实例管理', '镜像', '安全组'],
-            density: 'compact',
-            surface: 'flat',
-            toolbar: 'inline',
-            theme: 'light'
-          },
-          summaryCards: [
-            { label: '实例总数', value: '6', helper: '当前演示数据', tone: 'normal' },
-            { label: '运行中', value: '4', helper: '状态正常', tone: 'success' }
-          ],
-          columns: [
-            { key: 'instanceId', label: '实例 ID', type: 'text' },
-            { key: 'name', label: '实例名称', type: 'text' },
-            { key: 'status', label: '状态', type: 'status' },
-            { key: 'region', label: '地域', type: 'text' },
-            { key: 'specification', label: '规格', type: 'text' },
-            { key: 'publicIp', label: '公网 IP', type: 'text' },
-            { key: 'createdAt', label: '创建时间', type: 'datetime' }
-          ],
-          rows: [
-            { instanceId: 'ecs-demo-01', name: '生产网关-01', status: '运行中', region: '华东 1', specification: '4 核 8 GB', publicIp: '203.0.113.12', createdAt: '2026-07-28 09:12:00' },
-            { instanceId: 'ecs-demo-02', name: '订单服务-02', status: '运行中', region: '华东 1', specification: '8 核 16 GB', publicIp: '203.0.113.27', createdAt: '2026-07-26 14:38:00' },
-            { instanceId: 'ecs-demo-03', name: '数据分析-01', status: '需关注', region: '华北 2', specification: '16 核 32 GB', publicIp: '198.51.100.41', createdAt: '2026-07-21 11:05:00' },
-            { instanceId: 'ecs-demo-04', name: '测试环境-03', status: '已停止', region: '华南 1', specification: '2 核 4 GB', publicIp: '198.51.100.73', createdAt: '2026-07-18 16:44:00' }
-          ]
         })
       } else if (sys.includes('业务应用视觉验收员')) {
         content = JSON.stringify({ verdict: 'pass', issues: [] })

@@ -40,6 +40,20 @@ export interface GraphState {
 }
 
 /**
+ * 可序列化的持久化检查点。
+ *
+ * FlowDefinition 含有 guard 函数，禁止直接写入 JSON；恢复时必须根据 flowId 与 flowVersion
+ * 重新绑定服务端注册的可信流程定义。
+ */
+export interface GraphCheckpoint {
+  flowId: string
+  flowVersion: number
+  nodes: Record<NodeId, NodeState>
+  current: NodeId
+  awaiting: Tag | null
+}
+
+/**
  * 流程定义：节点 + 带 guard 的边 + guard 实现。
  *
  * 边同时承担"拓扑"和"正向转移"职责（合一，无冗余）：

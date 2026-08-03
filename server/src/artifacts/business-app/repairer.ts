@@ -1,15 +1,22 @@
+/**
+ * business-app 确定性修复器。
+ *
+ * 只恢复经过版本控制的 IDux 主题入口和双视口应用壳，不对未知失败进行猜测性改写。
+ */
 import type { ValidationGateResult } from '../../wire'
 import type { ArtifactDraft } from '../types'
-import { loadIduxStyleBundle } from './style-kit'
+import { loadBusinessAppDesignSystem } from './generation/design-system'
 
+/** 修复后的草稿和可展示的修复动作。 */
 export interface BusinessAppDraftRepair {
   draft: ArtifactDraft
   actions: string[]
 }
 
 /**
- * Apply only bounded, auditable repairs. Unknown failures deliberately remain
- * unresolved so the loop blocks instead of claiming an arbitrary fix worked.
+ * 执行有界且可审计的确定性修复。
+ *
+ * 未知问题保持未解决状态，由 Loop 继续选择其他策略或最终请求人工协助，避免虚假宣称已修复。
  */
 export function repairBusinessAppDraft(
   source: ArtifactDraft,
@@ -58,16 +65,12 @@ export function repairBusinessAppDraft(
     'visual-density',
     'visual-responsive'
   ].some(id => hasFailedPrefix(id))
-  if (layoutFailure && !('src/quality-overrides.css' in files)) {
-    files['src/quality-overrides.css'] = loadIduxStyleBundle().qualityOverrides
-    const main = files['src/main.ts'] ?? ''
-    files['src/main.ts'] = main.includes("import './quality-overrides.css'")
-      ? main
-      : main.replace(
-          /import\s+App\s+from\s+["']\.\/App\.vue["'];?/,
-          match => `${match}\nimport './quality-overrides.css'`
-        )
-    actions.push('应用 1920×1080 与 1366×768 的有界布局修复')
+  if (layoutFailure) {
+    const expectedCss = loadBusinessAppDesignSystem().css
+    if (files['src/styles/app-shell.css'] !== expectedCss) {
+      files['src/styles/app-shell.css'] = expectedCss
+      actions.push('恢复经过双视口约束的 IDux 业务应用壳样式')
+    }
   }
 
   return {
