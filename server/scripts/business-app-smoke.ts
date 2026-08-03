@@ -1,14 +1,14 @@
 import fs from 'node:fs'
-import { buildIduxPage, validateIduxBuildInput } from '../src/artifacts/idux-page/builder'
-import { iduxPageArtifactAdapter } from '../src/artifacts/idux-page/adapter'
+import { buildBusinessApp, validateBusinessAppBuildInput } from '../src/artifacts/business-app/builder'
+import { businessAppArtifactAdapter } from '../src/artifacts/business-app/adapter'
 import {
-  generateIduxPage,
-  type IduxPageGenerationOptions
-} from '../src/artifacts/idux-page/generator'
-import { repairIduxPageDraft } from '../src/artifacts/idux-page/repairer'
-import { loadIduxStyleBundle, renderIduxListPage } from '../src/artifacts/idux-page/style-kit'
-import { validateBuiltIduxPage } from '../src/artifacts/idux-page/validator'
-import type { IduxAcceptanceScenario } from '../src/artifacts/idux-page/spec'
+  generateBusinessApp,
+  type BusinessAppGenerationOptions
+} from '../src/artifacts/business-app/generator'
+import { repairBusinessAppDraft } from '../src/artifacts/business-app/repairer'
+import { loadIduxStyleBundle, renderBusinessApp } from '../src/artifacts/business-app/style-kit'
+import { validateBuiltBusinessApp } from '../src/artifacts/business-app/validator'
+import type { BusinessAppAcceptanceScenario } from '../src/artifacts/business-app/spec'
 import { createPreviewApp } from '../src/preview'
 import { skillRegistry } from '../src/skills/registry'
 import { store } from '../src/store'
@@ -27,25 +27,25 @@ interface BuiltCase {
     styleViewports: string[]
   }
   buildDurationMs: number
-  scenarios: IduxAcceptanceScenario[]
+  scenarios: BusinessAppAcceptanceScenario[]
   evidenceCommands: string[]
 }
 
 async function buildCase(
   projectId: string,
   request: string,
-  options: IduxPageGenerationOptions = {}
+  options: BusinessAppGenerationOptions = {}
 ): Promise<BuiltCase> {
   const revisionId = `rev-${Date.now()}`
   const workspace = store.artifactWorkspaceDir(projectId, revisionId)
   fs.mkdirSync(workspace, { recursive: true })
-  const generated = await generateIduxPage(workspace, request, undefined, options)
-  validateIduxBuildInput(generated.draft)
-  const report = iduxPageArtifactAdapter.validateDraft(generated.draft)
+  const generated = await generateBusinessApp(workspace, request, undefined, options)
+  validateBusinessAppBuildInput(generated.draft)
+  const report = businessAppArtifactAdapter.validateDraft(generated.draft)
   if (report.status !== 'passed') throw new Error(JSON.stringify(report))
   store.writeArtifactDraft(projectId, revisionId, generated.draft)
   store.writeArtifactEvidence(projectId, revisionId, generated.evidence)
-  const result = await buildIduxPage(workspace, store.previewDir(projectId, revisionId))
+  const result = await buildBusinessApp(workspace, store.previewDir(projectId, revisionId))
   return {
     projectId,
     revisionId,
@@ -67,7 +67,7 @@ async function buildCase(
 
 async function main(): Promise<void> {
   skillRegistry.load()
-  const escaped = renderIduxListPage(loadIduxStyleBundle(), {
+  const escaped = renderBusinessApp(loadIduxStyleBundle(), {
     title: '</script><script>alert(1)</script>',
     description: '验证模型文本不会逃逸 Vue 脚本边界。',
     entityName: '安全记录',
@@ -101,8 +101,8 @@ async function main(): Promise<void> {
     throw new Error('idux-style 模板没有安全转义模型生成文本')
   }
 
-  const repairWorkspace = store.artifactWorkspaceDir('idux-repair-check', `rev-${Date.now()}`)
-  const repairSource = await generateIduxPage(
+  const repairWorkspace = store.artifactWorkspaceDir('business-app-repair-check', `rev-${Date.now()}`)
+  const repairSource = await generateBusinessApp(
     repairWorkspace,
     '生成包含云主机相关信息的表格'
   )
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
         .replace('@idux/components/default.full.css', '@idux/components/default.css')
     }
   }
-  const brokenReport = iduxPageArtifactAdapter.validateDraft(brokenDraft)
+  const brokenReport = businessAppArtifactAdapter.validateDraft(brokenDraft)
   const brokenGates = brokenReport.gates.filter(gate => gate.status === 'failed')
   if (!brokenGates.some(gate => gate.id === 'idux-style-entry')) {
     throw new Error('损坏样式入口后，IDux 静态门禁没有阻断')
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
     style: { repository: string }
   }
   evidence.style.repository = 'https://example.invalid/untrusted'
-  const tamperedReport = iduxPageArtifactAdapter.validateDraft({
+  const tamperedReport = businessAppArtifactAdapter.validateDraft({
     ...repairSource.draft,
     files: {
       ...repairSource.draft.files,
@@ -135,20 +135,20 @@ async function main(): Promise<void> {
   )) {
     throw new Error('篡改 idux-style 来源后，证据门禁没有阻断')
   }
-  const repaired = repairIduxPageDraft(brokenDraft, brokenGates)
+  const repaired = repairBusinessAppDraft(brokenDraft, brokenGates)
   if (
     repaired.actions.length === 0 ||
-    iduxPageArtifactAdapter.validateDraft(repaired.draft).status !== 'passed'
+    businessAppArtifactAdapter.validateDraft(repaired.draft).status !== 'passed'
   ) {
     throw new Error('IDux 样式入口自动修复未通过复检')
   }
 
   const cases = [
-    await buildCase('idux-build-cloud-check', '生成包含云主机相关信息的表格'),
-    await buildCase('idux-build-cloud-detail-check', '生成包含云主机相关信息的表格，并支持查看详情页面'),
-    await buildCase('idux-build-generic-check', '生成订单管理列表，包含编号、客户、金额和状态'),
+    await buildCase('business-app-build-cloud-check', '生成包含云主机相关信息的表格'),
+    await buildCase('business-app-build-cloud-detail-check', '生成包含云主机相关信息的表格，并支持查看详情页面'),
+    await buildCase('business-app-build-generic-check', '生成订单管理列表，包含编号、客户、金额和状态'),
     await buildCase(
-      'idux-build-reference-dark-check',
+      'business-app-build-reference-dark-check',
       '根据参考图生成包含云主机相关信息的表格',
       {
         reference: {
@@ -184,7 +184,7 @@ async function main(): Promise<void> {
           },
           evidence: {
             mode: 'vision-structured-spec',
-            analyzer: 'idux-page-reference-v1',
+            analyzer: 'business-app-reference-v1',
             imageCount: 1,
             imageSha256: 'a'.repeat(64),
             analysisSha256: 'b'.repeat(64)
@@ -215,9 +215,9 @@ async function main(): Promise<void> {
   const runtimeResults: Record<string, unknown> = {}
   try {
     const address = previewServer.address()
-    if (!address || typeof address === 'string') throw new Error('无法获取 IDux 冒烟预览端口')
+    if (!address || typeof address === 'string') throw new Error('无法获取业务应用冒烟预览端口')
     for (const item of cases) {
-      const runtime = await validateBuiltIduxPage(
+      const runtime = await validateBuiltBusinessApp(
         `http://127.0.0.1:${address.port}/preview/${item.projectId}/${item.revisionId}/index.html`,
         item.scenarios
       )

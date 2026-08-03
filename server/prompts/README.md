@@ -23,12 +23,12 @@
 | `coder.template-context.components-block.md` | 组件样式约束块 | `{{componentLines}}` |
 | `review.system.md` | 布局检查员：结构化视觉审查 | — |
 | `review.user.md` | 审查用户消息 | `{{requirement}}` `{{html}}` |
-| `idux-page-reference.system.md` | IDux 参考图分析：图片转受控页面蓝图 | — |
-| `idux-page-reference.user.md` | IDux 参考图分析用户消息 | `{{request}}` |
-| `idux-page-spec.system.md` | IDux 页面规格规划 | — |
-| `idux-page-spec.user.md` | IDux 页面规格用户消息 | `{{request}}` `{{referenceBlock}}` |
-| `idux-page-review.system.md` | IDux 参考图与双视口视觉复核 | — |
-| `idux-page-review.user.md` | IDux 视觉复核用户消息 | `{{request}}` `{{referenceNote}}` |
+| `business-app-reference.system.md` | 业务应用参考图分析：图片转受控应用蓝图 | — |
+| `business-app-reference.user.md` | 业务应用参考图分析用户消息 | `{{request}}` |
+| `business-app-spec.system.md` | 业务应用规格规划 | — |
+| `business-app-spec.user.md` | 业务应用规格用户消息 | `{{request}}` `{{referenceBlock}}` |
+| `business-app-review.system.md` | 业务应用参考图与双视口视觉复核 | — |
+| `business-app-review.user.md` | 业务应用视觉复核用户消息 | `{{request}}` `{{referenceNote}}` |
 | `split.skeleton.user.md` | 超时拆分第 1 步：页面骨架（PANEL 占位） | `{{requirement}}` |
 | `split.panel.user.md` | 超时拆分第 2..N 步：单个面板 | `{{requirement}}` `{{panelName}}` |
 

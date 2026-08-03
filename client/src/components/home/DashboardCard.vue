@@ -89,7 +89,7 @@ function cancelRename(): void {
         <StatusBadge :status="dashboard.status" />
       </div>
       <span class="absolute right-3 top-3 rounded-full bg-card/90 px-2 py-1 text-[11px] font-medium text-ink-secondary shadow-card">
-        {{ dashboard.artifactKind === 'idux-page' ? 'IDux 页面' : '数据大屏' }}
+        {{ dashboard.artifactKind === 'business-app' ? '业务应用' : '数据大屏' }}
       </span>
     </div>
 

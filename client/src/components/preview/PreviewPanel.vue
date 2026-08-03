@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 中区 · 大屏预览区（UX §4.2 中区）。
- * - 大屏与 IDux 普通页面都按各自逻辑分辨率等比缩放。
+ * - 数据大屏与业务应用都按各自逻辑分辨率等比缩放。
  * - 三种状态（强制）：
  *   empty    无任何版本 → 占位引导「在左侧描述你想要的大屏」
  *   building 构建中 → 旧版本不清空 + 半透明遮罩「正在生成新版本…」
@@ -27,7 +27,7 @@ function refresh(): void {
 /* ---------- 分辨率切换器 ---------- */
 const resMenuOpen = ref(false)
 const resolutions = computed<PreviewResolution[]>(() =>
-  session.artifactKind === 'idux-page'
+  session.artifactKind === 'business-app'
     ? ['1920x1080', '1366x768']
     : ['1920x1080', '2560x1440']
 )
@@ -64,7 +64,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
 <template>
   <section
     class="relative flex h-full min-h-0 flex-col bg-page"
-    :aria-label="session.artifactKind === 'idux-page' ? '普通页面预览区' : '大屏预览区'"
+    :aria-label="session.artifactKind === 'business-app' ? '业务应用预览区' : '大屏预览区'"
   >
     <!-- 预览画布区 -->
     <div ref="containerRef" class="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6">
@@ -85,10 +85,10 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
         </svg>
         <div>
           <p class="text-base font-medium text-ink">
-            在左侧描述你想要的{{ session.artifactKind === 'idux-page' ? '普通页面' : '大屏' }}
+            在左侧描述你想要的{{ session.artifactKind === 'business-app' ? '业务应用' : '大屏' }}
           </p>
           <p class="mt-1 text-sm text-ink-faint">
-            {{ session.artifactKind === 'idux-page' ? '会使用 IDux 组件生成，做好后显示在这里' : '说句话就行，做好后会显示在这里' }}
+            {{ session.artifactKind === 'business-app' ? '描述列表、详情、表单或业务操作，做好后会显示在这里' : '说句话就行，做好后会显示在这里' }}
           </p>
         </div>
       </div>
@@ -104,7 +104,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
           <iframe
             :key="`${session.previewUrl}#${refreshKey}`"
             :src="session.previewUrl"
-            :title="session.artifactKind === 'idux-page' ? 'IDux 普通页面预览' : '大屏预览'"
+            :title="session.artifactKind === 'business-app' ? '业务应用预览' : '大屏预览'"
             class="block h-full w-full border-0 bg-ink"
             sandbox="allow-scripts allow-same-origin"
           />

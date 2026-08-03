@@ -2,7 +2,7 @@ import * as gw from '../../gateway'
 import { prompt } from '../../prompts'
 import type { ModelSettings, ValidationGateResult } from '../../wire'
 
-export type IduxVisualCategory =
+export type BusinessAppVisualCategory =
   | 'idux-style'
   | 'hierarchy'
   | 'readability'
@@ -11,19 +11,19 @@ export type IduxVisualCategory =
   | 'content'
   | 'interaction'
 
-export interface IduxVisualFinding {
-  category: IduxVisualCategory
+export interface BusinessAppVisualFinding {
+  category: BusinessAppVisualCategory
   severity: 'major' | 'minor'
   detail: string
 }
 
-export interface IduxVisualReview {
+export interface BusinessAppVisualReview {
   gates: ValidationGateResult[]
-  findings: IduxVisualFinding[]
+  findings: BusinessAppVisualFinding[]
   reviewedByModel: boolean
 }
 
-const CATEGORIES = new Set<IduxVisualCategory>([
+const CATEGORIES = new Set<BusinessAppVisualCategory>([
   'idux-style',
   'hierarchy',
   'readability',
@@ -33,7 +33,7 @@ const CATEGORIES = new Set<IduxVisualCategory>([
   'interaction'
 ])
 
-function parseReview(value: unknown): IduxVisualFinding[] {
+function parseReview(value: unknown): BusinessAppVisualFinding[] {
   if (!value || typeof value !== 'object') throw new Error('视觉验收结果不是对象')
   const raw = value as { verdict?: unknown; issues?: unknown }
   if ((raw.verdict !== 'pass' && raw.verdict !== 'repair') || !Array.isArray(raw.issues)) {
@@ -41,9 +41,9 @@ function parseReview(value: unknown): IduxVisualFinding[] {
   }
   const findings = raw.issues.slice(0, 4).map(item => {
     if (!item || typeof item !== 'object') throw new Error('视觉问题不是对象')
-    const issue = item as Partial<IduxVisualFinding>
+    const issue = item as Partial<BusinessAppVisualFinding>
     if (
-      !CATEGORIES.has(issue.category as IduxVisualCategory) ||
+      !CATEGORIES.has(issue.category as BusinessAppVisualCategory) ||
       (issue.severity !== 'major' && issue.severity !== 'minor') ||
       typeof issue.detail !== 'string' ||
       issue.detail.trim().length < 10 ||
@@ -52,7 +52,7 @@ function parseReview(value: unknown): IduxVisualFinding[] {
       throw new Error('视觉问题字段不合法')
     }
     return {
-      category: issue.category as IduxVisualCategory,
+      category: issue.category as BusinessAppVisualCategory,
       severity: issue.severity,
       detail: issue.detail.trim()
     }
@@ -63,7 +63,7 @@ function parseReview(value: unknown): IduxVisualFinding[] {
   return findings
 }
 
-function fallbackReview(detail: string, required: boolean): IduxVisualReview {
+function fallbackReview(detail: string, required: boolean): BusinessAppVisualReview {
   return {
     reviewedByModel: false,
     findings: [],
@@ -76,14 +76,14 @@ function fallbackReview(detail: string, required: boolean): IduxVisualReview {
   }
 }
 
-export async function reviewIduxPageVisual(
+export async function reviewBusinessAppVisual(
   settings: ModelSettings,
   request: string,
   screenshot: Buffer | null,
   smallScreenshot: Buffer | null,
   referenceImage: string | null = null,
   scenarioScreenshots: Buffer[] = []
-): Promise<IduxVisualReview> {
+): Promise<BusinessAppVisualReview> {
   if (
     !screenshot ||
     !smallScreenshot ||
@@ -105,7 +105,7 @@ export async function reviewIduxPageVisual(
     > = [
       {
         type: 'text',
-        text: prompt('idux-page-review.user', {
+        text: prompt('business-app-review.user', {
           request,
           referenceNote: referenceImage
             ? '截图 R 是用户提供的参考图。先比较页面结构、信息层级和密度，再检查两档成品。'
@@ -142,7 +142,7 @@ export async function reviewIduxPageVisual(
       temperature: 0,
       maxTokens: 1200,
       messages: [
-        { role: 'system', content: prompt('idux-page-review.system') },
+        { role: 'system', content: prompt('business-app-review.system') },
         { role: 'user', content }
       ]
     })

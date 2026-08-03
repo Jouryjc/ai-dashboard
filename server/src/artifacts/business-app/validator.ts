@@ -1,9 +1,9 @@
 import fs from 'node:fs'
 import { chromium, type Page } from 'playwright'
 import type { ValidationGateResult } from '../../wire'
-import type { IduxAcceptanceScenario } from './spec'
+import type { BusinessAppAcceptanceScenario } from './spec'
 
-export interface IduxRuntimeValidation {
+export interface BusinessAppRuntimeValidation {
   gates: ValidationGateResult[]
   screenshot: Buffer | null
   smallScreenshot: Buffer | null
@@ -84,10 +84,10 @@ function collectRuntimeSignals(
   })
 }
 
-export async function validateBuiltIduxPage(
+export async function validateBuiltBusinessApp(
   url: string,
-  scenarios: IduxAcceptanceScenario[] = []
-): Promise<IduxRuntimeValidation> {
+  scenarios: BusinessAppAcceptanceScenario[] = []
+): Promise<BusinessAppRuntimeValidation> {
   const executablePath = browserExecutable()
   if (!executablePath) {
     throw new Error('浏览器验收环境不可用：请安装 Chromium、Chrome 或 Edge')

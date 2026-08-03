@@ -193,40 +193,40 @@ async function main() {
   if (!probe.json?.supportsVision) fail('probe vision', probe.json?.message)
   ok('POST /model-gateway/probe', probe.json.message)
 
-  // 1.25 通用项目模型：IDux 页面项目能创建、回读并通过兼容 API 删除
-  const iduxProjectRes = await api('POST', '/projects', {
+  // 1.25 统一项目模型：业务应用能创建、回读和删除
+  const businessAppProjectRes = await api('POST', '/projects', {
     name: '云主机管理页',
-    artifactKind: 'idux-page'
+    artifactKind: 'business-app'
   })
-  const iduxProject = iduxProjectRes.json
+  const businessAppProject = businessAppProjectRes.json
   if (
-    iduxProjectRes.status !== 200 ||
-    iduxProject?.artifactKind !== 'idux-page' ||
-    iduxProject?.targetProfile?.framework !== 'vue3' ||
-    iduxProject?.targetProfile?.uiLibrary !== 'idux'
+    businessAppProjectRes.status !== 200 ||
+    businessAppProject?.artifactKind !== 'business-app' ||
+    businessAppProject?.targetProfile?.framework !== 'vue3' ||
+    businessAppProject?.targetProfile?.uiLibrary !== 'idux'
   ) {
-    fail('POST /projects 创建 IDux 页面项目', JSON.stringify(iduxProject))
+    fail('POST /projects 创建业务应用项目', JSON.stringify(businessAppProject))
   }
   const projects = (await api('GET', '/projects')).json
-  if (!Array.isArray(projects) || !projects.some((project) => project.id === iduxProject.id)) {
+  if (!Array.isArray(projects) || !projects.some((project) => project.id === businessAppProject.id)) {
     fail('GET /projects 回读项目', JSON.stringify(projects))
   }
-  ok('Project/ArtifactKind/TargetProfile 兼容 API', iduxProject.id)
+  ok('Project/ArtifactKind/TargetProfile 统一 API', businessAppProject.id)
   const capabilities = (await api('GET', '/generation-capabilities')).json
-  const iduxCapability = capabilities?.find?.((item) => item.artifactKind === 'idux-page')
-  const iduxSkillIds = iduxCapability?.skills?.map?.((skill) => skill.id) ?? []
-  if (!iduxSkillIds.includes('idux-cli') || !iduxSkillIds.includes('idux-style')) {
-    fail('Skill Registry 暴露 IDux 页面能力', JSON.stringify(capabilities))
+  const businessAppCapability = capabilities?.find?.((item) => item.artifactKind === 'business-app')
+  const businessAppSkillIds = businessAppCapability?.skills?.map?.((skill) => skill.id) ?? []
+  if (!businessAppSkillIds.includes('idux-cli') || !businessAppSkillIds.includes('idux-style')) {
+    fail('Skill Registry 暴露业务应用能力', JSON.stringify(capabilities))
   }
-  ok('Artifact Registry + Skill Registry 能力发现', iduxCapability.skills.map((skill) => skill.id).join('、'))
+  ok('Artifact Registry + Skill Registry 能力发现', businessAppCapability.skills.map((skill) => skill.id).join('、'))
   const tableIntent = await api('POST', '/generation-intent', {
     text: '生成一个包含云主机相关信息的表格'
   })
   if (
-    tableIntent.json?.artifactKind !== 'idux-page' ||
+    tableIntent.json?.artifactKind !== 'business-app' ||
     tableIntent.json?.requiresClarification !== false
   ) {
-    fail('云主机表格意图路由到 IDux 普通页面', JSON.stringify(tableIntent.json))
+    fail('云主机表格意图路由到业务应用', JSON.stringify(tableIntent.json))
   }
   const ambiguousIntent = await api('POST', '/generation-intent', { text: '帮我做个页面' })
   if (
@@ -240,84 +240,84 @@ async function main() {
   if (missingKind.status !== 400) {
     fail('项目创建不允许静默默认成大屏', `HTTP ${missingKind.status}`)
   }
-  ok('意图路由：云主机表格 → IDux；模糊需求 → 澄清；创建不静默默认')
+  ok('意图路由：云主机表格 → 业务应用；模糊需求 → 澄清；创建不静默默认')
 
-  // 1.3 IDux 普通页面闭环：技能证据 → 受控构建 → 浏览器门禁 → 独立预览 → ZIP 源码
-  const iduxSse = openSse(iduxProject.id)
-  await api('POST', `/dashboards/${iduxProject.id}/messages`, {
+  // 1.3 业务应用闭环：技能证据 → 受控构建 → 浏览器门禁 → 独立预览 → ZIP 源码
+  const businessAppSse = openSse(businessAppProject.id)
+  await api('POST', `/dashboards/${businessAppProject.id}/messages`, {
     text: '根据参考图生成一个包含云主机相关信息的表格页面',
     attachments: [PIXEL]
   })
-  const iduxReady = await waitFor(() => {
-    const failed = iduxSse.events.find(
+  const businessAppReady = await waitFor(() => {
+    const failed = businessAppSse.events.find(
       (event) => event.event === 'issue' && event.data?.issue?.status === 'failed'
     )
-    if (failed) throw new Error(`IDux 页面门禁失败：${failed.data.issue.title}`)
-    return iduxSse.events.find(event => event.event === 'previewReady')
-  }, 150_000, 'IDux 页面 previewReady')
-  const iduxVersions = (await api('GET', `/dashboards/${iduxProject.id}/versions`)).json
-  const iduxVersion = iduxVersions?.[0]
+    if (failed) throw new Error(`业务应用门禁失败：${failed.data.issue.title}`)
+    return businessAppSse.events.find(event => event.event === 'previewReady')
+  }, 150_000, '业务应用 previewReady')
+  const businessAppVersions = (await api('GET', `/dashboards/${businessAppProject.id}/versions`)).json
+  const businessAppVersion = businessAppVersions?.[0]
   if (
-    iduxVersion?.manifest?.kind !== 'idux-page' ||
-    iduxVersion?.manifest?.exportFormat !== 'zip' ||
-    iduxVersion?.validationReport?.status !== 'passed' ||
-    iduxVersion.validationReport.gates.some((gate) => gate.status !== 'passed')
+    businessAppVersion?.manifest?.kind !== 'business-app' ||
+    businessAppVersion?.manifest?.exportFormat !== 'zip' ||
+    businessAppVersion?.validationReport?.status !== 'passed' ||
+    businessAppVersion.validationReport.gates.some((gate) => gate.status !== 'passed')
   ) {
-    fail('IDux 页面版本通过全部质量门禁', JSON.stringify(iduxVersion))
+    fail('业务应用版本通过全部质量门禁', JSON.stringify(businessAppVersion))
   }
-  ok('idux-cli + idux-style 证据 → IDux 页面构建 → 双视口门禁', `${iduxVersion.validationReport.gates.length} 项通过`)
-  const iduxPreview = await fetch(iduxReady.data.url)
-  const iduxPreviewHtml = await iduxPreview.text()
+  ok('idux-cli + idux-style 证据 → 业务应用构建 → 双视口门禁', `${businessAppVersion.validationReport.gates.length} 项通过`)
+  const businessAppPreview = await fetch(businessAppReady.data.url)
+  const businessAppPreviewHtml = await businessAppPreview.text()
   if (
-    iduxPreview.status !== 200 ||
-    new URL(iduxPreview.url).origin !== PREVIEW_BASE ||
-    !iduxPreviewHtml.includes('./assets/')
+    businessAppPreview.status !== 200 ||
+    new URL(businessAppPreview.url).origin !== PREVIEW_BASE ||
+    !businessAppPreviewHtml.includes('./assets/')
   ) {
-    fail('IDux 页面在独立预览 origin 加载构建产物', iduxPreview.url)
+    fail('业务应用在独立预览 origin 加载构建产物', businessAppPreview.url)
   }
-  ok('IDux 构建产物在独立 origin 预览', iduxPreview.url)
-  const iduxExport = await fetch(
-    `${BASE}/api/v1/dashboards/${iduxProject.id}/versions/${iduxVersion.id}/export`
+  ok('业务应用构建产物在独立 origin 预览', businessAppPreview.url)
+  const businessAppExport = await fetch(
+    `${BASE}/api/v1/dashboards/${businessAppProject.id}/versions/${businessAppVersion.id}/export`
   )
-  const iduxZip = new Uint8Array(await iduxExport.arrayBuffer())
+  const businessAppZip = new Uint8Array(await businessAppExport.arrayBuffer())
   if (
-    iduxExport.status !== 200 ||
-    !(iduxExport.headers.get('content-type') ?? '').includes('application/zip') ||
-    iduxZip[0] !== 0x50 ||
-    iduxZip[1] !== 0x4b
+    businessAppExport.status !== 200 ||
+    !(businessAppExport.headers.get('content-type') ?? '').includes('application/zip') ||
+    businessAppZip[0] !== 0x50 ||
+    businessAppZip[1] !== 0x4b
   ) {
-    fail('IDux 页面导出 ZIP', `HTTP ${iduxExport.status}`)
+    fail('业务应用导出 ZIP', `HTTP ${businessAppExport.status}`)
   }
-  const iduxFiles = unzipSync(iduxZip)
-  const iduxPackage = JSON.parse(strFromU8(iduxFiles['package.json']))
-  const iduxApp = strFromU8(iduxFiles['src/App.vue'])
-  const iduxEvidence = JSON.parse(strFromU8(iduxFiles['generation-evidence.json']))
+  const businessAppFiles = unzipSync(businessAppZip)
+  const businessAppPackage = JSON.parse(strFromU8(businessAppFiles['package.json']))
+  const businessAppSource = strFromU8(businessAppFiles['src/App.vue'])
+  const businessAppEvidence = JSON.parse(strFromU8(businessAppFiles['generation-evidence.json']))
   if (
-    iduxPackage.dependencies?.['@idux/components'] !== '2.11.0' ||
-    !iduxApp.includes('<IxTable') ||
-    !iduxFiles['src/page-shell.css'] ||
-    !iduxEvidence.skills?.includes('idux-cli') ||
-    !iduxEvidence.skills?.includes('idux-style') ||
-    JSON.stringify(iduxEvidence.style?.viewports) !== JSON.stringify(['1920x1080', '1366x768']) ||
-    iduxEvidence.reference?.mode !== 'vision-structured-spec' ||
-    iduxEvidence.reference?.analyzer !== 'idux-page-reference-v1' ||
-    !/^[0-9a-f]{64}$/.test(iduxEvidence.reference?.imageSha256 ?? '') ||
-    !iduxApp.includes('"navigation": "side"') ||
-    /data:image\//i.test(strFromU8(iduxFiles['generation-evidence.json']))
+    businessAppPackage.dependencies?.['@idux/components'] !== '2.11.0' ||
+    !businessAppSource.includes('<IxTable') ||
+    !businessAppFiles['src/page-shell.css'] ||
+    !businessAppEvidence.skills?.includes('idux-cli') ||
+    !businessAppEvidence.skills?.includes('idux-style') ||
+    JSON.stringify(businessAppEvidence.style?.viewports) !== JSON.stringify(['1920x1080', '1366x768']) ||
+    businessAppEvidence.reference?.mode !== 'vision-structured-spec' ||
+    businessAppEvidence.reference?.analyzer !== 'business-app-reference-v1' ||
+    !/^[0-9a-f]{64}$/.test(businessAppEvidence.reference?.imageSha256 ?? '') ||
+    !businessAppSource.includes('"navigation": "side"') ||
+    /data:image\//i.test(strFromU8(businessAppFiles['generation-evidence.json']))
   ) {
-    fail('IDux ZIP 含可复现源码与精确依赖', Object.keys(iduxFiles).join('、'))
+    fail('业务应用 ZIP 含可复现源码与精确依赖', Object.keys(businessAppFiles).join('、'))
   }
-  ok('IDux 参考图 → 结构化规格 → 双视口源码 ZIP', Object.keys(iduxFiles).join('、'))
+  ok('业务应用参考图 → 结构化规格 → 双视口源码 ZIP', Object.keys(businessAppFiles).join('、'))
 
   // 增量需求必须保留首轮业务目标与参考图蓝图，并以真实交互场景验收详情页。
-  await api('POST', `/dashboards/${iduxProject.id}/messages`, { text: '增加详情页面' })
-  const iduxDetailReady = await iduxSse.waitFor(
+  await api('POST', `/dashboards/${businessAppProject.id}/messages`, { text: '增加详情页面' })
+  const businessAppDetailReady = await businessAppSse.waitFor(
     'previewReady',
-    event => event.data?.versionId !== iduxVersion.id,
+    event => event.data?.versionId !== businessAppVersion.id,
     180_000,
-    'IDux 累计需求详情页 previewReady'
+    '业务应用累计需求详情页 previewReady'
   )
-  const detailVersions = (await api('GET', `/dashboards/${iduxProject.id}/versions`)).json
+  const detailVersions = (await api('GET', `/dashboards/${businessAppProject.id}/versions`)).json
   const detailVersion = detailVersions?.[0]
   const detailGateIds = detailVersion?.validationReport?.gates
     ?.filter(gate => gate.status === 'passed')
@@ -327,10 +327,10 @@ async function main() {
     !detailGateIds.includes('scenario-open-detail-large') ||
     !detailGateIds.includes('scenario-open-detail-small')
   ) {
-    fail('IDux 详情增量通过双视口任务场景', JSON.stringify(detailVersion?.validationReport))
+    fail('业务应用详情增量通过双视口任务场景', JSON.stringify(detailVersion?.validationReport))
   }
   const detailExport = await fetch(
-    `${BASE}/api/v1/dashboards/${iduxProject.id}/versions/${detailVersion.id}/export`
+    `${BASE}/api/v1/dashboards/${businessAppProject.id}/versions/${detailVersion.id}/export`
   )
   const detailFiles = unzipSync(new Uint8Array(await detailExport.arrayBuffer()))
   const detailApp = strFromU8(detailFiles['src/App.vue'])
@@ -342,32 +342,32 @@ async function main() {
     !detailApp.includes('"navigation": "side"') ||
     !detailEvidence.componentQueries?.some(query => query.args?.includes('desc'))
   ) {
-    fail('IDux 增量修改保留累计需求、参考图与动态组件证据')
+    fail('业务应用增量修改保留累计需求、参考图与动态组件证据')
   }
   ok(
-    'IDux 累计需求 → 真实详情页 → 双视口交互复检',
-    `${iduxDetailReady.data.url}；${detailGateIds.filter(id => id.startsWith('scenario-')).join('、')}`
+    '业务应用累计需求 → 真实详情页 → 双视口交互复检',
+    `${businessAppDetailReady.data.url}；${detailGateIds.filter(id => id.startsWith('scenario-')).join('、')}`
   )
-  await api('POST', `/dashboards/${iduxProject.id}/versions/${iduxVersion.id}/rollback`)
-  const iduxRollback = await iduxSse.waitFor(
+  await api('POST', `/dashboards/${businessAppProject.id}/versions/${businessAppVersion.id}/rollback`)
+  const businessAppRollback = await businessAppSse.waitFor(
     'versionAdded',
     event => /回退到/.test(event.data?.version?.summary ?? ''),
     30_000,
-    'IDux 多文件版本回退'
+    '业务应用多文件版本回退'
   )
-  const rolledPreview = await fetch(iduxRollback.data.version
-    ? `${PREVIEW_BASE}/preview/${iduxProject.id}/${iduxRollback.data.version.id}/index.html`
+  const rolledPreview = await fetch(businessAppRollback.data.version
+    ? `${PREVIEW_BASE}/preview/${businessAppProject.id}/${businessAppRollback.data.version.id}/index.html`
     : '')
   const rolledExport = await fetch(
-    `${BASE}/api/v1/dashboards/${iduxProject.id}/versions/${iduxRollback.data.version.id}/export`
+    `${BASE}/api/v1/dashboards/${businessAppProject.id}/versions/${businessAppRollback.data.version.id}/export`
   )
   const rolledZip = new Uint8Array(await rolledExport.arrayBuffer())
   if (!rolledPreview.ok || rolledZip[0] !== 0x50 || rolledZip[1] !== 0x4b) {
-    fail('IDux 回退保留构建资源与源码 ZIP')
+    fail('业务应用回退保留构建资源与源码 ZIP')
   }
-  ok('IDux 回退复制多文件构建产物与源码，不破坏历史版本')
-  iduxSse.close()
-  await api('DELETE', `/projects/${iduxProject.id}`)
+  ok('业务应用回退复制多文件构建产物与源码，不破坏历史版本')
+  businessAppSse.close()
+  await api('DELETE', `/projects/${businessAppProject.id}`)
 
   // 1.4 图片复刻不能静默降级：模型不支持看图时明确失败，不生成无关通用页面
   await api('PUT', '/settings', {
@@ -381,7 +381,7 @@ async function main() {
   })
   const noVisionProject = (await api('POST', '/projects', {
     name: '不应忽略参考图',
-    artifactKind: 'idux-page'
+    artifactKind: 'business-app'
   })).json
   const noVisionSse = openSse(noVisionProject.id)
   await api('POST', `/dashboards/${noVisionProject.id}/messages`, {
@@ -392,13 +392,13 @@ async function main() {
     'issue',
     event => event.data?.issue?.status === 'failed',
     30_000,
-    'IDux 无视觉能力明确失败'
+    '业务应用无视觉能力明确失败'
   )
   if (
     !/不支持图片理解/.test(noVisionIssue.data?.issue?.title ?? '') ||
     noVisionSse.events.some(event => event.event === 'previewReady')
   ) {
-    fail('IDux 图片复刻不允许静默降级', JSON.stringify(noVisionIssue.data))
+    fail('业务应用图片复刻不允许静默降级', JSON.stringify(noVisionIssue.data))
   }
   const noVisionSnapshot = (await api('POST', `/dashboards/${noVisionProject.id}/enter`)).json
   if (
@@ -406,12 +406,12 @@ async function main() {
     noVisionSnapshot?.stages?.some(stage => stage.state === 'active') ||
     !noVisionSnapshot?.stages?.some(stage => stage.state === 'failed')
   ) {
-    fail('IDux 失败状态保持一致', JSON.stringify({
+    fail('业务应用失败状态保持一致', JSON.stringify({
       runStatus: noVisionSnapshot?.runStatus,
       stages: noVisionSnapshot?.stages
     }))
   }
-  ok('IDux 模型不支持看图时明确失败，且无 idle + active 假状态')
+  ok('业务应用模型不支持看图时明确失败，且无 idle + active 假状态')
   noVisionSse.close()
   await api('DELETE', `/projects/${noVisionProject.id}`)
   await api('PUT', '/settings', {

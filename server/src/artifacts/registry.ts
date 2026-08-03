@@ -1,6 +1,6 @@
 import type { ArtifactKind } from '../wire'
 import { dashboardArtifactAdapter } from './dashboard/adapter'
-import { iduxPageArtifactAdapter } from './idux-page/adapter'
+import { businessAppArtifactAdapter } from './business-app/adapter'
 import type { ArtifactAdapter } from './types'
 
 export class ArtifactRegistry {
@@ -32,5 +32,5 @@ export class ArtifactRegistry {
 
 export const artifactRegistry = new ArtifactRegistry([
   dashboardArtifactAdapter,
-  iduxPageArtifactAdapter
+  businessAppArtifactAdapter
 ])

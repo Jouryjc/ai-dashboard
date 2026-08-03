@@ -4,19 +4,19 @@ import { iduxCli, type IduxEvidence } from '../../skills/idux-cli-executor'
 import type { ModelSettings } from '../../wire'
 import type { ArtifactDraft } from '../types'
 import type {
-  IduxReferenceAnalysis,
-  IduxReferenceEvidence
+  BusinessAppReferenceAnalysis,
+  BusinessAppReferenceEvidence
 } from './reference'
-import { planIduxPageSpec, type IduxPageSpec } from './spec'
+import { planBusinessAppSpec, type BusinessAppSpec } from './spec'
 import {
   loadIduxStyleBundle,
-  renderIduxListPage,
+  renderBusinessApp,
   type IduxStyleEvidence
 } from './style-kit'
 
-export interface IduxPageGeneration {
+export interface BusinessAppGeneration {
   draft: ArtifactDraft
-  spec: IduxPageSpec
+  spec: BusinessAppSpec
   evidence: {
     schemaVersion: 1
     iduxVersion: string
@@ -25,14 +25,14 @@ export interface IduxPageGeneration {
     theme: 'light' | 'dark'
     queries: IduxEvidence[]
     style: IduxStyleEvidence
-    reference?: IduxReferenceEvidence
+    reference?: BusinessAppReferenceEvidence
   }
 }
 
-export interface IduxPageGenerationOptions {
+export interface BusinessAppGenerationOptions {
   reference?: {
-    analysis: IduxReferenceAnalysis
-    evidence: IduxReferenceEvidence
+    analysis: BusinessAppReferenceAnalysis
+    evidence: BusinessAppReferenceEvidence
   }
 }
 
@@ -62,7 +62,7 @@ function evidenceSource(query: IduxEvidence): { version: string; commit: string 
 
 function packageJson(version: string): string {
   return JSON.stringify({
-    name: 'generated-idux-page',
+    name: 'generated-business-app',
     private: true,
     version: '0.1.0',
     type: 'module',
@@ -97,7 +97,7 @@ function projectFiles(
   title: string,
   appVue: string,
   pageCss: string,
-  evidence: IduxPageGeneration['evidence']
+  evidence: BusinessAppGeneration['evidence']
 ): ArtifactDraft {
   return {
     entryFile: 'index.html',
@@ -107,7 +107,7 @@ function projectFiles(
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="由 AI Dashboard 生成的 IDux 普通页面" />
+    <meta name="description" content="由 AI Dashboard 生成的业务应用" />
     <title>${escapeHtml(title)}</title>
   </head>
   <body>
@@ -167,7 +167,7 @@ export default defineConfig({
 
 async function collectComponentEvidence(
   workspaceRoot: string,
-  spec: IduxPageSpec
+  spec: BusinessAppSpec
 ): Promise<IduxEvidence[]> {
   // The local IDux cache uses a file lock. Keep queries sequential so evidence
   // ordering and the combined hash remain deterministic.
@@ -189,15 +189,15 @@ async function collectComponentEvidence(
   return queries
 }
 
-export async function generateIduxPage(
+export async function generateBusinessApp(
   workspaceRoot: string,
   request: string,
   settings?: ModelSettings,
-  options: IduxPageGenerationOptions = {}
-): Promise<IduxPageGeneration> {
+  options: BusinessAppGenerationOptions = {}
+): Promise<BusinessAppGeneration> {
   fs.mkdirSync(workspaceRoot, { recursive: true })
   const styleBundle = loadIduxStyleBundle()
-  const spec = await planIduxPageSpec(
+  const spec = await planBusinessAppSpec(
     request,
     styleBundle.plannerGuidance,
     settings,
@@ -221,7 +221,7 @@ export async function generateIduxPage(
     throw new Error('idux-style 设计基线与 IDux 组件证据版本不一致')
   }
 
-  const rendered = renderIduxListPage(styleBundle, spec)
+  const rendered = renderBusinessApp(styleBundle, spec)
   const combinedSha256 = crypto
     .createHash('sha256')
     .update([
@@ -231,7 +231,7 @@ export async function generateIduxPage(
       options.reference?.evidence.analysisSha256 ?? ''
     ].join(':'))
     .digest('hex')
-  const evidence: IduxPageGeneration['evidence'] = {
+  const evidence: BusinessAppGeneration['evidence'] = {
     schemaVersion: 1,
     iduxVersion: source.version,
     sourceCommit: source.commit,

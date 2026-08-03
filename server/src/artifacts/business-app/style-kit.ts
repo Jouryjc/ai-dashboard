@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { skillRegistry } from '../../skills/registry'
-import type { IduxPageSpec } from './spec'
+import type { BusinessAppSpec } from './spec'
 
 interface IduxStyleManifest {
   schemaVersion: 1
@@ -114,7 +114,7 @@ function safeJson(value: unknown): string {
     .replaceAll('&', '\\u0026')
 }
 
-function columnWidth(type: IduxPageSpec['columns'][number]['type'], index: number): number {
+function columnWidth(type: BusinessAppSpec['columns'][number]['type'], index: number): number {
   if (type === 'status') return 110
   if (type === 'datetime') return 180
   if (type === 'number') return 140
@@ -129,9 +129,9 @@ function replaceOnce(source: string, marker: string, value: string): string {
   return `${source.slice(0, first)}${value}${source.slice(first + marker.length)}`
 }
 
-export function renderIduxListPage(
+export function renderBusinessApp(
   bundle: IduxStyleBundle,
-  spec: IduxPageSpec
+  spec: BusinessAppSpec
 ): { appVue: string; pageCss: string } {
   const detail = spec.detail ?? { enabled: false, title: `${spec.entityName}详情`, fields: [] }
   const columns = spec.columns.map((column, index) => ({

@@ -39,18 +39,18 @@ import {
   maskSettings
 } from './secrets'
 import { artifactRegistry } from './artifacts/registry'
-import { buildIduxPage, validateIduxBuildInput } from './artifacts/idux-page/builder'
-import { repairIduxPageWithModel } from './artifacts/idux-page/coder'
-import { createIduxSourceArchive } from './artifacts/idux-page/exporter'
-import { generateIduxPage } from './artifacts/idux-page/generator'
-import { analyzeIduxPageReference } from './artifacts/idux-page/reference'
+import { buildBusinessApp, validateBusinessAppBuildInput } from './artifacts/business-app/builder'
+import { repairBusinessAppWithModel } from './artifacts/business-app/coder'
+import { createBusinessAppSourceArchive } from './artifacts/business-app/exporter'
+import { generateBusinessApp } from './artifacts/business-app/generator'
+import { analyzeBusinessAppReference } from './artifacts/business-app/reference'
 import type {
-  IduxReferenceAnalysis,
-  IduxReferenceEvidence
-} from './artifacts/idux-page/reference'
-import { repairIduxPageDraft } from './artifacts/idux-page/repairer'
-import { reviewIduxPageVisual } from './artifacts/idux-page/reviewer'
-import { validateBuiltIduxPage } from './artifacts/idux-page/validator'
+  BusinessAppReferenceAnalysis,
+  BusinessAppReferenceEvidence
+} from './artifacts/business-app/reference'
+import { repairBusinessAppDraft } from './artifacts/business-app/repairer'
+import { reviewBusinessAppVisual } from './artifacts/business-app/reviewer'
+import { validateBuiltBusinessApp } from './artifacts/business-app/validator'
 import { skillRegistry } from './skills/registry'
 import {
   createLoop,
@@ -191,11 +191,11 @@ interface SessionData {
   lastDataBlock?: string
   /** 最近一次生成期取数的明细（与 lastDataBlock 同源；编辑流复用，让新版本也能展示数据来源） */
   lastDataSourcesUsed?: DataUseEntry[]
-  /** IDux 普通页面的累计需求与未完成候选，保证“继续”不会开启一轮失忆的全量生成。 */
-  iduxState?: IduxProjectState
+  /** 业务应用的累计需求与未完成候选，保证“继续”不会开启一轮失忆的全量生成。 */
+  businessAppState?: BusinessAppProjectState
 }
 
-interface IduxProjectState {
+interface BusinessAppProjectState {
   requirements: string[]
   activeRequirement: string | null
   candidateRevisionId: string | null
@@ -203,8 +203,8 @@ interface IduxProjectState {
   strategiesTried: string[]
   lastFailure: string | null
   reference?: {
-    analysis: IduxReferenceAnalysis
-    evidence: IduxReferenceEvidence
+    analysis: BusinessAppReferenceAnalysis
+    evidence: BusinessAppReferenceEvidence
   }
 }
 
@@ -2968,7 +2968,7 @@ function commitVersion(rt: Runtime, run: ActiveRun): void {
   previewReady(rt, id, url)
 }
 
-const IDUX_STAGE_TITLES = [
+const BUSINESS_APP_STAGE_TITLES = [
   '确认页面目标',
   '查询 IDux 组件证据',
   '生成并构建页面',
@@ -2977,7 +2977,7 @@ const IDUX_STAGE_TITLES = [
   '生成可交付版本'
 ]
 
-const IDUX_IMAGE_STAGE_TITLES = [
+const BUSINESS_APP_IMAGE_STAGE_TITLES = [
   '分析页面参考图',
   '映射 IDux 组件与样式',
   '生成并构建页面',
@@ -2986,10 +2986,10 @@ const IDUX_IMAGE_STAGE_TITLES = [
   '生成可交付版本'
 ]
 
-const IDUX_FLOW: FlowDefinition = {
+const BUSINESS_APP_FLOW: FlowDefinition = {
   nodes: [
     { id: 'planner', name: '理解页面目标' },
-    { id: 'coder', name: '生成并构建 IDux 页面' },
+    { id: 'coder', name: '生成并构建业务应用' },
     { id: 'check', name: '浏览器质量验收' },
     { id: 'repair', name: '自动修复' },
     { id: 'finish', name: '闭环交付' }
@@ -3008,7 +3008,7 @@ const IDUX_FLOW: FlowDefinition = {
   }
 }
 
-function iduxGraphSnapshot(gs: GraphState): GraphSnapshot {
+function businessAppGraphSnapshot(gs: GraphState): GraphSnapshot {
   const finished = !gs.awaiting && gs.nodes.finish?.status === 'done'
   return {
     nodes: gs.definition.nodes.map(node => {
@@ -3044,21 +3044,21 @@ function iduxGraphSnapshot(gs: GraphState): GraphSnapshot {
   }
 }
 
-function emitIduxGraph(rt: Runtime, graph: GraphSnapshot): void {
+function emitBusinessAppGraph(rt: Runtime, graph: GraphSnapshot): void {
   rt.s.graph = graph
   store.emit(rt.s.dashboard.id, 'graph', { dashboardId: rt.s.dashboard.id, graph })
   save(rt)
 }
 
-function emitIduxGraphSkeleton(rt: Runtime): void {
-  emitIduxGraph(rt, {
-    nodes: IDUX_FLOW.nodes.map(node => ({
+function emitBusinessAppGraphSkeleton(rt: Runtime): void {
+  emitBusinessAppGraph(rt, {
+    nodes: BUSINESS_APP_FLOW.nodes.map(node => ({
       id: node.id,
       name: node.name,
       status: node.id === 'planner' ? 'active' : 'pending',
       summary: {}
     })),
-    edges: IDUX_FLOW.edges.map(edge => ({
+    edges: BUSINESS_APP_FLOW.edges.map(edge => ({
       from: edge.from,
       to: edge.to,
       guard: edge.guard
@@ -3068,10 +3068,10 @@ function emitIduxGraphSkeleton(rt: Runtime): void {
   })
 }
 
-const IDUX_CONTINUE_REQUEST = /^(?:继续|重试|再试(?:一次)?|继续修复|接着修|恢复)(?:吧|一下|看看|检查)?[。！!]?$/i
+const BUSINESS_APP_CONTINUE_REQUEST = /^(?:继续|重试|再试(?:一次)?|继续修复|接着修|恢复)(?:吧|一下|看看|检查)?[。！!]?$/i
 
-function getIduxState(rt: Runtime): IduxProjectState {
-  rt.s.iduxState ??= {
+function getBusinessAppState(rt: Runtime): BusinessAppProjectState {
+  rt.s.businessAppState ??= {
     requirements: [],
     activeRequirement: null,
     candidateRevisionId: null,
@@ -3079,13 +3079,13 @@ function getIduxState(rt: Runtime): IduxProjectState {
     strategiesTried: [],
     lastFailure: null
   }
-  return rt.s.iduxState
+  return rt.s.businessAppState
 }
 
-function effectiveIduxRequest(rt: Runtime, request: string): string {
-  const state = getIduxState(rt)
+function effectiveBusinessAppRequest(rt: Runtime, request: string): string {
+  const state = getBusinessAppState(rt)
   const current = request.trim()
-  const resume = IDUX_CONTINUE_REQUEST.test(current) && state.unresolved
+  const resume = BUSINESS_APP_CONTINUE_REQUEST.test(current) && state.unresolved
   if (!resume && current.length > 0 && !state.requirements.includes(current)) {
     state.requirements.push(truncate(current, 500))
     state.requirements = state.requirements.slice(-20)
@@ -3102,7 +3102,7 @@ function effectiveIduxRequest(rt: Runtime, request: string): string {
   return `项目累计需求（后出现的要求在不冲突时增量叠加）：\n${cumulative}`
 }
 
-function safeGenerationError(error: unknown): string {
+function safeBusinessAppError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error)
   if (/Executable doesn't exist|playwright install/i.test(raw)) {
     return '浏览器验收环境不可用：请安装 Chromium、Chrome 或 Edge'
@@ -3119,7 +3119,7 @@ function iduxFailureContract(gates: ValidationGateResult[]): string {
   ).join('\n')
 }
 
-function iduxReferenceRegions(width: number, height: number): Region[] {
+function businessAppReferenceRegions(width: number, height: number): Region[] {
   const clamp = (left: number, top: number, regionWidth: number, regionHeight: number): Region => {
     const safeLeft = Math.min(Math.max(0, Math.round(left)), width - 1)
     const safeTop = Math.min(Math.max(0, Math.round(top)), height - 1)
@@ -3138,7 +3138,7 @@ function iduxReferenceRegions(width: number, height: number): Region[] {
   ]
 }
 
-async function runIduxPageGeneration(
+async function runBusinessAppGeneration(
   rt: Runtime,
   request: string,
   attachments: string[]
@@ -3147,43 +3147,43 @@ async function runIduxPageGeneration(
   rt.running = true
   setStatus(rt, 'generating')
   updateDashboard(rt, { status: 'generating' })
-  emitPlan(rt, attachments.length > 0 ? IDUX_IMAGE_STAGE_TITLES : IDUX_STAGE_TITLES)
-  emitIduxGraphSkeleton(rt)
+  emitPlan(rt, attachments.length > 0 ? BUSINESS_APP_IMAGE_STAGE_TITLES : BUSINESS_APP_STAGE_TITLES)
+  emitBusinessAppGraphSkeleton(rt)
 
-  const iduxState = getIduxState(rt)
-  const resumeCandidate = IDUX_CONTINUE_REQUEST.test(request.trim()) && iduxState.unresolved
+  const businessAppState = getBusinessAppState(rt)
+  const resumeCandidate = BUSINESS_APP_CONTINUE_REQUEST.test(request.trim()) && businessAppState.unresolved
   const baseRevisionId = resumeCandidate
-    ? iduxState.candidateRevisionId
+    ? businessAppState.candidateRevisionId
     : rt.s.dashboard.currentRevisionId
   const baseDraft = baseRevisionId
     ? store.readArtifactDraft(rt.s.dashboard.id, baseRevisionId)
     : null
-  const requirement = effectiveIduxRequest(rt, request)
+  const requirement = effectiveBusinessAppRequest(rt, request)
   const revisionId = nextId('ver')
-  iduxState.candidateRevisionId = revisionId
-  iduxState.strategiesTried = []
-  iduxState.lastFailure = null
+  businessAppState.candidateRevisionId = revisionId
+  businessAppState.strategiesTried = []
+  businessAppState.lastFailure = null
   save(rt)
   const workspace = store.artifactWorkspaceDir(rt.s.dashboard.id, revisionId)
   const outputDir = store.previewDir(rt.s.dashboard.id, revisionId)
-  let generated: Awaited<ReturnType<typeof generateIduxPage>> | null = null
-  let reference: Awaited<ReturnType<typeof analyzeIduxPageReference>> | null =
-    attachments.length === 0 ? iduxState.reference ?? null : null
+  let generated: Awaited<ReturnType<typeof generateBusinessApp>> | null = null
+  let reference: Awaited<ReturnType<typeof analyzeBusinessAppReference>> | null =
+    attachments.length === 0 ? businessAppState.reference ?? null : null
   let referenceImage: string | null = attachments.length === 0 && reference
     ? [...rt.s.messages]
         .reverse()
         .flatMap(message => message.kind === 'user' ? message.attachmentUrls : [])
         .find(item => /^data:image\//i.test(item)) ?? null
     : null
-  let draft: Awaited<ReturnType<typeof generateIduxPage>>['draft'] | null = null
+  let draft: Awaited<ReturnType<typeof generateBusinessApp>>['draft'] | null = null
   let staticReport: ValidationReport | null = null
-  let build: Awaited<ReturnType<typeof buildIduxPage>> | null = null
-  let runtime: Awaited<ReturnType<typeof validateBuiltIduxPage>> | null = null
+  let build: Awaited<ReturnType<typeof buildBusinessApp>> | null = null
+  let runtime: Awaited<ReturnType<typeof validateBuiltBusinessApp>> | null = null
   let validationReport: ValidationReport | null = null
   let failedGates: ValidationGateResult[] = []
   let repairCount = 0
   let currentIssue: Issue | null = null
-  let latestError = 'IDux 页面生成未完成'
+  let latestError = '业务应用生成未完成'
   let committed = false
 
   const executors: Record<string, NodeExecutor> = {
@@ -3192,16 +3192,16 @@ async function runIduxPageGeneration(
         let step = startStep(
           rt,
           'st-1',
-          attachments.length > 0 ? '分析 IDux 页面参考图与业务目标' : '锁定产物类型与原始业务目标'
+          attachments.length > 0 ? '分析业务应用参考图与业务目标' : '锁定产物类型与原始业务目标'
         )
         if (attachments.length > 0) {
           const capability = await getCapability()
           if (!capability.ok) {
-            latestError = '模型能力探测失败，无法可靠分析 IDux 页面参考图'
+            latestError = '模型能力探测失败，无法可靠分析业务应用参考图'
             throw new Error(latestError)
           }
           if (!capability.supportsVision) {
-            latestError = '当前模型不支持图片理解，不能在忽略参考图的情况下生成 IDux 页面'
+            latestError = '当前模型不支持图片理解，不能在忽略参考图的情况下生成业务应用'
             throw new Error(latestError)
           }
           referenceImage = attachments.find(item => /^data:image\//i.test(item)) ?? null
@@ -3215,20 +3215,20 @@ async function runIduxPageGeneration(
             const size = await imageSize(referenceImage)
             crops = await cropImageDataUrl(
               referenceImage,
-              iduxReferenceRegions(size.width, size.height)
+              businessAppReferenceRegions(size.width, size.height)
             )
           }
           try {
-            reference = await analyzeIduxPageReference(
+            reference = await analyzeBusinessAppReference(
               cachedSettings,
               requirement,
               referenceImage,
               crops
             )
-            iduxState.reference = reference
+            businessAppState.reference = reference
             save(rt)
           } catch (error) {
-            latestError = safeGenerationError(error)
+            latestError = safeBusinessAppError(error)
             throw error
           }
           finishStep(
@@ -3242,14 +3242,14 @@ async function runIduxPageGeneration(
             step,
             reference
               ? '已恢复累计需求、失败候选与上一轮参考图蓝图'
-              : '已锁定 Vue 3 + IDux 2.11.0 普通页面'
+              : '已锁定 Vue 3 + IDux 2.11.0 业务应用技术栈'
           )
         }
         finishStage(rt, 'st-1')
 
         activateStage(rt, 'st-2')
         step = startStep(rt, 'st-2', '通过 idux-cli 查询组件 API，并加载 idux-style 页面规范')
-        generated = await generateIduxPage(
+        generated = await generateBusinessApp(
           workspace,
           requirement,
           cachedSettings,
@@ -3289,12 +3289,12 @@ async function runIduxPageGeneration(
           repairCount === 0 ? '校验源码并执行受控离线构建' : `应用第 ${repairCount} 轮修复后重新构建`
         )
         try {
-          if (!generated || !draft) throw new Error('IDux 组件证据或源码草稿缺失')
-          validateIduxBuildInput(draft)
-          staticReport = artifactRegistry.get('idux-page').validateDraft(draft)
+          if (!generated || !draft) throw new Error('业务应用的 IDux 组件证据或源码草稿缺失')
+          validateBusinessAppBuildInput(draft)
+          staticReport = artifactRegistry.get('business-app').validateDraft(draft)
           failedGates = staticReport.gates.filter(gate => gate.status === 'failed')
           if (failedGates.length > 0) {
-            latestError = failedGates[0]?.detail || failedGates[0]?.title || 'IDux 源码门禁未通过'
+            latestError = failedGates[0]?.detail || failedGates[0]?.title || '业务应用源码门禁未通过'
             finishStep(rt, step, `发现 ${failedGates.length} 项源码问题，进入自动修复`)
             finishStage(rt, 'st-3')
             return {
@@ -3305,7 +3305,7 @@ async function runIduxPageGeneration(
 
           store.writeArtifactDraft(rt.s.dashboard.id, revisionId, draft)
           store.writeArtifactEvidence(rt.s.dashboard.id, revisionId, generated.evidence)
-          build = await buildIduxPage(workspace, outputDir)
+          build = await buildBusinessApp(workspace, outputDir)
           finishStep(rt, step, `构建完成，用时 ${(build.durationMs / 1000).toFixed(1)} 秒`)
           finishStage(rt, 'st-3')
           return {
@@ -3313,7 +3313,7 @@ async function runIduxPageGeneration(
             output: { passed: true, issueCount: 0, attempt: repairCount + 1 }
           }
         } catch (error) {
-          latestError = safeGenerationError(error)
+          latestError = safeBusinessAppError(error)
           failedGates = [{
             id: 'production-build',
             title: '生产构建成功',
@@ -3334,11 +3334,11 @@ async function runIduxPageGeneration(
         activateStage(rt, 'st-4')
         const step = startStep(rt, 'st-4', '在 1920×1080 与 1366×768 执行浏览器与视觉验收')
         if (!generated || !staticReport || !build || !draft) {
-          return { kind: 'failed', error: new Error('IDux 构建结果不完整，不能执行浏览器验收') }
+          return { kind: 'failed', error: new Error('业务应用构建结果不完整，不能执行浏览器验收') }
         }
         const url = artifactPreviewUrl(rt.s.dashboard.id, revisionId, Date.now())
-        runtime = await validateBuiltIduxPage(url, generated.spec.acceptanceScenarios)
-        const visualReview = await reviewIduxPageVisual(
+        runtime = await validateBuiltBusinessApp(url, generated.spec.acceptanceScenarios)
+        const visualReview = await reviewBusinessAppVisual(
           cachedSettings,
           requirement,
           runtime.screenshot,
@@ -3431,7 +3431,7 @@ async function runIduxPageGeneration(
         activateStage(rt, 'st-5')
         const step = startStep(rt, 'st-5', `修复第 ${repairCount + 1} 轮质量问题`)
         if (!draft) {
-          latestError = '没有可修复的 IDux 源码草稿'
+          latestError = '没有可修复的业务应用源码草稿'
           finishStep(rt, step, latestError, 'failed')
           return { kind: 'failed', error: new Error(latestError) }
         }
@@ -3457,15 +3457,15 @@ async function runIduxPageGeneration(
           }
           setIssue(rt, currentIssue)
         }
-        const attempted = new Set(iduxState.strategiesTried)
-        let repaired = repairIduxPageDraft(draft, failedGates)
+        const attempted = new Set(businessAppState.strategiesTried)
+        let repaired = repairBusinessAppDraft(draft, failedGates)
         let strategy = 'deterministic-repair'
         if (attempted.has(strategy) || repaired.actions.length === 0) {
           repaired = { draft, actions: [] }
           strategy = 'model-source-repair'
         }
         if (strategy === 'model-source-repair' && !attempted.has(strategy)) {
-          const modelRepair = await repairIduxPageWithModel(
+          const modelRepair = await repairBusinessAppWithModel(
             draft,
             requirement,
             failedGates,
@@ -3485,7 +3485,7 @@ async function runIduxPageGeneration(
             finishStep(rt, step, latestError, 'failed')
             return { kind: 'suspend', reason: 'idux-quality-strategies-exhausted' }
           }
-          generated = await generateIduxPage(
+          generated = await generateBusinessApp(
             workspace,
             `${requirement}\n\n必须定向修复以下验收问题：${issueContract}`
               + (strategy === 'evidence-expanded-replan'
@@ -3502,9 +3502,9 @@ async function runIduxPageGeneration(
           }
         }
         draft = repaired.draft
-        validateIduxBuildInput(draft)
+        validateBusinessAppBuildInput(draft)
         store.writeArtifactDraft(rt.s.dashboard.id, revisionId, draft)
-        iduxState.strategiesTried.push(strategy)
+        businessAppState.strategiesTried.push(strategy)
         repairCount += 1
         finishStep(rt, step, `${repaired.actions.join('；')}（策略：${strategy}）`)
         finishStage(rt, 'st-5')
@@ -3538,15 +3538,15 @@ async function runIduxPageGeneration(
 
   try {
     const engine = createLoop({
-      definition: IDUX_FLOW,
+      definition: BUSINESS_APP_FLOW,
       resume: { resume: {} },
       executors,
       stepTimeoutMs: 10 * 60 * 1000,
-      onNodeComplete: (_nodeId, graphState) => emitIduxGraph(rt, iduxGraphSnapshot(graphState)),
+      onNodeComplete: (_nodeId, graphState) => emitBusinessAppGraph(rt, businessAppGraphSnapshot(graphState)),
       onCommit: async graphState => {
-        emitIduxGraph(rt, iduxGraphSnapshot(graphState))
+        emitBusinessAppGraph(rt, businessAppGraphSnapshot(graphState))
         if (!generated || !draft || !runtime || !validationReport || validationReport.status !== 'passed') {
-          throw new Error('IDux 闭环结果不完整，拒绝提交版本')
+          throw new Error('业务应用闭环结果不完整，拒绝提交版本')
         }
         const url = artifactPreviewUrl(rt.s.dashboard.id, revisionId, Date.now())
         const n = rt.s.versions.length + 1
@@ -3557,32 +3557,32 @@ async function runIduxPageGeneration(
           id: revisionId,
           label: `v${n}`,
           summary: rt.s.versions.length === 0
-            ? 'IDux 页面初版完成'
-            : truncate(request) || '更新 IDux 页面',
+            ? '业务应用初版完成'
+            : truncate(request) || '更新业务应用',
           createdAt: Date.now(),
           screenshotUrl: coverUrl,
           published: false,
           isCurrent: true,
-          manifest: artifactRegistry.get('idux-page').createManifest(draft),
+          manifest: artifactRegistry.get('business-app').createManifest(draft),
           validationReport
         }
         addVersion(rt, version, url)
         previewReady(rt, revisionId, url)
         pushAgent(
           rt,
-          `IDux 普通页面已通过 ${validationReport.gates.length} 项质量门禁`
+          `业务应用已通过 ${validationReport.gates.length} 项质量门禁`
             + (repairCount > 0 ? `，并完成 ${repairCount} 轮自动修复与复检。` : '。')
         )
         updateDashboard(rt, {
           status: 'completed',
           coverUrl,
-          targetProfile: artifactRegistry.get('idux-page').createTargetProfile()
+          targetProfile: artifactRegistry.get('business-app').createTargetProfile()
         })
         committed = true
-        iduxState.unresolved = false
-        iduxState.candidateRevisionId = null
-        iduxState.strategiesTried = []
-        iduxState.lastFailure = null
+        businessAppState.unresolved = false
+        businessAppState.candidateRevisionId = null
+        businessAppState.strategiesTried = []
+        businessAppState.lastFailure = null
         save(rt)
       }
     })
@@ -3591,7 +3591,7 @@ async function runIduxPageGeneration(
       throw new Error(latestError)
     }
   } catch (error) {
-    const message = safeGenerationError(error)
+    const message = safeBusinessAppError(error)
     const issue = currentIssue as Issue | null
     if (issue) {
       const failedIssue: Issue = { ...issue, status: 'failed', detail: message }
@@ -3606,13 +3606,13 @@ async function runIduxPageGeneration(
         status: 'failed',
         beforeShotUrl: null,
         afterShotUrl: null,
-        detail: '质量门禁阻止了不可靠的 IDux 页面进入版本历史。'
+        detail: '质量门禁阻止了不可靠的业务应用进入版本历史。'
       })
     }
-    pushAgent(rt, `这次 IDux 页面没有进入版本历史：${message}`)
-    iduxState.unresolved = true
-    iduxState.candidateRevisionId = revisionId
-    iduxState.lastFailure = message
+    pushAgent(rt, `这次业务应用没有进入版本历史：${message}`)
+    businessAppState.unresolved = true
+    businessAppState.candidateRevisionId = revisionId
+    businessAppState.lastFailure = message
     save(rt)
     failActiveStage(rt, message)
     const options: CardOption[] = [
@@ -3644,7 +3644,7 @@ async function runIduxPageGeneration(
         autoExecuteAt: null
       }
     ]
-    const exhaustedStrategies = iduxState.strategiesTried.length >= 3
+    const exhaustedStrategies = businessAppState.strategiesTried.length >= 3
     const problem: ProblemMessage = {
       kind: 'problem',
       id: nextId('m'),
@@ -3705,8 +3705,8 @@ function drainQueue(rt: Runtime): void {
       updateMessage(rt, m)
     }
   }
-  if (rt.s.dashboard.artifactKind === 'idux-page') {
-    void runIduxPageGeneration(rt, text, attachments)
+  if (rt.s.dashboard.artifactKind === 'business-app') {
+    void runBusinessAppGeneration(rt, text, attachments)
   } else {
     startEditFlow(rt, text, attachments)
   }
@@ -3806,8 +3806,8 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
   }
   switch (rt.s.runStatus) {
     case 'idle':
-      if (rt.s.dashboard.artifactKind === 'idux-page') {
-        void runIduxPageGeneration(rt, text, attachments)
+      if (rt.s.dashboard.artifactKind === 'business-app') {
+        void runBusinessAppGeneration(rt, text, attachments)
         break
       }
       if (rt.s.versions.length === 0) {
@@ -3828,9 +3828,9 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
       resolveClarificationWithText(rt, text)
       break
     case 'blocked':
-      if (rt.s.dashboard.artifactKind === 'idux-page') {
+      if (rt.s.dashboard.artifactKind === 'business-app') {
         setBlocker(rt, null)
-        void runIduxPageGeneration(rt, text, attachments)
+        void runBusinessAppGeneration(rt, text, attachments)
       } else {
         handleFreeTextDuringBlocked(rt, text)
       }
@@ -4091,7 +4091,7 @@ function doRollback(rt: Runtime, versionId: string): void {
   const inheritedMeta = store.readVersionMeta<DataUseEntry[]>(rt.s.dashboard.id, versionId)
   const n = rt.s.versions.length + 1
   const id = nextId('ver')
-  if (target.manifest.kind === 'idux-page') {
+  if (target.manifest.kind === 'business-app') {
     store.copyArtifactRevision(rt.s.dashboard.id, versionId, id)
   } else {
     store.copyPreviewRevision(rt.s.dashboard.id, versionId, id)
@@ -4165,7 +4165,7 @@ function trustedPreviewAsset(
     /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(cleanReference) ||
     cleanReference.includes('\0')
   ) {
-    throw new PublishError(`IDux 发布产物包含不受信任的资源地址：${reference}`)
+    throw new PublishError(`业务应用发布产物包含不受信任的资源地址：${reference}`)
   }
   const root = fs.realpathSync(store.previewDir(projectId, revisionId))
   const normalizedReference = decodeURIComponent(cleanReference).replace(/^\/+/, '')
@@ -4173,10 +4173,10 @@ function trustedPreviewAsset(
   const filePath = fs.realpathSync(candidate)
   const relative = path.relative(root, filePath)
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new PublishError(`IDux 发布资源越出了受控预览目录：${reference}`)
+    throw new PublishError(`业务应用发布资源越出了受控预览目录：${reference}`)
   }
   if (!fs.statSync(filePath).isFile()) {
-    throw new PublishError(`IDux 发布资源不是普通文件：${reference}`)
+    throw new PublishError(`业务应用发布资源不是普通文件：${reference}`)
   }
   return { content: fs.readFileSync(filePath), filePath }
 }
@@ -4195,7 +4195,7 @@ function assetMimeType(filePath: string): string {
     '.woff2': 'font/woff2'
   }
   const mime = types[extension]
-  if (!mime) throw new PublishError(`IDux 样式引用了不允许内联的资源类型：${extension || '未知'}`)
+  if (!mime) throw new PublishError(`业务应用样式引用了不允许内联的资源类型：${extension || '未知'}`)
   return mime
 }
 
@@ -4214,11 +4214,11 @@ function inlineCssAssets(
   })
 }
 
-function inlineIduxPreview(projectId: string, revisionId: string, html: string): string {
+function inlineBusinessAppPreview(projectId: string, revisionId: string, html: string): string {
   let result = html.replace(/<link\b[^>]*>/gi, tag => {
     if (!/\brel\s*=\s*["']stylesheet["']/i.test(tag)) return tag
     const href = /\bhref\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1]
-    if (!href) throw new PublishError('IDux 发布产物的样式标签缺少 href')
+    if (!href) throw new PublishError('业务应用发布产物的样式标签缺少 href')
     const asset = trustedPreviewAsset(projectId, revisionId, href)
     const css = inlineCssAssets(projectId, revisionId, asset.filePath, asset.content.toString('utf8'))
     return `<style data-inlined-from="${path.basename(asset.filePath)}">${css}</style>`
@@ -4229,16 +4229,16 @@ function inlineIduxPreview(projectId: string, revisionId: string, html: string):
       const asset = trustedPreviewAsset(projectId, revisionId, source)
       const script = asset.content.toString('utf8')
       if (/\b(?:import\s*(?:\(|["'{*])|export\s+(?:\*|{))/m.test(script)) {
-        throw new PublishError('IDux 构建结果包含拆分模块，当前发布器无法安全合并，请重新生成后再试')
+        throw new PublishError('业务应用构建结果包含拆分模块，当前发布器无法安全合并，请重新生成后再试')
       }
       return `<script${before}${after}>${script}</script>`
     }
   )
   if (Buffer.byteLength(result, 'utf8') > MAX_PUBLISH_HTML_BYTES) {
-    throw new PublishError('IDux 发布产物内联后超过 20MB 安全上限')
+    throw new PublishError('业务应用发布产物内联后超过 20MB 安全上限')
   }
   if (/(?:src|href)\s*=\s*["']\s*(?:\.?\/)?assets\//i.test(result)) {
-    throw new PublishError('IDux 发布产物仍包含未内联的本地资源')
+    throw new PublishError('业务应用发布产物仍包含未内联的本地资源')
   }
   return result
 }
@@ -4253,8 +4253,8 @@ async function runPublish(rt: Runtime, cur: Version): Promise<void> {
     const html = store.readPreview(dashId, cur.id)
     if (html === null) throw new PublishError('这个版本的页面文件找不到了，可能已被清理')
     // 发布单文件：把 data.json 内联进 HTML（云端只上传 index.html，需自带数据）
-    const htmlToPublish = cur.manifest.kind === 'idux-page'
-      ? inlineIduxPreview(dashId, cur.id, html)
+    const htmlToPublish = cur.manifest.kind === 'business-app'
+      ? inlineBusinessAppPreview(dashId, cur.id, html)
       : inlineDataIntoHtml(html, store.readDataFileText(dashId, cur.id))
     const cfg = { ...cachedPublishConfig }
     const name = codeBoxName(dashId)
@@ -4381,7 +4381,7 @@ function emptySession(dash: Dashboard): SessionData {
     assistSession: null,
     previewResolution: '1920x1080',
     pendingRun: null,
-    iduxState: undefined
+    businessAppState: undefined
   }
 }
 
@@ -4417,7 +4417,7 @@ function makeRuntime(s: SessionData): Runtime {
   s.assistSession = null
   s.steps ??= [] // 旧版会话文件没有执行轨迹字段
   s.graph ??= null // 旧版会话文件没有流程图快照字段
-  if (s.dashboard.artifactKind === 'idux-page') getIduxState({ s } as Runtime)
+  if (s.dashboard.artifactKind === 'business-app') getBusinessAppState({ s } as Runtime)
   s.preview.url = normalizePreviewUrl(s.preview.url)
   for (const [versionId, url] of Object.entries(s.versionUrls)) {
     s.versionUrls[versionId] = normalizePreviewUrl(url) ?? url
@@ -4624,13 +4624,13 @@ export async function exportVersion(
   if (!v) throw new HttpError(404, `版本不存在：${versionId}`)
   const adapter = artifactRegistry.get(v.manifest.kind)
   const filename = adapter.exportFileName(rt.s.dashboard.name, v.label)
-  if (v.manifest.kind === 'idux-page') {
+  if (v.manifest.kind === 'business-app') {
     const draft = store.readArtifactDraft(id, versionId)
-    if (!draft) throw new HttpError(404, '这个版本的 IDux 页面源码找不到了，可能已被清理')
+    if (!draft) throw new HttpError(404, '这个版本的业务应用源码找不到了，可能已被清理')
     return {
       filename,
       contentType: 'application/zip',
-      body: await createIduxSourceArchive(draft)
+      body: await createBusinessAppSourceArchive(draft)
     }
   }
   const html = store.readPreview(id, versionId)

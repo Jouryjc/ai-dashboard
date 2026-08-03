@@ -3,7 +3,7 @@ import type { ArtifactDraft } from '../types'
 
 const MAX_ARCHIVE_BYTES = 10 * 1024 * 1024
 
-export async function createIduxSourceArchive(draft: ArtifactDraft): Promise<Buffer> {
+export async function createBusinessAppSourceArchive(draft: ArtifactDraft): Promise<Buffer> {
   const files = Object.fromEntries(
     Object.keys(draft.files)
       .sort()
@@ -11,7 +11,7 @@ export async function createIduxSourceArchive(draft: ArtifactDraft): Promise<Buf
   )
   const zipped = zipSync(files, { level: 9 })
   if (zipped.byteLength > MAX_ARCHIVE_BYTES) {
-    throw new Error('IDux 页面导出包超过 10MB 安全上限')
+    throw new Error('业务应用导出包超过 10MB 安全上限')
   }
   return Buffer.from(zipped)
 }

@@ -102,7 +102,7 @@ function styleEvidencePolicy(
     const reference = value.reference
     const validReference = reference === undefined || (
       reference.mode === 'vision-structured-spec' &&
-      reference.analyzer === 'idux-page-reference-v1' &&
+      reference.analyzer === 'business-app-reference-v1' &&
       reference.imageCount === 1 &&
       typeof reference.imageSha256 === 'string' &&
       /^[0-9a-f]{64}$/.test(reference.imageSha256) &&
@@ -149,8 +149,8 @@ function styleEvidencePolicy(
   }
 }
 
-export const iduxPageArtifactAdapter: ArtifactAdapter = {
-  kind: 'idux-page',
+export const businessAppArtifactAdapter: ArtifactAdapter = {
+  kind: 'business-app',
 
   createTargetProfile(): TargetProfile {
     return {
@@ -164,7 +164,7 @@ export const iduxPageArtifactAdapter: ArtifactAdapter = {
   createManifest(draft?: ArtifactDraft): ArtifactManifest {
     return {
       schemaVersion: 1,
-      kind: 'idux-page',
+      kind: 'business-app',
       entryFile: draft?.entryFile ?? 'index.html',
       files: draft ? Object.keys(draft.files).sort() : [],
       exportFormat: 'zip'

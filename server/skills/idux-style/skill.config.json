@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "idux-style",
-  "artifactKinds": ["idux-page"],
+  "artifactKinds": ["business-app"],
   "executionAdapter": null,
   "allowedCommands": [],
   "permissions": {

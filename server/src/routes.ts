@@ -59,7 +59,7 @@ router.post(
     const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
     if (!text) throw new HttpError(400, '请先描述要生成的内容')
     const explicitKind: ArtifactKind | undefined =
-      req.body?.artifactKind === 'dashboard' || req.body?.artifactKind === 'idux-page'
+      req.body?.artifactKind === 'dashboard' || req.body?.artifactKind === 'business-app'
         ? req.body.artifactKind
         : undefined
     res.json(resolveGenerationIntent(text, explicitKind))
@@ -70,8 +70,8 @@ router.post(
   '/projects',
   wrap((req, res) => {
     const name = typeof req.body?.name === 'string' ? req.body.name : ''
-    if (req.body?.artifactKind !== 'dashboard' && req.body?.artifactKind !== 'idux-page') {
-      throw new HttpError(400, '创建项目时必须明确选择“数据大屏”或“IDux 普通页面”')
+    if (req.body?.artifactKind !== 'dashboard' && req.body?.artifactKind !== 'business-app') {
+      throw new HttpError(400, '创建项目时必须明确选择“数据大屏”或“业务应用”')
     }
     const artifactKind: ArtifactKind = req.body.artifactKind
     res.json(orch.createProject(name, artifactKind))
@@ -154,7 +154,7 @@ router.post(
     const attachments = Array.isArray(req.body?.attachments)
       ? (req.body.attachments as unknown[]).filter((a): a is string => typeof a === 'string')
       : []
-    if (orch.getArtifactKind(req.params.id) === 'idux-page') {
+    if (orch.getArtifactKind(req.params.id) === 'business-app') {
       orch.handleSendMessage(req.params.id, text, attachments)
     } else {
       getOrCreateAdapter(req.params.id).handleMessage(text, attachments)
@@ -167,7 +167,7 @@ router.post(
   '/dashboards/:id/messages/:messageId/answers',
   wrap((req, res) => {
     const answers = (Array.isArray(req.body?.answers) ? req.body.answers : []) as ClarificationAnswer[]
-    if (orch.getArtifactKind(req.params.id) === 'idux-page') {
+    if (orch.getArtifactKind(req.params.id) === 'business-app') {
       orch.handleAnswerClarification(req.params.id, req.params.messageId, answers)
     } else {
       getOrCreateAdapter(req.params.id).answerClarification(req.params.messageId, answers)
@@ -179,7 +179,7 @@ router.post(
 router.post(
   '/dashboards/:id/options/:optionId',
   wrap((req, res) => {
-    if (orch.getArtifactKind(req.params.id) === 'idux-page') {
+    if (orch.getArtifactKind(req.params.id) === 'business-app') {
       orch.handleChooseOption(req.params.id, req.params.optionId)
     } else {
       getOrCreateAdapter(req.params.id).chooseOption(req.params.optionId)
@@ -235,7 +235,7 @@ router.post(
 router.post(
   '/dashboards/:id/versions/:versionId/rollback',
   wrap((req, res) => {
-    if (orch.getArtifactKind(req.params.id) === 'idux-page') {
+    if (orch.getArtifactKind(req.params.id) === 'business-app') {
       orch.handleRollback(req.params.id, req.params.versionId)
     } else {
       getOrCreateAdapter(req.params.id).rollback(req.params.versionId)

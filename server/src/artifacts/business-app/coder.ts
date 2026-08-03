@@ -1,7 +1,7 @@
 import * as gw from '../../gateway'
 import type { ModelSettings, ValidationGateResult } from '../../wire'
 import type { ArtifactDraft } from '../types'
-import { validateIduxBuildInput } from './builder'
+import { validateBusinessAppBuildInput } from './builder'
 
 const EDITABLE_FILE = /^src\/[A-Za-z0-9_./-]+\.(?:vue|ts|css)$/
 const MAX_UPDATES = 8
@@ -15,9 +15,9 @@ interface FileUpdate {
 
 /**
  * Let the model propose bounded source-file replacements, then admit them only
- * through the same static safety policy used by every generated IDux page.
+ * through the same static safety policy used by every generated business app.
  */
-export async function repairIduxPageWithModel(
+export async function repairBusinessAppWithModel(
   source: ArtifactDraft,
   requirement: string,
   failedGates: ValidationGateResult[],
@@ -66,7 +66,7 @@ export async function repairIduxPageWithModel(
     files[update.path] = update.content
   }
   const draft = { entryFile: source.entryFile, files }
-  validateIduxBuildInput(draft)
+  validateBusinessAppBuildInput(draft)
   return {
     draft,
     actions: updates.map(update => update.reason?.trim() || `修复 ${update.path}`).slice(0, MAX_UPDATES)

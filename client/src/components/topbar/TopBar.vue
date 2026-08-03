@@ -115,7 +115,7 @@ function exportCurrentVersion(): void {
   const cur = currentVersion.value
   if (!cur || !session.dashboardId) return
   const url = api.exportVersionUrl(session.dashboardId, cur.id)
-  const extension = session.artifactKind === 'idux-page' ? 'zip' : 'html'
+  const extension = session.artifactKind === 'business-app' ? 'zip' : 'html'
   const filename = `${sanitizeFilename(session.dashboardName)}-${cur.label}.${extension}`
   void fetchTextAsDownload(url, filename).catch(() => {
     /* 静默失败：导出失败不打断使用 */
@@ -157,7 +157,7 @@ function exportCurrentVersion(): void {
           title="点击改名"
           @click="startEdit"
         >
-          {{ session.dashboardName || (session.artifactKind === 'idux-page' ? '未命名页面' : '未命名大屏') }}
+          {{ session.dashboardName || (session.artifactKind === 'business-app' ? '未命名业务应用' : '未命名大屏') }}
         </button>
 
         <!-- 版本指示 -->
@@ -260,7 +260,7 @@ function exportCurrentVersion(): void {
               </button>
             </li>
             <li>
-              <!-- 大屏导出 HTML，IDux 普通页面导出可复现的 Vue 源码 ZIP -->
+              <!-- 大屏导出 HTML，业务应用导出可复现的 Vue 源码 ZIP -->
               <button
                 type="button"
                 class="flex w-full items-center justify-between px-3 py-1.5 text-left text-xs"

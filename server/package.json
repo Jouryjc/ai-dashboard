@@ -9,7 +9,7 @@
     "start": "node dist/server/src/index.js",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
-    "smoke:idux": "tsx scripts/idux-page-smoke.ts"
+    "smoke:business-app": "tsx scripts/business-app-smoke.ts"
   },
   "dependencies": {
     "@idux/cdk": "2.11.0",

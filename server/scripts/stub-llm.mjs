@@ -15,8 +15,8 @@
  *   - system 含「大屏读图精读专家」→ 返回一份固定的参考图内容清单 JSON（无地图，避免联网备料）
  *   - system 含「大屏验收员」→ 返回截图审查 JSON：需求文本带「演示视觉修复」时
  *     同一需求首次报一个问题（之后的复查放行），否则空清单
- *   - system 含「IDux 普通业务页面的参考图分析器」→ 返回受控管理列表视觉清单
- *   - system 含「IDux 企业级业务页面的产品分析器」→ 返回包含呈现规格的云主机列表 JSON
+ *   - system 含「业务应用的参考图分析器」→ 返回受控管理列表视觉清单
+ *   - system 含「企业级业务应用的产品分析器」→ 返回包含呈现规格的云主机列表 JSON
  */
 import http from 'node:http'
 
@@ -249,7 +249,7 @@ const server = http.createServer((req, res) => {
       let content
       if (payload.max_tokens === 1) {
         content = image ? '一个小点。' : 'ok'
-      } else if (sys.includes('IDux 普通业务页面的参考图分析器')) {
+      } else if (sys.includes('业务应用的参考图分析器')) {
         content = JSON.stringify({
           pagePattern: 'management-list',
           title: '云主机管理',
@@ -280,7 +280,7 @@ const server = http.createServer((req, res) => {
           redactions: [],
           confidence: 'high'
         })
-      } else if (sys.includes('IDux 企业级业务页面的产品分析器')) {
+      } else if (sys.includes('企业级业务应用的产品分析器')) {
         content = JSON.stringify({
           title: '云主机管理',
           description: '集中查看演示实例的运行状态、地域、规格、公网地址和创建时间。',
@@ -314,7 +314,7 @@ const server = http.createServer((req, res) => {
             { instanceId: 'ecs-demo-04', name: '测试环境-03', status: '已停止', region: '华南 1', specification: '2 核 4 GB', publicIp: '198.51.100.73', createdAt: '2026-07-18 16:44:00' }
           ]
         })
-      } else if (sys.includes('IDux 业务页面视觉验收员')) {
+      } else if (sys.includes('业务应用视觉验收员')) {
         content = JSON.stringify({ verdict: 'pass', issues: [] })
       } else if (sys.includes('大屏规划师')) {
         content = plannerJson(image)

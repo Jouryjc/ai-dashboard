@@ -58,7 +58,7 @@ async function onCreate(artifactKind: ArtifactKind): Promise<void> {
   creating.value = true
   try {
     const d = await store.create(
-      artifactKind === 'dashboard' ? '新大屏' : '新 IDux 页面',
+      artifactKind === 'dashboard' ? '新大屏' : '新业务应用',
       artifactKind
     )
     createChooserOpen.value = false
@@ -112,7 +112,7 @@ async function confirmDelete(): Promise<void> {
       <div class="p-8">
         <header class="mb-10">
           <h1 class="text-3xl font-bold text-ink mb-2">首页 · 我的项目</h1>
-          <p class="text-ink-secondary text-lg">大屏和 IDux 普通页面都在这里，类型清晰、版本独立。</p>
+          <p class="text-ink-secondary text-lg">数据大屏和业务应用都在这里，类型清晰、版本独立。</p>
         </header>
 
         <!-- 首次加载骨架 -->
@@ -227,13 +227,13 @@ async function confirmDelete(): Promise<void> {
             type="button"
             class="rounded-card border border-line p-5 text-left transition hover:border-primary hover:bg-primary-soft/40 focus:outline-none focus:ring-2 focus:ring-primary"
             :disabled="creating"
-            @click="onCreate('idux-page')"
+            @click="onCreate('business-app')"
           >
             <span class="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-primary-soft text-primary">
               <AppIcon name="database" :size="22" />
             </span>
-            <strong class="block text-base text-ink">IDux 普通页面</strong>
-            <span class="mt-1 block text-sm leading-6 text-ink-secondary">响应式业务页面、表格和表单，可导出 Vue 源码。</span>
+            <strong class="block text-base text-ink">业务应用</strong>
+            <span class="mt-1 block text-sm leading-6 text-ink-secondary">可交互的列表、详情、表单和业务操作，可导出 Vue 源码。</span>
           </button>
         </div>
       </section>

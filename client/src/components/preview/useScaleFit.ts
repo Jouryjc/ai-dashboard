@@ -1,7 +1,7 @@
 /**
  * 预览等比缩放（中区预览区 + 全屏演示模式共用）。
  * 逻辑分辨率固定，用 CSS transform scale 适配容器。
- * 大屏支持 1920×1080 / 2560×1440，IDux 页面支持 1920×1080 / 1366×768。
+ * 大屏支持 1920×1080 / 2560×1440，业务应用支持 1920×1080 / 1366×768。
  *
  * 用法：
  *   const { containerRef, frameStyle } = useScaleFit(toRef(session, 'resolution'))

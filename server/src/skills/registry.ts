@@ -55,7 +55,7 @@ function readConfig(file: string): SkillConfigFile {
     throw new Error(`skill.config.json 格式不正确：${file}`)
   }
   for (const kind of raw.artifactKinds) {
-    if (kind !== 'dashboard' && kind !== 'idux-page') {
+    if (kind !== 'dashboard' && kind !== 'business-app') {
       throw new Error(`skill 声明了未知产物类型：${kind}`)
     }
   }

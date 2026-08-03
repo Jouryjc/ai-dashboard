@@ -7,7 +7,7 @@
 /* ==================== 项目与产物 ==================== */
 
 /** 当前支持的产物类型；后续新增类型必须通过 Artifact Adapter 接入。 */
-export type ArtifactKind = 'dashboard' | 'idux-page'
+export type ArtifactKind = 'dashboard' | 'business-app'
 
 /** 产物构建目标；生成、校验、预览和导出都以它为准。 */
 export interface TargetProfile {
@@ -35,7 +35,7 @@ export const DASHBOARD_STATUS_LABEL: Record<ProjectStatus, string> = {
   needs_attention: '需要处理'
 }
 
-/** 一个生成项目；大屏与 IDux 普通页面共享同一套会话、版本和审批基础设施。 */
+/** 一个生成项目；数据大屏与业务应用共享同一套会话、版本和审批基础设施。 */
 export interface Project {
   /** 项目 ID */
   id: string
@@ -371,7 +371,7 @@ export interface Blocker {
 
 /* ==================== 预览区 ==================== */
 
-/** 预览逻辑分辨率：大屏支持 1920/2560，IDux 页面支持 1920/1366。 */
+/** 预览逻辑分辨率：数据大屏支持 1920/2560，业务应用支持 1920/1366。 */
 export type PreviewResolution = '1920x1080' | '2560x1440' | '1366x768'
 
 /** 预览区状态（UX §4.2 中区） */

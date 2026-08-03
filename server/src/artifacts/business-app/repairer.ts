@@ -2,7 +2,7 @@ import type { ValidationGateResult } from '../../wire'
 import type { ArtifactDraft } from '../types'
 import { loadIduxStyleBundle } from './style-kit'
 
-export interface IduxDraftRepair {
+export interface BusinessAppDraftRepair {
   draft: ArtifactDraft
   actions: string[]
 }
@@ -11,10 +11,10 @@ export interface IduxDraftRepair {
  * Apply only bounded, auditable repairs. Unknown failures deliberately remain
  * unresolved so the loop blocks instead of claiming an arbitrary fix worked.
  */
-export function repairIduxPageDraft(
+export function repairBusinessAppDraft(
   source: ArtifactDraft,
   failedGates: ValidationGateResult[]
-): IduxDraftRepair {
+): BusinessAppDraftRepair {
   const files = { ...source.files }
   const actions: string[] = []
   const failedIds = new Set(failedGates.map(gate => gate.id))

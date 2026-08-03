@@ -13,7 +13,7 @@ const ALLOWED_IMPORT = /^(?:vue|vite|@vitejs\/plugin-vue|@idux\/components(?:\/[
 const IMPORT_SPECIFIER = /(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/g
 const FORBIDDEN_RUNTIME_API = /\b(?:eval|Function|fetch|WebSocket|XMLHttpRequest|EventSource|SharedWorker|Worker)\s*(?:\(|\.)|sendBeacon\s*\(|window\.open\s*\(|(?:window\.)?location\.(?:assign|replace)\s*\(/i
 
-export interface IduxBuildResult {
+export interface BusinessAppBuildResult {
   outputDir: string
   log: string
   durationMs: number
@@ -62,7 +62,7 @@ function normalizeFileName(fileName: string): string {
     normalized.includes('../') ||
     path.posix.normalize(normalized) !== normalized
   ) {
-    throw new Error(`IDux 页面包含不安全的文件路径：${fileName}`)
+    throw new Error(`业务应用包含不安全的文件路径：${fileName}`)
   }
   return normalized
 }
@@ -73,26 +73,26 @@ function validateImports(fileName: string, source: string): void {
     if (specifier.startsWith('.')) {
       const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(fileName), specifier))
       if (resolved === '..' || resolved.startsWith('../')) {
-        throw new Error(`IDux 页面导入越出了源码目录：${fileName} -> ${specifier}`)
+        throw new Error(`业务应用导入越出了源码目录：${fileName} -> ${specifier}`)
       }
       continue
     }
     if (!ALLOWED_IMPORT.test(specifier)) {
-      throw new Error(`IDux 页面使用了未授权依赖：${specifier}`)
+      throw new Error(`业务应用使用了未授权依赖：${specifier}`)
     }
   }
 }
 
-export function validateIduxBuildInput(draft: ArtifactDraft): void {
+export function validateBusinessAppBuildInput(draft: ArtifactDraft): void {
   const entries = Object.entries(draft.files)
   if (entries.length === 0 || entries.length > MAX_SOURCE_FILES) {
-    throw new Error(`IDux 页面源码文件数量必须在 1 到 ${MAX_SOURCE_FILES} 之间`)
+    throw new Error(`业务应用源码文件数量必须在 1 到 ${MAX_SOURCE_FILES} 之间`)
   }
   let sourceBytes = 0
   for (const [rawName, source] of entries) {
     const fileName = normalizeFileName(rawName)
     sourceBytes += Buffer.byteLength(source, 'utf8')
-    if (sourceBytes > MAX_SOURCE_BYTES) throw new Error('IDux 页面源码超过 2MB 安全上限')
+    if (sourceBytes > MAX_SOURCE_BYTES) throw new Error('业务应用源码超过 2MB 安全上限')
     // generation-evidence.json is inert provenance metadata. Its two official
     // source URLs are validated by the adapter and are never bundled or loaded
     // by the preview runtime.
@@ -100,10 +100,10 @@ export function validateIduxBuildInput(draft: ArtifactDraft): void {
       fileName !== 'generation-evidence.json' &&
       /\b(?:https?:|file:|data:text\/html|javascript:)/i.test(source)
     ) {
-      throw new Error(`IDux 页面包含被禁止的外部或可执行 URL：${fileName}`)
+      throw new Error(`业务应用包含被禁止的外部或可执行 URL：${fileName}`)
     }
     if (FORBIDDEN_RUNTIME_API.test(source)) {
-      throw new Error(`IDux 页面包含未授权的动态代码、网络或导航 API：${fileName}`)
+      throw new Error(`业务应用包含未授权的动态代码、网络或导航 API：${fileName}`)
     }
     validateImports(fileName, source)
   }
@@ -131,7 +131,7 @@ function assertWorkspacePath(input: string): string {
   return resolved
 }
 
-export async function buildIduxPage(projectRoot: string, outputDir: string): Promise<IduxBuildResult> {
+export async function buildBusinessApp(projectRoot: string, outputDir: string): Promise<BusinessAppBuildResult> {
   const safeProjectRoot = assertWorkspacePath(projectRoot)
   const safeOutputDir = path.resolve(outputDir)
   const outputRelative = path.relative(path.resolve(dirs.previews), safeOutputDir)
@@ -163,7 +163,7 @@ export async function buildIduxPage(projectRoot: string, outputDir: string): Pro
       size += chunk.length
       if (size > MAX_BUILD_OUTPUT_BYTES) {
         child.kill()
-        finish(new Error('IDux 页面构建日志超过安全上限'))
+        finish(new Error('业务应用构建日志超过安全上限'))
         return
       }
       chunks.push(chunk)
@@ -173,19 +173,19 @@ export async function buildIduxPage(projectRoot: string, outputDir: string): Pro
     child.once('error', (error) => finish(error))
     child.once('exit', (code) => {
       if (code !== 0) {
-        finish(new Error(Buffer.concat(chunks).toString('utf8').trim() || `IDux 页面构建失败，退出码 ${code}`))
+        finish(new Error(Buffer.concat(chunks).toString('utf8').trim() || `业务应用构建失败，退出码 ${code}`))
         return
       }
       finish()
     })
     const timer = setTimeout(() => {
       child.kill()
-      finish(new Error(`IDux 页面构建超过 ${BUILD_TIMEOUT_MS / 1000} 秒安全上限`))
+      finish(new Error(`业务应用构建超过 ${BUILD_TIMEOUT_MS / 1000} 秒安全上限`))
     }, BUILD_TIMEOUT_MS)
   })
 
   if (!fs.existsSync(path.join(safeOutputDir, 'index.html'))) {
-    throw new Error('IDux 页面构建没有生成 index.html')
+    throw new Error('业务应用构建没有生成 index.html')
   }
   return { outputDir: safeOutputDir, log, durationMs: Date.now() - startedAt }
 }
