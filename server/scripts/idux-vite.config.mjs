@@ -36,7 +36,9 @@ export default defineConfig({
       { find: /^@idux\/components$/, replacement: packageEntry('@idux/components') },
       { find: /^@idux\/components\/(.+)$/, replacement: packageSubpath('@idux/components') },
       { find: /^@idux\/cdk$/, replacement: packageEntry('@idux/cdk') },
-      { find: /^@idux\/cdk\/(.+)$/, replacement: packageSubpath('@idux/cdk') }
+      { find: /^@idux\/cdk\/(.+)$/, replacement: packageSubpath('@idux/cdk') },
+      { find: /^@idux\/pro$/, replacement: packageEntry('@idux/pro') },
+      { find: /^@idux\/pro\/(.+)$/, replacement: packageSubpath('@idux/pro') }
     ]
   },
   build: {

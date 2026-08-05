@@ -19,6 +19,7 @@ import type {
   BusinessAppPlanResult,
   BusinessAppRequirementContract,
   BusinessAppSummaryDefinition,
+  BusinessAppViewExperience,
   BusinessAppViewDefinition,
   BusinessAppWorkflowDefinition
 } from '../domain/model'
@@ -38,6 +39,7 @@ export interface PlanBusinessApplicationOptions {
     theme?: 'light' | 'dark'
   }
   presentationEvidence?: BusinessAppReferenceAnalysis | null
+  enterpriseGuidance?: string
 }
 
 /** 内置领域样例的数据结构；未知领域由通用结构或模型蓝图承接。 */
@@ -214,7 +216,111 @@ function action(
     kind,
     risk: 'low',
     requiresConfirmation: false,
+    scope: 'global',
+    expectedResult: `${label}完成并产生可验证结果`,
     ...extras
+  }
+}
+
+/** 根据任务语义生成可由渲染器和验收器共同消费的 B 端页面模式契约。 */
+function viewExperience(
+  kind: BusinessAppViewDefinition['kind'],
+  mode: 'list' | 'create' | 'detail' | 'edit' | 'custom',
+  primaryFields: string[]
+): BusinessAppViewExperience {
+  if (mode === 'list') {
+    return {
+      pattern: 'collection-table',
+      density: 'compact',
+      contentWidth: 'full',
+      responsivePriority: primaryFields.slice(0, 4).concat('status', 'actions'),
+      states: ['loading', 'ready', 'empty', 'no-results', 'error', 'permission-denied'],
+      collection: {
+        selection: 'single',
+        filtering: 'text',
+        pagination: 'pages',
+        contextualDetail: false
+      }
+    }
+  }
+  if (mode === 'create') {
+    return {
+      pattern: primaryFields.length > 15 ? 'create-multi-step' : 'create-single-page',
+      density: 'comfortable',
+      contentWidth: 'contained',
+      responsivePriority: primaryFields.slice(0, 6).concat('validation', 'submit'),
+      states: ['ready', 'error', 'permission-denied']
+    }
+  }
+  if (mode === 'edit') {
+    return {
+      pattern: primaryFields.length <= 3 ? 'edit-inline' : 'edit-full-page',
+      density: 'comfortable',
+      contentWidth: 'contained',
+      responsivePriority: primaryFields.slice(0, 6).concat('validation', 'save'),
+      states: ['loading', 'ready', 'error', 'permission-denied']
+    }
+  }
+  if (mode === 'detail') {
+    return {
+      pattern: 'object-details',
+      density: 'comfortable',
+      contentWidth: 'contained',
+      responsivePriority: primaryFields.slice(0, 6).concat('status', 'actions'),
+      states: ['loading', 'ready', 'error', 'permission-denied']
+    }
+  }
+  return {
+    pattern: kind === 'overview' ? 'service-dashboard' : 'custom-task',
+    density: 'comfortable',
+    contentWidth: 'full',
+    responsivePriority: ['task', 'status', 'primary-action'],
+    states: ['loading', 'ready', 'empty', 'error', 'permission-denied']
+  }
+}
+
+/** 将历史蓝图补齐为当前企业体验契约，不改变其业务模块、字段、流程和数据语义。 */
+function normalizeCurrentBlueprint(
+  source: BusinessApplicationBlueprint | null | undefined
+): BusinessApplicationBlueprint | null {
+  if (!source) return null
+  const raw = source as unknown as BusinessApplicationBlueprint & { schemaVersion: number }
+  return {
+    ...raw,
+    schemaVersion: 3,
+    shell: {
+      ...raw.shell,
+      density: raw.shell.density === 'compact' ? 'compact' : 'comfortable'
+    },
+    modules: raw.modules.map(module => ({
+      ...module,
+      views: module.views.map(view => ({
+        ...view,
+        experience: view.experience ?? viewExperience(
+          view.kind,
+          view.kind === 'list'
+            ? 'list'
+            : view.kind === 'detail'
+              ? 'detail'
+              : view.kind === 'form' && /edit|编辑/.test(`${view.id} ${view.name}`)
+                ? 'edit'
+                : view.kind === 'form'
+                  ? 'create'
+                  : 'custom',
+          view.kind === 'list' ? view.columns : view.fields
+        ),
+        primaryActions: view.primaryActions.map(actionItem => ({
+          ...actionItem,
+          scope: actionItem.scope ?? 'global',
+          expectedResult: actionItem.expectedResult ?? `${actionItem.label}完成并产生可验证结果`
+        })),
+        rowActions: view.rowActions.map(actionItem => ({
+          ...actionItem,
+          scope: actionItem.scope ?? 'contextual',
+          expectedResult: actionItem.expectedResult ?? `${actionItem.label}完成并更新当前对象`
+        }))
+      }))
+    }))
   }
 }
 
@@ -255,6 +361,7 @@ function buildModule(
       title: preset.moduleName,
       description: `集中处理${preset.entityName}的查询与日常管理任务。当前使用安全演示数据。`,
       kind: 'list',
+      experience: viewExperience('list', 'list', preset.fields.slice(0, 7).map(item => item.key)),
       entityId,
       columns: preset.fields.slice(0, 7).map(item => item.key),
       fields: [],
@@ -263,10 +370,10 @@ function buildModule(
         ? [action(`${moduleId}-create-action`, `创建${preset.entityName}`, 'create', { targetViewId: createId })]
         : [],
       rowActions: [
-        ...(canDetail ? [action(`${moduleId}-detail-action`, '详情', 'navigate', { targetViewId: detailId })] : []),
-        ...(canEdit ? [action(`${moduleId}-edit-action`, '编辑', 'edit', { targetViewId: editId })] : []),
-        ...(canTransition ? [action(`${moduleId}-transition-action`, '变更状态', 'transition', { transitionId: `${moduleId}-toggle-state`, risk: 'medium', requiresConfirmation: true, requiredPermission: `${moduleId}-operate` })] : []),
-        ...(canDelete ? [action(`${moduleId}-delete-action`, '删除', 'delete', { risk: 'high', requiresConfirmation: true, requiredPermission: `${moduleId}-operate` })] : [])
+        ...(canDetail ? [action(`${moduleId}-detail-action`, '详情', 'navigate', { targetViewId: detailId, scope: 'contextual' })] : []),
+        ...(canEdit ? [action(`${moduleId}-edit-action`, '编辑', 'edit', { targetViewId: editId, scope: 'contextual' })] : []),
+        ...(canTransition ? [action(`${moduleId}-transition-action`, '变更状态', 'transition', { transitionId: `${moduleId}-toggle-state`, risk: 'medium', requiresConfirmation: true, requiredPermission: `${moduleId}-operate`, scope: 'contextual' })] : []),
+        ...(canDelete ? [action(`${moduleId}-delete-action`, '删除', 'delete', { risk: 'high', requiresConfirmation: true, requiredPermission: `${moduleId}-operate`, scope: 'contextual', expectedResult: `删除所选${preset.entityName}并从集合中移除` })] : [])
       ],
       sections: []
     }
@@ -278,6 +385,7 @@ function buildModule(
       title: `创建${preset.entityName}`,
       description: `填写必要信息并创建新的${preset.entityName}。`,
       kind: 'form',
+      experience: viewExperience('form', 'create', formFields),
       entityId,
       columns: [],
       fields: formFields,
@@ -297,6 +405,7 @@ function buildModule(
       title: `${preset.entityName}详情`,
       description: `查看所选${preset.entityName}的完整演示信息。`,
       kind: 'detail',
+      experience: viewExperience('detail', 'detail', preset.fields.map(item => item.key)),
       entityId,
       columns: [],
       fields: preset.fields.map(item => item.key),
@@ -313,6 +422,7 @@ function buildModule(
       title: `编辑${preset.entityName}`,
       description: `修改所选${preset.entityName}并保存。`,
       kind: 'form',
+      experience: viewExperience('form', 'edit', formFields),
       entityId,
       columns: [],
       fields: formFields,
@@ -501,7 +611,7 @@ function deterministicPlan(
   const moduleId = contract.targetModuleIds[0] || safeId(preset.moduleName)
   const reqId = requirementId(contract)
   const built = buildModule(contract, preset, moduleId, reqId)
-  const current = options.currentBlueprint ?? null
+  const current = normalizeCurrentBlueprint(options.currentBlueprint)
   const previousModules = current?.modules.filter(module => module.id !== moduleId) ?? []
   const replacedModule = current?.modules.find(module => module.id === moduleId)
   const replacedEntityIds = new Set(replacedModule?.entityIds ?? [])
@@ -527,7 +637,7 @@ function deterministicPlan(
     ...built.scenarios.map(scenario => `scenario:${scenario.id}`)
   ]
   const blueprint: BusinessApplicationBlueprint = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     app: current?.app ?? {
       id: 'generated-business-app',
       name: modules.length > 1 ? '业务管理平台' : `${preset.moduleName}应用`,
@@ -538,7 +648,8 @@ function deterministicPlan(
       navigation: options.presentation?.navigation ?? current?.shell.navigation ?? 'side',
       homeModuleId: current?.shell.homeModuleId && modules.some(module => module.id === current.shell.homeModuleId)
         ? current.shell.homeModuleId
-        : moduleId
+        : moduleId,
+      density: current?.shell.density ?? 'comfortable'
     },
     modules,
     entities,
@@ -582,7 +693,8 @@ function deterministicPlan(
     impactedViews: built.module.views.map(view => view.id),
     regressionScenarioIds: current?.acceptanceScenarios.map(scenario => scenario.id) ?? [],
     requiredIduxComponents: [
-      'button', 'card', 'input', 'textarea', 'table', 'tag', 'form', 'select', 'desc', 'alert'
+      'alert', 'breadcrumb', 'button', 'card', 'desc', 'empty', 'form', 'input', 'layout', 'menu',
+      'modal', 'pagination', 'pro-layout', 'select', 'spin', 'table', 'tag', 'textarea'
     ],
     securityImpact: {
       dataModeChanged: current?.dataContracts.some(item => item.mode !== contract.dataMode) ?? false,
@@ -649,8 +761,10 @@ function sanitizeModelPlan(
       throw new Error('模型蓝图擅自改变了已确认的数据模式')
     }
     const allowedComponents = new Set(Object.keys({
-      alert: true, button: true, card: true, desc: true, form: true, input: true,
-      select: true, table: true, tag: true, textarea: true, theme: true
+      alert: true, breadcrumb: true, button: true, card: true, checkbox: true, desc: true,
+      drawer: true, dropdown: true, empty: true, form: true, input: true, layout: true,
+      menu: true, modal: true, pagination: true, 'pro-layout': true, select: true,
+      spin: true, stepper: true, table: true, tabs: true, tag: true, textarea: true, theme: true
     }))
     if (result.changePlan.requiredIduxComponents.some(item => !allowedComponents.has(item))) {
       throw new Error('模型计划使用了未授权组件证据')
@@ -670,7 +784,9 @@ export async function planBusinessApplication(
   contract: BusinessAppRequirementContract,
   options: PlanBusinessApplicationOptions = {}
 ): Promise<BusinessAppPlanResult> {
-  const fallback = deterministicPlan(contract, options)
+  const currentBlueprint = normalizeCurrentBlueprint(options.currentBlueprint)
+  const normalizedOptions = { ...options, currentBlueprint }
+  const fallback = deterministicPlan(contract, normalizedOptions)
   if (!options.settings?.apiBase || !options.settings.model) return fallback
   try {
     const reply = await gw.chatCompletion(options.settings, {
@@ -678,13 +794,16 @@ export async function planBusinessApplication(
       temperature: 0.1,
       maxTokens: 7000,
       messages: [
-        { role: 'system', content: prompt('business-app-blueprint.system') },
+        {
+          role: 'system',
+          content: `${prompt('business-app-blueprint.system')}\n\n以下是当前版本 idux-enterprise-design 的受控规划规范：\n${options.enterpriseGuidance ?? ''}`
+        },
         {
           role: 'user',
           content: prompt('business-app-blueprint.user', {
             contract: JSON.stringify(contract, null, 2),
-            currentBlueprint: options.currentBlueprint
-              ? JSON.stringify(options.currentBlueprint, null, 2)
+            currentBlueprint: currentBlueprint
+              ? JSON.stringify(currentBlueprint, null, 2)
               : 'null',
             presentationEvidence: options.presentationEvidence
               ? JSON.stringify(options.presentationEvidence, null, 2)
@@ -694,7 +813,7 @@ export async function planBusinessApplication(
         }
       ]
     })
-    return sanitizeModelPlan(gw.extractJson(reply), fallback, contract, options.currentBlueprint ?? null)
+    return sanitizeModelPlan(gw.extractJson(reply), fallback, contract, currentBlueprint)
   } catch {
     return fallback
   }

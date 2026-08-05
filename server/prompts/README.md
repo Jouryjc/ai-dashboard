@@ -31,6 +31,8 @@
 | `business-app-blueprint.user.md` | 业务应用蓝图规划用户消息 | `{{contract}}` `{{currentBlueprint}}` `{{presentationEvidence}}` `{{fallbackShape}}` |
 | `business-app-review.system.md` | 业务应用参考图与双视口视觉复核 | — |
 | `business-app-review.user.md` | 业务应用视觉复核用户消息 | `{{request}}` `{{referenceNote}}` |
+| `business-app-repair.system.md` | 业务应用有界源码修复与 B 端模式责任层约束 | `{{repairGuidance}}` |
+| `business-app-repair.user.md` | 业务应用失败门禁与可编辑源码 | `{{requirement}}` `{{failedGates}}` `{{editableFiles}}` |
 | `split.skeleton.user.md` | 超时拆分第 1 步：页面骨架（PANEL 占位） | `{{requirement}}` |
 | `split.panel.user.md` | 超时拆分第 2..N 步：单个面板 | `{{requirement}}` `{{panelName}}` |
 

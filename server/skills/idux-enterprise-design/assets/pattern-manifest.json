@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "skill": "idux-enterprise-design",
+  "profile": "generic-b2b-management",
+  "iduxVersion": "2.11.0",
+  "iduxSource": {
+    "repository": "https://github.com/IDuxFE/idux",
+    "website": "https://idux.site/",
+    "commit": "7047b9c1d6b640b79252c1aaca6ac4c656873aa2"
+  },
+  "patternSource": {
+    "name": "AWS Cloudscape Design System",
+    "website": "https://cloudscape.design/",
+    "repository": "https://github.com/cloudscape-design/components",
+    "license": "Apache-2.0",
+    "retrievedAt": "2026-08-04",
+    "patterns": [
+      "actions",
+      "service-dashboard",
+      "view-resources",
+      "table-view",
+      "resource-details",
+      "create-resource",
+      "edit-resource",
+      "delete-resource",
+      "secondary-panels",
+      "empty-error-loading"
+    ]
+  },
+  "viewports": [
+    { "name": "large", "width": 1920, "height": 1080 },
+    { "name": "small", "width": 1366, "height": 768 },
+    { "name": "embedded", "width": 862, "height": 623 }
+  ]
+}

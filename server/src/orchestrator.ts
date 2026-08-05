@@ -3107,6 +3107,21 @@ function emitBusinessAppGraphSkeleton(rt: Runtime): void {
 /** 不创建新需求、而是继续当前失败候选的用户短语。 */
 const BUSINESS_APP_CONTINUE_REQUEST = /^(?:继续|重试|再试(?:一次)?|继续修复|接着修|恢复)(?:吧|一下|看看|检查)?[。！!]?$/i
 
+/** 丢弃失败候选并以已确认需求启动一轮全新生成，不再次询问已经回答的边界。 */
+const BUSINESS_APP_REGENERATE_REQUEST = /^(?:请)?(?:按|基于)?(?:已确认的?)?(?:原|当前|之前)(?:需求|目标)(?:重新生成|再生成|重做|重新开始)(?:吧|一下)?[。！!]?$/i
+
+/** 这类会话问题只查询失败状态，绝不能覆盖业务需求或触发需求分析。 */
+const BUSINESS_APP_STATUS_QUESTION = /^(?:(?:上次|刚才|现在|具体)?(?:遇到|发生)(?:了)?什么(?:问题|错误)(?:了|呢)?|(?:什么|哪个|哪里).*(?:问题|错误)(?:了|呢)?|为什么.*(?:失败|没生成|没有生成|卡住)|怎么回事)[？?。！!]*$/u
+
+function isBusinessAppStatusQuestion(text: string): boolean {
+  return BUSINESS_APP_STATUS_QUESTION.test(text.trim())
+}
+
+/** 动作式按钮不是问题答案；旧会话中的这类选择不能继续污染需求契约。 */
+function isSemanticBusinessAppAnswer(answer: string): boolean {
+  return !/^(?:描述|填写|输入|提供|补充|说明)|^从.*模板/u.test(answer.trim())
+}
+
 /** 获取并补齐旧会话中可能缺少字段的 business-app 状态。 */
 function getBusinessAppState(rt: Runtime): BusinessAppProjectState {
   rt.s.businessAppState ??= {
@@ -3133,15 +3148,54 @@ function getBusinessAppState(rt: Runtime): BusinessAppProjectState {
   rt.s.businessAppState.candidateChangePlan ??= null
   rt.s.businessAppState.pendingClarification ??= null
   rt.s.businessAppState.checkpoint ??= null
-  return rt.s.businessAppState
+  const state = rt.s.businessAppState
+  // 兼容旧会话：过去会把“发生了什么”一类状态询问误写成当前需求。
+  if (state.activeRequirement && isBusinessAppStatusQuestion(state.activeRequirement)) {
+    state.activeRequirement = [...state.requirements]
+      .reverse()
+      .find(item => !isBusinessAppStatusQuestion(item)) ?? null
+  }
+  // 兼容旧会话：新一轮误路由曾清空结构化决策；已回答澄清卡片是可恢复事实源。
+  state.decisions = state.decisions.filter(item =>
+    item.source === 'custom' || isSemanticBusinessAppAnswer(item.answer)
+  )
+  const decidedTopics = new Set(state.decisions.map(item => item.questionId))
+  for (const message of rt.s.messages) {
+    if (message.kind !== 'clarification' || !message.answered) continue
+    for (const question of message.questions) {
+      const answer = question.answer?.trim()
+      if (!answer || !isSemanticBusinessAppAnswer(answer) || decidedTopics.has(question.id)) continue
+      state.decisions.push({
+        id: `decision-${message.id}-${question.id}`,
+        questionId: question.id,
+        question: question.question,
+        answer,
+        source: question.options.some(option => option.title === answer) ? 'option' : 'custom',
+        createdAt: message.createdAt
+      })
+      decidedTopics.add(question.id)
+    }
+  }
+  state.decisions = state.decisions.slice(-30)
+  return state
 }
 
 /** 解析新需求或续跑指令，并记录当前轮唯一有效的需求文本。 */
 function effectiveBusinessAppRequest(rt: Runtime, request: string): string {
   const state = getBusinessAppState(rt)
   const current = request.trim()
-  const resume = BUSINESS_APP_CONTINUE_REQUEST.test(current) && state.unresolved
-  if (!resume && current.length > 0) {
+  if (BUSINESS_APP_REGENERATE_REQUEST.test(current) && state.unresolved) {
+    // activeRequirement 可能来自旧版本误路由；全新生成必须回看需求历史，
+    // 选择最近一条真正的业务请求，而不是信任已经污染的游标。
+    state.activeRequirement = [...state.requirements]
+      .reverse()
+      .find(item => !isBusinessAppStatusQuestion(item) && !BUSINESS_APP_REGENERATE_REQUEST.test(item))
+      ?? state.activeRequirement
+  }
+  const preserveCurrent = state.unresolved && (
+    BUSINESS_APP_CONTINUE_REQUEST.test(current) || BUSINESS_APP_REGENERATE_REQUEST.test(current)
+  )
+  if (!preserveCurrent && current.length > 0) {
     const requirement = truncate(current, 500)
     if (!state.requirements.includes(requirement)) state.requirements.push(requirement)
     state.requirements = state.requirements.slice(-20)
@@ -3204,6 +3258,87 @@ function emitBusinessAppClarification(
   save(rt)
 }
 
+/** 失败恢复选项按策略是否耗尽变化；全新生成仅在自动修复确实耗尽后出现。 */
+function businessAppFailureOptions(exhaustedStrategies: boolean): CardOption[] {
+  return [
+    ...(!exhaustedStrategies ? [{
+      id: 'opt-idux-retry',
+      title: '继续自主修复',
+      consequence: '保留需求契约、失败候选和验收证据，执行剩余策略',
+      recommended: true,
+      recommendReason: '仍有尚未执行的自主策略',
+      riskLevel: 'low' as const,
+      autoExecuteAt: null
+    }] : [{
+      id: 'opt-idux-regenerate',
+      title: '按原需求重新生成',
+      consequence: '保留已经确认的需求和决策，丢弃失败候选并用当前生成流程重新构建',
+      recommended: true,
+      recommendReason: '需求本身已经确认，生成能力或门禁更新后不应要求用户重新回答',
+      riskLevel: 'low' as const,
+      autoExecuteAt: null
+    }]),
+    {
+      id: 'opt-idux-adjust',
+      title: '调整需求',
+      consequence: '只有业务目标确实变化时才补充新的验收要求',
+      recommended: false,
+      recommendReason: null,
+      riskLevel: 'medium' as const,
+      autoExecuteAt: null
+    },
+    {
+      id: 'opt-assist',
+      title: '人工协助',
+      consequence: '把完整失败轨迹交给支持人员检查',
+      recommended: false,
+      recommendReason: null,
+      riskLevel: 'medium' as const,
+      autoExecuteAt: null
+    }
+  ]
+}
+
+/** 回答失败状态查询并重新给出可执行恢复入口，不把会话问题送入需求分析器。 */
+function handleBusinessAppStatusQuestion(rt: Runtime, text: string): boolean {
+  if (!isBusinessAppStatusQuestion(text)) return false
+  const state = getBusinessAppState(rt)
+  if (!state.lastFailure) {
+    pushAgent(rt, '当前没有记录到生成失败；如果你要继续原任务，可以直接说“继续”。')
+    save(rt)
+    return true
+  }
+  const exhaustedStrategies = state.strategiesTried.length >= 3
+  const options = businessAppFailureOptions(exhaustedStrategies)
+  pushAgent(
+    rt,
+    `上一次不是卡在需求确认，而是生成候选没有通过质量门禁：${state.lastFailure}。已确认的原需求仍然保留。`
+  )
+  const problem: ProblemMessage = {
+    kind: 'problem',
+    id: nextId('m'),
+    createdAt: Date.now(),
+    title: exhaustedStrategies ? '生成候选未通过质量门禁' : '生成候选仍可继续修复',
+    description: state.lastFailure,
+    options,
+    chosenOptionId: null,
+    relatedIssueId: rt.s.issues.at(-1)?.id ?? null
+  }
+  pushMessage(rt, problem)
+  setBlocker(rt, {
+    id: nextId('blk'),
+    type: 'failed',
+    title: problem.title,
+    description: problem.description,
+    options,
+    relatedMessageId: problem.id
+  })
+  setStatus(rt, 'blocked')
+  updateDashboard(rt, { status: 'needs_attention' })
+  save(rt)
+  return true
+}
+
 /** 将内部异常转换为不泄漏本地路径、长度受限的用户可见错误。 */
 function safeBusinessAppError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error)
@@ -3263,7 +3398,10 @@ async function runBusinessAppGeneration(
 
   const businessAppState = getBusinessAppState(rt)
   const resumeCandidate = BUSINESS_APP_CONTINUE_REQUEST.test(request.trim()) && businessAppState.unresolved
-  if (!resumeCandidate) {
+  const regenerateCurrent = BUSINESS_APP_REGENERATE_REQUEST.test(request.trim())
+    && businessAppState.unresolved
+    && Boolean(businessAppState.activeRequirement)
+  if (!resumeCandidate && !regenerateCurrent) {
     businessAppState.decisions = []
     businessAppState.requirementContract = null
     businessAppState.pendingClarification = null
@@ -3293,8 +3431,8 @@ async function runBusinessAppGeneration(
     ? businessAppState.candidateBlueprint ?? businessAppState.blueprint
     : businessAppState.blueprint
   let reference: Awaited<ReturnType<typeof analyzeBusinessAppReference>> | null =
-    attachments.length === 0 && resumeCandidate ? businessAppState.reference ?? null : null
-  let referenceImage: string | null = attachments.length === 0 && resumeCandidate && reference
+    attachments.length === 0 && (resumeCandidate || regenerateCurrent) ? businessAppState.reference ?? null : null
+  let referenceImage: string | null = attachments.length === 0 && (resumeCandidate || regenerateCurrent) && reference
     ? [...rt.s.messages]
         .reverse()
         .flatMap(message => message.kind === 'user' ? message.attachmentUrls : [])
@@ -3414,7 +3552,7 @@ async function runBusinessAppGeneration(
         finishStage(rt, 'st-2')
 
         activateStage(rt, 'st-3')
-        step = startStep(rt, 'st-3', '通过 idux-cli 查询所需组件 API，并加载 idux-style 应用规范')
+        step = startStep(rt, 'st-3', '加载 idux-enterprise-design B 端模式，规划任务结构，并通过 idux-cli 核对 IDux API')
         if (!requirementContract || requirementContract.status !== 'ready') {
           throw new Error('需求契约未就绪，拒绝规划业务应用')
         }
@@ -3507,7 +3645,7 @@ async function runBusinessAppGeneration(
     check: {
       async execute() {
         activateStage(rt, 'st-5')
-        const step = startStep(rt, 'st-5', '在 1920×1080 与 1366×768 执行需求场景、浏览器与视觉验收')
+        const step = startStep(rt, 'st-5', '在双桌面视口与工作台嵌入视口执行任务场景、B 端模式、浏览器和视觉验收')
         if (!generated || !staticReport || !build || !draft) {
           return { kind: 'failed', error: new Error('业务应用构建结果不完整，不能执行浏览器验收') }
         }
@@ -3634,11 +3772,17 @@ async function runBusinessAppGeneration(
           setIssue(rt, currentIssue)
         }
         const attempted = new Set(businessAppState.strategiesTried)
+        const requiresBlueprintReplan = failedGates.some(gate =>
+          gate.id === 'enterprise-pattern-contract' ||
+          gate.id === 'runtime-enterprise-pattern' ||
+          gate.id.startsWith('visual-enterprise-pattern') ||
+          gate.id.startsWith('visual-state-coverage')
+        )
         let repaired = repairBusinessAppDraft(draft, failedGates)
         let strategy = 'deterministic-repair'
         if (attempted.has(strategy) || repaired.actions.length === 0) {
           repaired = { draft, actions: [] }
-          strategy = 'model-source-repair'
+          strategy = requiresBlueprintReplan ? 'targeted-regeneration' : 'model-source-repair'
         }
         if (strategy === 'model-source-repair' && !attempted.has(strategy)) {
           const modelRepair = await repairBusinessAppWithModel(
@@ -3653,9 +3797,13 @@ async function runBusinessAppGeneration(
           const issueContract = failedGates
             .map(gate => `${gate.id}：期望“${gate.title}”；实际“${gate.detail ?? '未通过'}”`)
             .join('；')
-          strategy = !attempted.has('targeted-regeneration')
-            ? 'targeted-regeneration'
-            : 'evidence-expanded-replan'
+          if (strategy !== 'targeted-regeneration') {
+            strategy = !attempted.has('targeted-regeneration')
+              ? 'targeted-regeneration'
+              : 'evidence-expanded-replan'
+          } else if (attempted.has('targeted-regeneration')) {
+            strategy = 'evidence-expanded-replan'
+          }
           if (attempted.has(strategy)) {
             latestError = `全部自主修复策略已经执行且复检失败：${latestError}`
             finishStep(rt, step, latestError, 'failed')
@@ -3836,35 +3984,7 @@ async function runBusinessAppGeneration(
     save(rt)
     failActiveStage(rt, message)
     const exhaustedStrategies = businessAppState.strategiesTried.length >= 3
-    const options: CardOption[] = [
-      ...(!exhaustedStrategies ? [{
-        id: 'opt-idux-retry',
-        title: '继续自主修复',
-        consequence: '保留需求契约、失败候选和验收证据，执行剩余策略',
-        recommended: true,
-        recommendReason: '仍有尚未执行的自主策略',
-        riskLevel: 'low' as const,
-        autoExecuteAt: null
-      }] : []),
-      {
-        id: 'opt-idux-adjust',
-        title: '调整需求',
-        consequence: '补充或改变验收目标后继续，原需求仍会保留在项目上下文中',
-        recommended: exhaustedStrategies,
-        recommendReason: exhaustedStrategies ? '所有自主修复策略已经执行并复检失败，需要新的业务约束才能改变结果' : null,
-        riskLevel: 'medium',
-        autoExecuteAt: null
-      },
-      {
-        id: 'opt-assist',
-        title: '人工协助',
-        consequence: '把完整失败轨迹交给支持人员检查',
-        recommended: false,
-        recommendReason: null,
-        riskLevel: 'medium',
-        autoExecuteAt: null
-      }
-    ]
+    const options = businessAppFailureOptions(exhaustedStrategies)
     const problem: ProblemMessage = {
       kind: 'problem',
       id: nextId('m'),
@@ -4029,6 +4149,7 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
   switch (rt.s.runStatus) {
     case 'idle':
       if (rt.s.dashboard.artifactKind === 'business-app') {
+        if (handleBusinessAppStatusQuestion(rt, text)) break
         void runBusinessAppGeneration(rt, text, attachments)
         break
       }
@@ -4051,6 +4172,7 @@ export function handleSendMessage(dashId: string, text: string, attachments: str
       break
     case 'blocked':
       if (rt.s.dashboard.artifactKind === 'business-app') {
+        if (handleBusinessAppStatusQuestion(rt, text)) break
         setBlocker(rt, null)
         void runBusinessAppGeneration(rt, text, attachments)
       } else {
@@ -4187,6 +4309,11 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
     case 'opt-idux-retry': {
       pushAgent(rt, '我会保留失败候选、需求契约和验收证据，继续执行自主诊断与修复。')
       void runBusinessAppGeneration(rt, '继续', [])
+      break
+    }
+    case 'opt-idux-regenerate': {
+      pushAgent(rt, '已保留原始业务目标和所有有效确认；现在丢弃失败候选，按当前生成流程重新构建。')
+      void runBusinessAppGeneration(rt, '按原需求重新生成', [])
       break
     }
     case 'opt-idux-adjust': {

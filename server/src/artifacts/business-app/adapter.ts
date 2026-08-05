@@ -36,8 +36,14 @@ function result(
 function exactIduxVersion(packageJsonText: string): string | null {
   try {
     const pkg = JSON.parse(packageJsonText) as { dependencies?: Record<string, unknown> }
-    const raw = pkg.dependencies?.['@idux/components']
-    return typeof raw === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(raw) ? raw : null
+    const versions = ['@idux/cdk', '@idux/components', '@idux/pro']
+      .map(name => pkg.dependencies?.[name])
+    const [version] = versions
+    return typeof version === 'string' &&
+      /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) &&
+      versions.every(item => item === version)
+      ? version
+      : null
   } catch {
     return null
   }
@@ -54,6 +60,7 @@ function dependencyPolicy(packageJsonText: string): { passed: boolean; detail: s
     const allowed = new Set([
       '@idux/cdk',
       '@idux/components',
+      '@idux/pro',
       'vue',
       '@vitejs/plugin-vue',
       'vite'
@@ -116,9 +123,24 @@ function styleEvidencePolicy(
         viewports?: unknown
         assetsSha256?: unknown
       }
+      enterpriseDesign?: {
+        skill?: unknown
+        profile?: unknown
+        iduxVersion?: unknown
+        iduxSourceCommit?: unknown
+        sourceName?: unknown
+        sourceWebsite?: unknown
+        sourceRepository?: unknown
+        sourceLicense?: unknown
+        retrievedAt?: unknown
+        patterns?: unknown
+        viewports?: unknown
+        assetsSha256?: unknown
+      }
     }
     const skills = Array.isArray(value.skills) ? value.skills : []
     const style = value.style
+    const enterpriseDesign = value.enterpriseDesign
     const reference = value.reference
     const validReference = reference === undefined || (
       reference.mode === 'vision-structured-spec' &&
@@ -131,9 +153,10 @@ function styleEvidencePolicy(
     )
     const valid =
       !/\bdata:image\//i.test(evidenceText) &&
-      value.schemaVersion === 2 &&
-      skills.length === 2 &&
+      value.schemaVersion === 3 &&
+      skills.length === 3 &&
       skills.includes('idux-cli') &&
+      skills.includes('idux-enterprise-design') &&
       skills.includes('idux-style') &&
       typeof expectedVersion === 'string' &&
       value.iduxVersion === expectedVersion &&
@@ -152,12 +175,28 @@ function styleEvidencePolicy(
       Array.isArray(style.viewports) &&
       JSON.stringify(style.viewports) === JSON.stringify(['1920x1080', '1366x768']) &&
       typeof style.assetsSha256 === 'string' &&
-      /^[0-9a-f]{64}$/.test(style.assetsSha256)
+      /^[0-9a-f]{64}$/.test(style.assetsSha256) &&
+      enterpriseDesign?.skill === 'idux-enterprise-design' &&
+      enterpriseDesign.profile === 'generic-b2b-management' &&
+      enterpriseDesign.iduxVersion === expectedVersion &&
+      enterpriseDesign.iduxSourceCommit === value.sourceCommit &&
+      enterpriseDesign.sourceName === 'AWS Cloudscape Design System' &&
+      enterpriseDesign.sourceWebsite === 'https://cloudscape.design/' &&
+      enterpriseDesign.sourceRepository === 'https://github.com/cloudscape-design/components' &&
+      enterpriseDesign.sourceLicense === 'Apache-2.0' &&
+      typeof enterpriseDesign.retrievedAt === 'string' &&
+      /^\d{4}-\d{2}-\d{2}$/.test(enterpriseDesign.retrievedAt) &&
+      Array.isArray(enterpriseDesign.patterns) &&
+      enterpriseDesign.patterns.length >= 8 &&
+      Array.isArray(enterpriseDesign.viewports) &&
+      JSON.stringify(enterpriseDesign.viewports) === JSON.stringify(['1920x1080', '1366x768', '862x623']) &&
+      typeof enterpriseDesign.assetsSha256 === 'string' &&
+      /^[0-9a-f]{64}$/.test(enterpriseDesign.assetsSha256)
     return {
       passed: valid,
       detail: valid
         ? null
-        : 'generation-evidence.json 必须同时证明 idux-cli 组件证据与 idux-style 设计基线，且版本、提交和双视口一致',
+        : 'generation-evidence.json 必须同时证明 idux-cli、idux-enterprise-design 与 idux-style 的版本、来源、摘要和目标视口一致',
       theme: value.theme === 'light' || value.theme === 'dark' ? value.theme : null
     }
   } catch {
@@ -201,6 +240,15 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
       'src/main.ts',
       'src/App.vue',
       'src/app/blueprint.ts',
+      'src/app/runtime-types.ts',
+      'src/composables/use-business-app-runtime.ts',
+      'src/components/shell/BusinessAppShell.vue',
+      'src/components/shell/ViewHeading.vue',
+      'src/components/feedback/ActionConfirmModal.vue',
+      'src/components/views/OverviewView.vue',
+      'src/components/views/ListView.vue',
+      'src/components/views/FormView.vue',
+      'src/components/views/DetailView.vue',
       'src/styles/app-shell.css',
       'src/contracts/requirement-contract.json',
       'src/contracts/application-blueprint.json',
@@ -212,6 +260,12 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
     const combined = Object.values(draft.files).join('\n')
     const mainSource = draft.files['src/main.ts'] ?? ''
     const appSource = draft.files['src/App.vue'] ?? ''
+    const vueSource = Object.entries(draft.files)
+      .filter(([file]) => file.endsWith('.vue'))
+      .map(([, source]) => source)
+      .join('\n')
+    const shellSource = draft.files['src/components/shell/BusinessAppShell.vue'] ?? ''
+    const confirmationSource = draft.files['src/components/feedback/ActionConfirmModal.vue'] ?? ''
     const pageCss = draft.files['src/styles/app-shell.css'] ?? ''
     const iduxVersion = exactIduxVersion(draft.files['package.json'] ?? '')
     const dependencies = dependencyPolicy(draft.files['package.json'] ?? '')
@@ -221,11 +275,27 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
     )
     const hasRemoteCode = /(?:src|href)\s*=\s*["']\s*https?:\/\//i.test(combined)
     const iduxComponents = new Set(
-      [...appSource.matchAll(/<Ix([A-Z][A-Za-z0-9]*)\b/g)].map(match => match[1])
+      [...vueSource.matchAll(/<Ix([A-Z][A-Za-z0-9]*)\b/g)].map(match => match[1])
     )
-    const nativeInteractive = /<(?:button|input|select|textarea)\b/i.test(appSource)
+    const nativeInteractive = /<(?:button|input|select|textarea)\b/i.test(vueSource)
+    const modularRuntime =
+      /<BusinessAppShell\b/.test(appSource) &&
+      !/<Ix(?:Table|Form|Desc|Modal)\b/.test(appSource) &&
+      !/\b(?:reactive|recordStore|handleAction|submitForm)\b/.test(appSource) &&
+      /useBusinessAppRuntime/.test(shellSource) &&
+      Object.keys(draft.files).filter(file => file.endsWith('.vue')).length >= 8
+    const proLayoutRuntime =
+      /from\s+["']@idux\/pro\/layout["']/.test(shellSource) &&
+      /<IxProLayout\b/.test(shellSource)
+    const modalConfirmation =
+      /from\s+["']@idux\/components\/modal["']/.test(confirmationSource) &&
+      /<IxModal\b/.test(confirmationSource) &&
+      /type=["']confirm["']/.test(confirmationSource) &&
+      /data-testid=["']confirm-action["']/.test(confirmationSource) &&
+      !/confirmation-card/.test(vueSource)
     let contractPassed = false
     let blueprintPassed = false
+    let enterprisePatternPassed = false
     let planPassed = false
     let blueprintSourcePassed = false
     let acceptancePlanPassed = false
@@ -238,6 +308,12 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
       contractPassed = contract.status === 'ready'
       validateBusinessApplicationBlueprint(blueprint)
       blueprintPassed = blueprint.acceptanceScenarios.length > 0
+      enterprisePatternPassed = blueprint.modules.every(module => module.views.every(view =>
+        Boolean(view.experience.pattern) &&
+        view.experience.responsivePriority.length > 0 &&
+        view.experience.states.includes('ready') &&
+        [...view.primaryActions, ...view.rowActions].every(action => Boolean(action.scope && action.expectedResult))
+      ))
       blueprintSourcePassed = draft.files['src/app/blueprint.ts'] === renderBlueprintSource(blueprint)
       acceptancePlanPassed = JSON.stringify(JSON.parse(draft.files['src/contracts/acceptance-plan.json'] ?? '')) === JSON.stringify(blueprint.acceptanceScenarios)
       validateBusinessAppChangePlan(plan, blueprint)
@@ -284,9 +360,9 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
       ),
       result(
         'exact-idux-version',
-        'IDux 使用精确版本',
+        'IDux 核心包与 Pro 组件使用同一精确版本',
         Boolean(iduxVersion),
-        'package.json 必须锁定 @idux/components 精确版本'
+        'package.json 必须以同一精确版本锁定 @idux/cdk、@idux/components 与 @idux/pro'
       ),
       result(
         'dependency-allowlist',
@@ -302,15 +378,42 @@ export const businessAppArtifactAdapter: ArtifactAdapter = {
       ),
       result(
         'idux-style-entry',
-        'IDux 组件结构样式与完整主题已加载',
+        'IDux Components 与 Pro 的结构样式和完整主题已加载',
         /import\s+["']@idux\/components\/index\.full\.css["']/.test(mainSource) &&
+          /import\s+["']@idux\/pro\/index\.css["']/.test(mainSource) &&
           (
             evidence.theme === 'dark'
               ? /import\s+["']@idux\/components\/dark\.full\.css["']/.test(mainSource)
+                && /import\s+["']@idux\/pro\/dark\.full\.css["']/.test(mainSource)
               : evidence.theme === 'light' &&
-                /import\s+["']@idux\/components\/default\.full\.css["']/.test(mainSource)
+                /import\s+["']@idux\/components\/default\.full\.css["']/.test(mainSource) &&
+                /import\s+["']@idux\/pro\/default\.full\.css["']/.test(mainSource)
           ),
-        '必须同时加载 index.full.css（组件结构）与 default.full.css 或 dark.full.css（完整主题变量）'
+        '必须同时加载 Components/Pro 结构样式及同一套 default.full.css 或 dark.full.css 主题变量'
+      ),
+      result(
+        'enterprise-pattern-contract',
+        '页面模式、操作作用域、状态和响应式优先级结构完整',
+        enterprisePatternPassed,
+        traceabilityDetail ?? '应用蓝图缺少 idux-enterprise-design 页面体验契约'
+      ),
+      result(
+        'modular-source-structure',
+        '应用壳、视图与状态按职责拆分',
+        modularRuntime,
+        'App.vue 只能装配 Provider 与根应用壳；布局、视图和业务状态必须位于独立组件或组合式控制器'
+      ),
+      result(
+        'idux-pro-layout',
+        '应用壳使用 IDux 高级布局',
+        proLayoutRuntime,
+        '业务应用必须使用 @idux/pro/layout 的 IxProLayout 承载导航与内容区'
+      ),
+      result(
+        'modal-destructive-confirmation',
+        '危险操作使用 IDux 模态确认',
+        modalConfirmation,
+        '删除、状态流转等高风险操作必须通过 IxModal confirm 确认，不能在页面流中插入确认卡片'
       ),
       result(
         'idux-component-surface',

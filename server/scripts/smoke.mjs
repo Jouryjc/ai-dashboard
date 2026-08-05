@@ -215,7 +215,11 @@ async function main() {
   const capabilities = (await api('GET', '/generation-capabilities')).json
   const businessAppCapability = capabilities?.find?.((item) => item.artifactKind === 'business-app')
   const businessAppSkillIds = businessAppCapability?.skills?.map?.((skill) => skill.id) ?? []
-  if (!businessAppSkillIds.includes('idux-cli') || !businessAppSkillIds.includes('idux-style')) {
+  if (
+    !businessAppSkillIds.includes('idux-cli') ||
+    !businessAppSkillIds.includes('idux-enterprise-design') ||
+    !businessAppSkillIds.includes('idux-style')
+  ) {
     fail('Skill Registry 暴露业务应用能力', JSON.stringify(capabilities))
   }
   ok('Artifact Registry + Skill Registry 能力发现', businessAppCapability.skills.map((skill) => skill.id).join('、'))
@@ -265,7 +269,7 @@ async function main() {
   ) {
     fail('业务应用版本通过全部质量门禁', JSON.stringify(businessAppVersion))
   }
-  ok('idux-cli + idux-style 证据 → 业务应用构建 → 双视口门禁', `${businessAppVersion.validationReport.gates.length} 项通过`)
+  ok('B 端模式 + IDux API/样式证据 → 业务应用构建 → 全视口门禁', `${businessAppVersion.validationReport.gates.length} 项通过`)
   const businessAppPreview = await fetch(businessAppReady.data.url)
   const businessAppPreviewHtml = await businessAppPreview.text()
   if (
@@ -291,22 +295,35 @@ async function main() {
   const businessAppFiles = unzipSync(businessAppZip)
   const businessAppPackage = JSON.parse(strFromU8(businessAppFiles['package.json']))
   const businessAppSource = strFromU8(businessAppFiles['src/App.vue'])
+  const businessAppShell = strFromU8(businessAppFiles['src/components/shell/BusinessAppShell.vue'])
+  const businessAppListView = strFromU8(businessAppFiles['src/components/views/ListView.vue'])
+  const businessAppConfirmModal = strFromU8(businessAppFiles['src/components/feedback/ActionConfirmModal.vue'])
   const businessAppBlueprint = JSON.parse(strFromU8(businessAppFiles['src/contracts/application-blueprint.json']))
   const businessAppEvidence = JSON.parse(strFromU8(businessAppFiles['generation-evidence.json']))
   if (
     businessAppPackage.dependencies?.['@idux/components'] !== '2.11.0' ||
-    !businessAppSource.includes('<IxTable') ||
+    businessAppPackage.dependencies?.['@idux/pro'] !== '2.11.0' ||
+    !businessAppSource.includes('<BusinessAppShell') ||
+    businessAppSource.includes('<IxTable') ||
+    !businessAppShell.includes('<IxProLayout') ||
+    !businessAppListView.includes('<IxTable') ||
+    !businessAppConfirmModal.includes('<IxModal') ||
     !businessAppFiles['src/styles/app-shell.css'] ||
     !businessAppFiles['src/contracts/requirement-contract.json'] ||
     !businessAppFiles['src/contracts/change-plan.json'] ||
     !businessAppFiles['src/contracts/acceptance-plan.json'] ||
     !businessAppEvidence.skills?.includes('idux-cli') ||
+    !businessAppEvidence.skills?.includes('idux-enterprise-design') ||
     !businessAppEvidence.skills?.includes('idux-style') ||
     JSON.stringify(businessAppEvidence.style?.viewports) !== JSON.stringify(['1920x1080', '1366x768']) ||
+    JSON.stringify(businessAppEvidence.enterpriseDesign?.viewports) !== JSON.stringify(['1920x1080', '1366x768', '862x623']) ||
+    businessAppEvidence.enterpriseDesign?.sourceLicense !== 'Apache-2.0' ||
     businessAppEvidence.reference?.mode !== 'vision-structured-spec' ||
     businessAppEvidence.reference?.analyzer !== 'business-app-reference-v2' ||
     !/^[0-9a-f]{64}$/.test(businessAppEvidence.reference?.imageSha256 ?? '') ||
     businessAppBlueprint.shell?.navigation !== 'side' ||
+    businessAppBlueprint.schemaVersion !== 3 ||
+    !businessAppBlueprint.modules?.every(module => module.views?.every(view => view.experience?.pattern)) ||
     /data:image\//i.test(strFromU8(businessAppFiles['generation-evidence.json']))
   ) {
     fail('业务应用 ZIP 含可复现源码与精确依赖', Object.keys(businessAppFiles).join('、'))
@@ -338,11 +355,15 @@ async function main() {
   )
   const detailFiles = unzipSync(new Uint8Array(await detailExport.arrayBuffer()))
   const detailApp = strFromU8(detailFiles['src/App.vue'])
+  const detailShell = strFromU8(detailFiles['src/components/shell/BusinessAppShell.vue'])
+  const detailView = strFromU8(detailFiles['src/components/views/DetailView.vue'])
   const detailBlueprint = JSON.parse(strFromU8(detailFiles['src/contracts/application-blueprint.json']))
   const detailEvidence = JSON.parse(strFromU8(detailFiles['generation-evidence.json']))
   const cloudModule = detailBlueprint.modules?.find(module => module.id === 'cloud-host')
   if (
-    !detailApp.includes("activeView.kind === 'detail'") ||
+    !detailApp.includes('<BusinessAppShell') ||
+    !detailShell.includes("activeView.kind === 'detail'") ||
+    !detailView.includes('<IxDesc') ||
     !cloudModule?.views?.some(view => view.kind === 'detail') ||
     detailBlueprint.shell?.navigation !== 'side' ||
     detailEvidence.reference?.analyzer !== 'business-app-reference-v2' ||

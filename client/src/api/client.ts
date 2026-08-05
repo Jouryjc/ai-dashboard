@@ -115,7 +115,7 @@ export interface ClientApi {
   rollback(dashboardId: string, versionId: string): Promise<void>
 
   /* ---------- 预览 ---------- */
-  /** 切换预览分辨率（仅缩放展示，基准恒为 1920×1080） */
+  /** 切换固定画布大屏的预览分辨率；业务应用使用工作区的真实响应式视口。 */
   setPreviewResolution(dashboardId: string, resolution: PreviewResolution): Promise<void>
 
   /* ---------- 封面 / 导出 ---------- */

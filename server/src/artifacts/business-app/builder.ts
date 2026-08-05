@@ -14,7 +14,7 @@ const MAX_BUILD_OUTPUT_BYTES = Number(process.env.IDUX_BUILD_MAX_OUTPUT_BYTES ??
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024
 const MAX_SOURCE_FILES = 64
 const ALLOWED_FILE = /^(?:index\.html|package\.json|tsconfig\.json|vite\.config\.ts|generation-evidence\.json|src\/[A-Za-z0-9_./-]+\.(?:vue|ts|css|json))$/
-const ALLOWED_IMPORT = /^(?:vue|vite|@vitejs\/plugin-vue|@idux\/components(?:\/[A-Za-z0-9_./-]+)?|@idux\/cdk(?:\/[A-Za-z0-9_./-]+)?)$/
+const ALLOWED_IMPORT = /^(?:vue|vite|@vitejs\/plugin-vue|@idux\/components(?:\/[A-Za-z0-9_./-]+)?|@idux\/cdk(?:\/[A-Za-z0-9_./-]+)?|@idux\/pro(?:\/[A-Za-z0-9_./-]+)?)$/
 const IMPORT_SPECIFIER = /(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/g
 const FORBIDDEN_RUNTIME_API = /\b(?:eval|Function|fetch|WebSocket|XMLHttpRequest|EventSource|SharedWorker|Worker)\s*(?:\(|\.)|sendBeacon\s*\(|window\.open\s*\(|(?:window\.)?location\.(?:assign|replace)\s*\(/i
 const FORBIDDEN_SECRET = /\bsk-[A-Za-z0-9_-]{12,}\b|\bBearer\s+[A-Za-z0-9._~+/-]{12,}=*|(?:password|passwd|secret|token|api[_ -]?key|密码|密钥)\s*[:：=]\s*["']?[^\s"']{8,}/i

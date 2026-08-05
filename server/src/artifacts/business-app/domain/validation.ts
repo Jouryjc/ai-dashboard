@@ -67,6 +67,7 @@ function validateAction(
   permissionIds: Set<string>
 ): void {
   invariant(action.label.trim().length > 0, `操作 ${action.id} 缺少名称`)
+  invariant(action.expectedResult.trim().length > 0, `操作 ${action.id} 缺少可验证结果`)
   if (action.targetViewId) invariant(viewIds.has(action.targetViewId), `操作 ${action.id} 指向不存在的视图`)
   if (action.requiredPermission) {
     invariant(permissionIds.has(action.requiredPermission), `操作 ${action.id} 使用了不存在的权限`)
@@ -75,6 +76,7 @@ function validateAction(
     invariant(action.risk === 'high', `删除操作 ${action.id} 必须标记为高风险`)
     invariant(action.requiresConfirmation, `删除操作 ${action.id} 必须二次确认`)
   }
+  if (action.scope === 'bulk') invariant(action.requiresConfirmation, `批量操作 ${action.id} 必须确认影响范围`)
 }
 
 /** 校验视图引用的实体和所有页面操作。 */
@@ -85,6 +87,18 @@ function validateView(
   permissionIds: Set<string>
 ): void {
   invariant(view.name.trim().length > 0 && view.title.trim().length > 0, `视图 ${view.id} 缺少名称或标题`)
+  invariant(view.experience.responsivePriority.length > 0, `视图 ${view.id} 缺少响应式信息优先级`)
+  invariant(view.experience.states.includes('ready'), `视图 ${view.id} 缺少 ready 状态`)
+  invariant(new Set(view.experience.states).size === view.experience.states.length, `视图 ${view.id} 状态重复`)
+  if (view.experience.pattern.startsWith('collection-')) {
+    invariant(Boolean(view.experience.collection), `集合视图 ${view.id} 缺少集合交互契约`)
+    invariant(view.kind === 'list', `集合模式 ${view.id} 必须使用 list 语义视图`)
+  }
+  if (view.kind === 'list') {
+    invariant(view.experience.states.includes('empty'), `列表视图 ${view.id} 缺少空状态`)
+    invariant(view.experience.states.includes('no-results'), `列表视图 ${view.id} 缺少筛选无结果状态`)
+    invariant(view.experience.states.includes('error'), `列表视图 ${view.id} 缺少错误状态`)
+  }
   if (view.entityId) invariant(entityIds.has(view.entityId), `视图 ${view.id} 使用了不存在的实体`)
   for (const action of [...view.primaryActions, ...view.rowActions]) {
     validateAction(action, viewIds, permissionIds)
@@ -163,7 +177,7 @@ export function validateRequirementContract(contract: BusinessAppRequirementCont
 
 /** 校验完整应用蓝图的拓扑、数据、安全和需求追踪关系。 */
 export function validateBusinessApplicationBlueprint(blueprint: BusinessApplicationBlueprint): void {
-  invariant(blueprint.schemaVersion === 2, '业务应用蓝图版本不支持')
+  invariant(blueprint.schemaVersion === 3, '业务应用蓝图版本不支持')
   invariant(blueprint.app.name.trim().length > 0, '业务应用缺少名称')
   invariant(blueprint.modules.length > 0, '业务应用至少需要一个模块')
   uniqueIds(blueprint.modules, '业务模块')
@@ -179,6 +193,7 @@ export function validateBusinessApplicationBlueprint(blueprint: BusinessApplicat
   const permissionIds = new Set(blueprint.permissions.map(permission => permission.id))
   const requirementIds = new Set(Object.keys(blueprint.requirementCoverage))
   invariant(moduleIds.has(blueprint.shell.homeModuleId), '应用首页模块不存在')
+  invariant(blueprint.shell.density === 'compact' || blueprint.shell.density === 'comfortable', '应用壳密度不合法')
 
   for (const entity of blueprint.entities) validateEntity(entity)
   for (const dataContract of blueprint.dataContracts) {

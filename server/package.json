@@ -14,10 +14,11 @@
   "dependencies": {
     "@idux/cdk": "2.11.0",
     "@idux/components": "2.11.0",
+    "@idux/pro": "2.11.0",
     "@vitejs/plugin-vue": "5.2.1",
     "express": "^4.21.2",
-    "loop-engine": "file:../loop-engine",
     "fflate": "0.8.2",
+    "loop-engine": "file:../loop-engine",
     "playwright": "^1.62.0",
     "sharp": "^0.35.3",
     "vite": "6.4.3",

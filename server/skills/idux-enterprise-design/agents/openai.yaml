@@ -1,0 +1,4 @@
+interface:
+  display_name: "IDux Enterprise Design"
+  short_description: "Build and validate IDux B2B management platforms"
+  default_prompt: "Use $idux-enterprise-design to plan, generate, review, and repair a complete IDux B2B management application."

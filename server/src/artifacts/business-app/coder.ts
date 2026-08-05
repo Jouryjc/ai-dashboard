@@ -4,12 +4,14 @@
  * 模型只能替换有限的运行时展示文件，领域契约、应用蓝图和证据文件始终不可编辑。
  */
 import * as gw from '../../gateway'
+import { prompt } from '../../prompts'
 import type { ModelSettings, ValidationGateResult } from '../../wire'
 import type { ArtifactDraft } from '../types'
 import { validateBusinessAppBuildInput } from './builder'
+import { loadBusinessAppEnterpriseDesign } from './generation/enterprise-design'
 
-const EDITABLE_FILE = /^(?:src\/App\.vue|src\/main\.ts|src\/styles\/[A-Za-z0-9_.-]+\.css)$/
-const MAX_UPDATES = 8
+const EDITABLE_FILE = /^(?:src\/App\.vue|src\/main\.ts|src\/(?:components|views)\/[A-Za-z0-9_./-]+\.vue|src\/composables\/[A-Za-z0-9_./-]+\.ts|src\/styles\/[A-Za-z0-9_.-]+\.css)$/
+const MAX_UPDATES = 12
 const MAX_UPDATE_BYTES = 512 * 1024
 
 /** 模型返回的单个完整文件替换。 */
@@ -34,6 +36,7 @@ export async function repairBusinessAppWithModel(
   const editableFiles = Object.fromEntries(
     Object.entries(source.files).filter(([file]) => EDITABLE_FILE.test(file))
   )
+  const enterpriseDesign = loadBusinessAppEnterpriseDesign()
   const response = await gw.chatCompletion(settings, {
     role: 'coder',
     temperature: 0.05,
@@ -41,16 +44,19 @@ export async function repairBusinessAppWithModel(
     messages: [
       {
         role: 'system',
-        content: `你是受约束的 IDux Vue 3 业务应用实现修复器。只输出 JSON，不输出 Markdown。\n
-只能替换已给出的 src/*.vue、src/*.ts、src/*.css 文件，不能修改依赖、Vite 配置、证据文件或创建网络请求。\n
-不能修改需求契约、应用蓝图、变更计划或验收计划。所有交互必须使用 IDux 组件；修复必须实现蓝图对应的真实状态变化，不能用提示文字伪装表单、视图、工作流或详情。\n
-输出格式：{"updates":[{"path":"src/App.vue","content":"完整文件内容","reason":"修复说明"}]}。`
+        content: prompt('business-app-repair.system', {
+          repairGuidance: enterpriseDesign.repairGuidance
+        })
       },
       {
         role: 'user',
-        content: `累计需求：\n${requirement}\n\n未通过的质量门禁：\n${failedGates
-          .map(gate => `- ${gate.id}: ${gate.title}；期望通过；实际：${gate.detail ?? '未通过'}`)
-          .join('\n')}\n\n当前可编辑源码：\n${JSON.stringify(editableFiles)}`
+        content: prompt('business-app-repair.user', {
+          requirement,
+          failedGates: failedGates
+            .map(gate => `- ${gate.id}: ${gate.title}；期望通过；实际：${gate.detail ?? '未通过'}`)
+            .join('\n'),
+          editableFiles: JSON.stringify(editableFiles)
+        })
       }
     ]
   })

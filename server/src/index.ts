@@ -1,7 +1,7 @@
 /**
  * 服务端入口：Express 应用装配 + 启动。
- * 端口 8787（PORT 可覆盖）；CORS 手写中间件（Allow-Origin: *，处理 OPTIONS）；
- * 静态托管 /preview（构建产物）与 /covers（大屏封面）。
+ * API 默认监听 8787，预览由独立 origin 提供；CORS 仅允许本地客户端来源，
+ * 旧 `/preview` 地址只做安全重定向，封面与修复截图由 API 服务静态托管。
  */
 import path from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'

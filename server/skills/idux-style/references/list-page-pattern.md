@@ -27,7 +27,7 @@ Give identity and status stable widths. Keep critical IP addresses complete. Put
 - Freeze identity or operation columns only when horizontal scrolling would otherwise hide the task context.
 - Use pagination when the dataset is genuinely larger than one page. Align it to the bottom right.
 - Limit visible row operations to four; collapse additional operations into “更多”.
-- Keep destructive actions visually and behaviorally distinct and require confirmation.
+- Keep destructive actions visually and behaviorally distinct and require an `IxModal` confirm dialog. The dialog names the target object and impact; an inline confirmation card is not acceptable.
 
 ## Cards and summaries
 

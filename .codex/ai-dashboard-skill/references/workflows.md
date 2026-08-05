@@ -98,7 +98,7 @@ Windows 未配置 Bash 时，分别启动 server 和 client，不要因为根 `n
 - 修改占位符时同步 `server/prompts/README.md` 和调用点。
 - stub 依赖角色文本识别请求类型，新增/更名角色时同步 `server/scripts/stub-llm.mjs`。
 - `server/skills/<id>` 必须同时提供合法 `SKILL.md` 与 `skill.config.json`，目录名、frontmatter name、config id 一致。
-- `idux-cli` 只提供目标版本 API/demo 证据；`idux-style` 负责应用设计组合，不混合职责。
+- `idux-cli` 只提供目标版本 API/demo 证据；`idux-enterprise-design` 负责通用 B 端信息架构、页面模式、操作/状态与 Loop 门禁；`idux-style` 只负责视觉基线、主题和壳层样式资产，三者不混合职责。
 - 运行命令采用白名单、无 shell、受限 cwd/env/超时/输出；不要把自然语言拼进命令。
 
 ## 新增产物类型

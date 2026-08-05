@@ -38,21 +38,21 @@ export function repairBusinessAppDraft(
 
   if (styleFailure) {
     const main = files['src/main.ts'] ?? ''
-    const selectedTheme = /"theme"\s*:\s*"dark"/.test(files['src/App.vue'] ?? '')
+    const selectedTheme = /"theme"\s*:\s*"dark"/.test(files['src/contracts/application-blueprint.json'] ?? '')
       ? 'dark'
       : 'default'
     const nextMain = main
       .replace(
-        /import\s+["']@idux\/components\/(?:(?:default|dark)(?:\.full)?|index\.full)\.css["'];?\s*/g,
+        /import\s+["']@idux\/(?:components\/(?:(?:default|dark)(?:\.full)?|index\.full)|pro\/(?:(?:default|dark)\.full|index))\.css["'];?\s*/g,
         ''
       )
       .replace(
         /import\s+\{\s*createApp\s*\}\s+from\s+["']vue["'];?/,
-        match => `${match}\nimport '@idux/components/index.full.css'\nimport '@idux/components/${selectedTheme}.full.css'`
+        match => `${match}\nimport '@idux/components/index.full.css'\nimport '@idux/components/${selectedTheme}.full.css'\nimport '@idux/pro/index.css'\nimport '@idux/pro/${selectedTheme}.full.css'`
       )
     if (nextMain !== main) {
       files['src/main.ts'] = nextMain
-      actions.push('恢复 IDux 全量组件结构与默认主题变量')
+      actions.push('恢复 IDux Components 与 Pro 的结构样式和统一主题变量')
     }
   }
 

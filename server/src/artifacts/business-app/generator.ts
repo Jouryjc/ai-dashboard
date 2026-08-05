@@ -18,7 +18,11 @@ import {
   loadBusinessAppDesignSystem,
   type BusinessAppDesignEvidence
 } from './generation/design-system'
-import { renderBlueprintSource, renderBusinessAppRuntime } from './generation/renderer'
+import {
+  loadBusinessAppEnterpriseDesign,
+  type BusinessAppEnterpriseDesignEvidence
+} from './generation/enterprise-design'
+import { renderBlueprintSource, renderBusinessAppRuntimeFiles } from './generation/renderer'
 import { planBusinessApplication } from './planning/planner'
 import type { BusinessAppReferenceAnalysis, BusinessAppReferenceEvidence } from './reference'
 
@@ -29,13 +33,14 @@ export interface BusinessAppGeneration {
   blueprint: BusinessApplicationBlueprint
   changePlan: BusinessAppChangePlan
   evidence: {
-    schemaVersion: 2
+    schemaVersion: 3
     iduxVersion: string
     sourceCommit: string
     combinedSha256: string
     theme: 'light' | 'dark'
     queries: IduxEvidence[]
     style: BusinessAppDesignEvidence
+    enterpriseDesign: BusinessAppEnterpriseDesignEvidence
     reference?: BusinessAppReferenceEvidence
   }
 }
@@ -60,15 +65,26 @@ interface EvidencePayload {
 
 const COMPONENT_API: Record<string, { component: string; api: string; demo?: string }> = {
   alert: { component: 'alert', api: 'IxAlert' },
+  breadcrumb: { component: 'breadcrumb', api: 'IxBreadcrumb', demo: 'Basic' },
   button: { component: 'button', api: 'IxButton' },
   card: { component: 'card', api: 'IxCard' },
+  checkbox: { component: 'checkbox', api: 'IxCheckbox' },
   desc: { component: 'desc', api: 'IxDesc', demo: 'Basic' },
+  drawer: { component: 'drawer', api: 'IxDrawer', demo: 'Basic' },
+  dropdown: { component: 'dropdown', api: 'IxDropdown', demo: 'Basic' },
+  empty: { component: 'empty', api: 'IxEmpty', demo: 'Basic' },
   form: { component: 'form', api: 'IxForm', demo: 'Basic' },
   input: { component: 'input', api: 'IxInput' },
   layout: { component: 'layout', api: 'IxLayout' },
   menu: { component: 'menu', api: 'IxMenu' },
+  modal: { component: 'modal', api: 'IxModal', demo: 'Type' },
+  pagination: { component: 'pagination', api: 'IxPagination', demo: 'Basic' },
+  'pro-layout': { component: 'pro-layout', api: 'IxProLayout', demo: 'Basic' },
   select: { component: 'select', api: 'IxSelect' },
+  spin: { component: 'spin', api: 'IxSpin', demo: 'Basic' },
+  stepper: { component: 'stepper', api: 'IxStepper', demo: 'Basic' },
   table: { component: 'table', api: 'IxTable', demo: 'Basic' },
+  tabs: { component: 'tabs', api: 'IxTabs', demo: 'Basic' },
   tag: { component: 'tag', api: 'IxTag' },
   textarea: { component: 'textarea', api: 'IxTextarea' },
   theme: { component: 'theme', api: 'IxThemeProvider' }
@@ -79,6 +95,9 @@ function installedVersion(): string {
   const packageFile = require.resolve('@idux/components/package.json')
   const pkg = JSON.parse(fs.readFileSync(packageFile, 'utf8')) as { version?: unknown }
   if (typeof pkg.version !== 'string') throw new Error('无法确认服务端 IDux 运行时版本')
+  const proPackageFile = require.resolve('@idux/pro/package.json')
+  const proPackage = JSON.parse(fs.readFileSync(proPackageFile, 'utf8')) as { version?: unknown }
+  if (proPackage.version !== pkg.version) throw new Error('服务端 @idux/pro 与 @idux/components 版本不一致')
   return pkg.version
 }
 
@@ -104,6 +123,7 @@ function packageJson(version: string): string {
     dependencies: {
       '@idux/cdk': version,
       '@idux/components': version,
+      '@idux/pro': version,
       vue: '3.5.13'
     },
     devDependencies: {
@@ -126,8 +146,8 @@ function escapeHtml(value: string): string {
 /** 生成 IDux 组件、样式及参考图来源证据清单。 */
 function manifestJson(generation: Omit<BusinessAppGeneration, 'draft'>): string {
   return JSON.stringify({
-    schemaVersion: 2,
-    skills: ['idux-cli', 'idux-style'],
+    schemaVersion: 3,
+    skills: ['idux-cli', 'idux-enterprise-design', 'idux-style'],
     iduxVersion: generation.evidence.iduxVersion,
     sourceCommit: generation.evidence.sourceCommit,
     combinedSha256: generation.evidence.combinedSha256,
@@ -139,6 +159,7 @@ function manifestJson(generation: Omit<BusinessAppGeneration, 'draft'>): string 
       capturedAt: query.capturedAt
     })),
     style: generation.evidence.style,
+    enterpriseDesign: generation.evidence.enterpriseDesign,
     ...(generation.evidence.reference ? { reference: generation.evidence.reference } : {})
   }, null, 2)
 }
@@ -147,7 +168,7 @@ function manifestJson(generation: Omit<BusinessAppGeneration, 'draft'>): string 
 function projectFiles(
   version: string,
   generation: Omit<BusinessAppGeneration, 'draft'>,
-  appVue: string,
+  runtimeFiles: Record<string, string>,
   appCss: string
 ): ArtifactDraft {
   const { contract, blueprint, changePlan } = generation
@@ -169,11 +190,13 @@ function projectFiles(
       'src/main.ts': `import { createApp } from 'vue'
 import '@idux/components/index.full.css'
 import '@idux/components/${blueprint.app.theme === 'dark' ? 'dark' : 'default'}.full.css'
+import '@idux/pro/index.css'
+import '@idux/pro/${blueprint.app.theme === 'dark' ? 'dark' : 'default'}.full.css'
 import App from './App.vue'
 
 createApp(App).mount('#app')
 `,
-      'src/App.vue': appVue,
+      ...runtimeFiles,
       'src/app/blueprint.ts': renderBlueprintSource(blueprint),
       'src/styles/app-shell.css': appCss,
       'src/contracts/requirement-contract.json': JSON.stringify(contract, null, 2),
@@ -202,19 +225,32 @@ async function collectComponentEvidence(
   workspaceRoot: string,
   components: string[]
 ): Promise<IduxEvidence[]> {
-  const required = [...new Set([...components, 'theme'])]
+  // 应用壳、语义导航和危险操作确认是所有 business-app 的固定运行时能力，不依赖模型是否主动声明。
+  const required = [...new Set([
+    ...components,
+    'breadcrumb',
+    'layout',
+    'menu',
+    'modal',
+    'pro-layout',
+    'theme'
+  ])]
     .map(name => COMPONENT_API[name])
     .filter((item): item is { component: string; api: string; demo?: string } => Boolean(item))
     .sort((a, b) => a.component.localeCompare(b.component))
-  const queries: IduxEvidence[] = []
-  for (const item of required) {
-    queries.push(await iduxCli.info(workspaceRoot, item.component, 'props', {
+  // 查询之间没有数据依赖，并发采集可避免固定应用壳证据随案例数线性放大生成时延。
+  const groups = await Promise.all(required.map(async item => {
+    const info = iduxCli.info(workspaceRoot, item.component, 'props', {
       api: item.api,
       version: 'bundled'
-    }))
-    if (item.demo) queries.push(await iduxCli.demo(workspaceRoot, item.component, item.demo, 'bundled'))
-  }
-  return queries
+    })
+    const demo = item.demo
+      ? iduxCli.demo(workspaceRoot, item.component, item.demo, 'bundled')
+      : null
+    const [infoEvidence, demoEvidence] = await Promise.all([info, demo])
+    return demoEvidence ? [infoEvidence, demoEvidence] : [infoEvidence]
+  }))
+  return groups.flat()
 }
 
 /**
@@ -232,12 +268,14 @@ export async function generateBusinessApp(
   if (contract.status !== 'ready') throw new Error('业务应用需求尚未完成澄清，不能进入生成阶段')
 
   const designSystem = loadBusinessAppDesignSystem()
+  const enterpriseDesign = loadBusinessAppEnterpriseDesign()
   const { blueprint, changePlan } = await planBusinessApplication(contract, {
     currentBlueprint: options.currentBlueprint,
     baseRevisionId: options.baseRevisionId,
     settings: options.settings,
     presentation: options.presentation,
-    presentationEvidence: options.referenceAnalysis
+    presentationEvidence: options.referenceAnalysis,
+    enterpriseGuidance: enterpriseDesign.plannerGuidance
   })
   const queries = await collectComponentEvidence(workspaceRoot, changePlan.requiredIduxComponents)
   const sources = queries.map(evidenceSource)
@@ -255,27 +293,35 @@ export async function generateBusinessApp(
   ) {
     throw new Error('idux-style 设计基线与 IDux 组件证据版本不一致')
   }
+  if (
+    enterpriseDesign.evidence.iduxVersion !== runtimeVersion ||
+    enterpriseDesign.evidence.iduxSourceCommit !== source.commit
+  ) {
+    throw new Error('idux-enterprise-design 模式规范与 IDux 组件证据版本不一致')
+  }
 
   const combinedSha256 = crypto.createHash('sha256').update([
     ...queries.map(query => query.sha256),
     designSystem.evidence.assetsSha256,
+    enterpriseDesign.evidence.assetsSha256,
     crypto.createHash('sha256').update(JSON.stringify(contract)).digest('hex'),
     crypto.createHash('sha256').update(JSON.stringify(blueprint)).digest('hex'),
     options.referenceEvidence?.analysisSha256 ?? ''
   ].join(':')).digest('hex')
   const evidence: BusinessAppGeneration['evidence'] = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     iduxVersion: source.version,
     sourceCommit: source.commit,
     combinedSha256,
     theme: blueprint.app.theme,
     queries,
     style: designSystem.evidence,
+    enterpriseDesign: enterpriseDesign.evidence,
     ...(options.referenceEvidence ? { reference: options.referenceEvidence } : {})
   }
   const generation = { contract, blueprint, changePlan, evidence }
   return {
     ...generation,
-    draft: projectFiles(runtimeVersion, generation, renderBusinessAppRuntime(), designSystem.css)
+    draft: projectFiles(runtimeVersion, generation, renderBusinessAppRuntimeFiles(), designSystem.css)
   }
 }

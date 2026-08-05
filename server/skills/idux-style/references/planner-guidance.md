@@ -9,5 +9,7 @@
 - Generate clearly fictional data for mock mode. Contract mode includes stable interface boundaries and loading/empty/error states. Connected mode requires explicit connector, permission, and destructive-action authorization.
 - Query all planned IDux components through `idux-cli`. Never infer props from memory.
 - Preserve application-shell consistency and one dominant action per view.
+- Treat source composition as a runtime invariant: App.vue stays a composition root; shell, views, feedback and state/actions remain separate files.
+- Use version-pinned IxProLayout for the application shell and IxModal confirm for destructive actions.
 - Validate all required scenarios in both 1920×1080 and 1366×768.
 - Do not trade accuracy or safety for screenshot similarity, and do not trade task completion for visual polish.

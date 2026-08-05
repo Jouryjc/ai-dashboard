@@ -1,8 +1,8 @@
 /**
  * business-app 浏览器验收器。
  *
- * 在 1920×1080 与 1366×768 两个独立页面中检查应用壳、IDux 样式、可访问性、布局和网络边界，
- * 随后逐一执行蓝图声明的业务验收场景。
+ * 在 1920×1080 与 1366×768 两个独立页面中执行完整检查，并以 862×623 的工作台
+ * 嵌入视口额外验证滚动所有权，随后逐一执行蓝图声明的业务验收场景。
  */
 import fs from 'node:fs'
 import { chromium, type Browser, type Page } from 'playwright'
@@ -23,6 +23,7 @@ export interface BusinessAppRuntimeValidation {
 /** 单个视口采集的运行时结构和视觉指标。 */
 interface RuntimeAudit {
   appShell: boolean
+  proLayout: boolean
   moduleCount: number
   heading: string
   themeToken: string
@@ -34,8 +35,19 @@ interface RuntimeAudit {
   minControlHeight: number
   nativeInteractiveCount: number
   pageOverflow: boolean
+  documentVerticalOverflow: boolean
+  contentOverflowY: string
+  contentScrollRange: number
+  contentScrollWorks: boolean
   workspaceWidth: number
+  workspaceWithinViewport: boolean
+  navigationVisible: boolean
+  headerVisible: boolean
   visiblePrimaryAction: boolean
+  visibleTaskSurface: boolean
+  enterprisePattern: string
+  declaredStates: string[]
+  collectionContractComplete: boolean
 }
 
 /** 按优先级查找可用 Chromium、Chrome 或 Edge 可执行文件。 */
@@ -108,29 +120,65 @@ async function audit(page: Page): Promise<RuntimeAudit> {
     }
     const shell = document.querySelector('.business-app-shell')
     const workspace = document.querySelector('.app-workspace')
+    const proLayout = document.querySelector('.ix-pro-layout')
+    const navigation = document.querySelector('.ix-pro-layout-sider .ix-menu, .ix-pro-layout-header .ix-menu')
+    const appHeader = document.querySelector('.ix-pro-layout-header')
     const heading = document.querySelector('h1')
-    const primary = document.querySelector('.ix-button-primary')
+    const button = document.querySelector('.ix-button')
+    const primary = document.querySelector('.view-heading .ix-button-primary')
     const card = document.querySelector('.ix-card')
+    const taskSurface = document.querySelector('.data-card, .form-card, .detail-card, .content-section')
+    const patternedView = document.querySelector('[data-enterprise-pattern]')
+    const collectionView = document.querySelector('[data-pattern^="collection-"]')
     const bodyStyle = getComputedStyle(document.body)
     const headingStyle = heading ? getComputedStyle(heading) : null
     const rootStyle = getComputedStyle(document.documentElement)
     const controls = [...document.querySelectorAll('.view-heading .ix-button, .app-navigation .ix-button, .top-navigation .ix-button, .ix-input, .ix-select-selector')]
     const heights = controls.map(item => item.getBoundingClientRect().height).filter(value => value > 0)
+    const workspaceRect = workspace?.getBoundingClientRect()
+    const content = document.querySelector('.ix-pro-layout-content')
+    const contentStyle = content ? getComputedStyle(content) : null
+    const contentScrollRange = content ? Math.max(0, content.scrollHeight - content.clientHeight) : 0
+    let contentScrollWorks = Boolean(content)
+    if (content && contentScrollRange > 1) {
+      const previousScrollTop = content.scrollTop
+      content.scrollTop = Math.min(64, contentScrollRange)
+      contentScrollWorks = content.scrollTop > previousScrollTop
+      content.scrollTop = previousScrollTop
+    }
     return {
       appShell: Boolean(shell),
+      proLayout: Boolean(proLayout),
       moduleCount: Number(shell?.getAttribute('data-module-count') || '0'),
       heading: heading?.textContent?.trim() || '',
       themeToken: rootStyle.getPropertyValue('--ix-color-bg').trim(),
-      buttonToken: primary ? getComputedStyle(primary).getPropertyValue('--ix-button-height-md').trim() : '',
+      buttonToken: button ? getComputedStyle(button).getPropertyValue('--ix-button-height-md').trim() : '',
       cardToken: card ? getComputedStyle(card).getPropertyValue('--ix-card-padding-size-md').trim() : '',
       bodyBackground: bodyStyle.backgroundColor,
       headingContrast: headingStyle ? contrast(headingStyle.color, bodyStyle.backgroundColor) : 0,
       headingFontSize: headingStyle ? number(headingStyle.fontSize) : 0,
       minControlHeight: heights.length ? Math.min(...heights) : 0,
-      nativeInteractiveCount: document.querySelectorAll('button:not(.ix-button), select, textarea:not(.ix-textarea-inner), input:not(.ix-input-inner)').length,
+      nativeInteractiveCount: [...document.querySelectorAll('button, select, textarea, input')].filter(element =>
+        !element.closest('.ix-button, .ix-input, .ix-select, .ix-textarea, .ix-pagination, .ix-checkbox, .ix-radio, .ix-modal')
+      ).length,
       pageOverflow: document.documentElement.scrollWidth > innerWidth + 1,
-      workspaceWidth: workspace?.getBoundingClientRect().width || 0,
-      visiblePrimaryAction: visible(primary)
+      documentVerticalOverflow: document.documentElement.scrollHeight > innerHeight + 1,
+      contentOverflowY: contentStyle?.overflowY || '',
+      contentScrollRange,
+      contentScrollWorks,
+      workspaceWidth: workspaceRect?.width || 0,
+      workspaceWithinViewport: Boolean(workspaceRect && workspaceRect.left >= -1 && workspaceRect.right <= innerWidth + 1),
+      navigationVisible: visible(navigation),
+      headerVisible: visible(appHeader),
+      visiblePrimaryAction: visible(primary),
+      visibleTaskSurface: visible(taskSurface),
+      enterprisePattern: patternedView?.getAttribute('data-enterprise-pattern') || '',
+      declaredStates: (collectionView?.getAttribute('data-states') || '').split(',').filter(Boolean),
+      collectionContractComplete: !collectionView || Boolean(
+        visible(collectionView.querySelector('[data-testid="record-search"]')) &&
+        visible(collectionView.querySelector('[data-testid="refresh-collection"]')) &&
+        visible(collectionView.querySelector('.ix-pagination'))
+      )
     }
   })()`) as Promise<RuntimeAudit>
 }
@@ -188,6 +236,13 @@ async function executeStep(page: Page, step: BusinessAppScenarioStep, moduleId: 
     case 'confirm-action': {
       const confirm = page.locator('[data-testid="confirm-action"]').first()
       if (!await confirm.isVisible().catch(() => false)) throw new Error('高风险操作没有出现二次确认')
+      const modalSemantics = await confirm.evaluate(element => Boolean(
+        element.closest('.ix-modal') && element.closest('[role="dialog"], .ix-modal')
+      ))
+      const maskVisible = await page.locator('.ix-mask').first().isVisible().catch(() => false)
+      if (!modalSemantics || !maskVisible) {
+        throw new Error('高风险操作没有使用带蒙层的 IDux 模态确认')
+      }
       await confirm.click()
       return
     }
@@ -263,8 +318,8 @@ export async function validateBuiltBusinessApp(
   let smallScreenshot: Buffer | null = null
   try {
     const expectedOrigin = new URL(url).origin
-    const audits: Array<{ viewport: '1920x1080' | '1366x768'; audit: RuntimeAudit; responseOk: boolean }> = []
-    for (const viewport of ['1920x1080', '1366x768'] as const) {
+    const audits: Array<{ viewport: '1920x1080' | '1366x768' | '862x623'; audit: RuntimeAudit; responseOk: boolean }> = []
+    for (const viewport of ['1920x1080', '1366x768', '862x623'] as const) {
       const [width, height] = viewport.split('x').map(Number)
       const page = await browser.newPage({ viewport: { width, height } })
       collectRuntimeSignals(page, expectedOrigin, errors, externalRequests)
@@ -273,20 +328,42 @@ export async function validateBuiltBusinessApp(
       const result = await audit(page)
       const shot = await page.screenshot({ type: 'png', fullPage: false })
       if (viewport === '1920x1080') screenshot = shot
-      else smallScreenshot = shot
+      else if (viewport === '1366x768') smallScreenshot = shot
       audits.push({ viewport, audit: result, responseOk: Boolean(response?.ok()) })
       await page.close()
     }
     const large = audits[0]!.audit
     const small = audits[1]!.audit
+    const embedded = audits[2]!.audit
     const gates: ValidationGateResult[] = [
-      gate('runtime-http', '双视口都可以正常加载', audits.every(item => item.responseOk), '至少一个视口无法加载'),
+      gate('runtime-http', '完整与嵌入视口都可以正常加载', audits.every(item => item.responseOk), '至少一个视口无法加载'),
       gate('runtime-application-shell', '呈现完整业务应用结构', large.appShell && large.moduleCount > 0 && large.heading.length > 0, '缺少应用壳、业务模块或视图标题'),
+      gate('runtime-pro-layout', '使用 IDux 高级布局承载应用导航', large.proLayout && large.navigationVisible && large.headerVisible, '缺少可见的 IxProLayout 顶栏或模块导航'),
+      gate(
+        'runtime-enterprise-pattern',
+        'B 端页面模式与集合状态契约真实呈现',
+        Boolean(large.enterprisePattern) &&
+          large.collectionContractComplete &&
+          ['ready', 'empty', 'no-results', 'error'].every(state => large.declaredStates.includes(state)),
+        `页面模式=${large.enterprisePattern || '未声明'}；集合工具=${large.collectionContractComplete ? '完整' : '缺失'}；状态=${large.declaredStates.join('、') || '未声明'}`
+      ),
       gate('runtime-idux-styles', 'IDux 主题与组件样式真实生效', Boolean(large.themeToken && large.buttonToken && large.cardToken), '缺少 IDux 主题、按钮或卡片设计变量'),
       gate('visual-color-contrast', '标题与背景对比清晰', large.bodyBackground !== 'rgba(0, 0, 0, 0)' && large.headingContrast >= 4.5, `背景 ${large.bodyBackground}，对比度 ${large.headingContrast.toFixed(2)}:1`),
       gate('idux-interactive-components', '交互控件没有退化为原生组件', large.nativeInteractiveCount === 0, `检测到 ${large.nativeInteractiveCount} 个原生交互控件`),
-      gate('large-screen-layout', '1920×1080 应用布局完整', !large.pageOverflow && large.workspaceWidth >= 1100 && large.headingFontSize >= 28, `页面溢出：${large.pageOverflow ? '是' : '否'}；工作区 ${large.workspaceWidth}px；标题 ${large.headingFontSize}px`),
-      gate('small-screen-layout', '1366×768 应用布局可用', !small.pageOverflow && small.workspaceWidth >= 900 && small.headingFontSize >= 24 && small.minControlHeight >= 28 && small.visiblePrimaryAction, `页面溢出：${small.pageOverflow ? '是' : '否'}；工作区 ${small.workspaceWidth}px；标题 ${small.headingFontSize}px；最小控件 ${small.minControlHeight}px`)
+      gate('large-screen-layout', '1920×1080 应用布局完整', !large.pageOverflow && large.workspaceWithinViewport && large.workspaceWidth >= 1100 && large.headingFontSize >= 28, `页面溢出：${large.pageOverflow ? '是' : '否'}；内容越界：${large.workspaceWithinViewport ? '否' : '是'}；工作区 ${large.workspaceWidth}px；标题 ${large.headingFontSize}px`),
+      gate('small-screen-layout', '1366×768 应用布局可用', !small.pageOverflow && small.workspaceWithinViewport && small.navigationVisible && small.headerVisible && small.workspaceWidth >= 900 && small.headingFontSize >= 24 && small.minControlHeight >= 28 && (small.visiblePrimaryAction || small.visibleTaskSurface), `页面溢出：${small.pageOverflow ? '是' : '否'}；内容越界：${small.workspaceWithinViewport ? '否' : '是'}；工作区 ${small.workspaceWidth}px；标题 ${small.headingFontSize}px；最小控件 ${small.minControlHeight}px`),
+      gate(
+        'embedded-workbench-scroll',
+        '工作台嵌入视口完整且可滚动',
+        !embedded.pageOverflow
+          && !embedded.documentVerticalOverflow
+          && embedded.workspaceWithinViewport
+          && embedded.navigationVisible
+          && embedded.headerVisible
+          && ['auto', 'scroll'].includes(embedded.contentOverflowY)
+          && embedded.contentScrollWorks,
+        `横向溢出：${embedded.pageOverflow ? '是' : '否'}；根文档纵向溢出：${embedded.documentVerticalOverflow ? '是' : '否'}；内容区 overflow-y=${embedded.contentOverflowY || '未设置'}；可滚动距离 ${embedded.contentScrollRange}px；滚动验证：${embedded.contentScrollWorks ? '通过' : '失败'}`
+      )
     ]
     for (const scenario of scenarios) {
       for (const viewport of scenario.viewportProfiles) {

@@ -65,12 +65,16 @@ async function buildCase(
 /** 串行执行全部业务应用结构、安全、增量与浏览器验收用例。 */
 async function main(): Promise<void> {
   skillRegistry.load()
+  const businessSkills = skillRegistry.forArtifact('business-app').map(skill => skill.id)
+  if (!businessSkills.includes('idux-enterprise-design')) {
+    throw new Error('Skill Registry 没有注册 idux-enterprise-design')
+  }
 
   const escaped = renderBlueprintSource({
-    schemaVersion: 2,
+    schemaVersion: 3,
     app: { id: 'escape-test', name: '</script><script>alert(1)</script>', description: '<img src=x onerror=alert(1)>', theme: 'light' },
-    shell: { navigation: 'side', homeModuleId: 'safe-module' },
-    modules: [{ id: 'safe-module', name: '安全', description: '安全', icon: 'appstore', navigationOrder: 10, defaultViewId: 'safe-list', views: [{ id: 'safe-list', name: '列表', title: '列表', description: '列表', kind: 'list', entityId: 'safe-entity', columns: ['recordId'], fields: [], summaries: [], primaryActions: [], rowActions: [], sections: [] }], entityIds: ['safe-entity'], workflowIds: [], requirementIds: ['req-safe'] }],
+    shell: { navigation: 'side', homeModuleId: 'safe-module', density: 'comfortable' },
+    modules: [{ id: 'safe-module', name: '安全', description: '安全', icon: 'appstore', navigationOrder: 10, defaultViewId: 'safe-list', views: [{ id: 'safe-list', name: '列表', title: '列表', description: '列表', kind: 'list', experience: { pattern: 'collection-table', density: 'compact', contentWidth: 'full', responsivePriority: ['recordId', 'actions'], states: ['loading', 'ready', 'empty', 'no-results', 'error', 'permission-denied'], collection: { selection: 'single', filtering: 'text', pagination: 'pages', contextualDetail: false } }, entityId: 'safe-entity', columns: ['recordId'], fields: [], summaries: [], primaryActions: [], rowActions: [], sections: [] }], entityIds: ['safe-entity'], workflowIds: [], requirementIds: ['req-safe'] }],
     entities: [{ id: 'safe-entity', name: '安全记录', idField: 'recordId', fields: [{ key: 'recordId', label: 'ID', type: 'text', required: true }], records: [{ recordId: 'demo-1' }] }],
     workflows: [], dataContracts: [{ id: 'safe-data', entityId: 'safe-entity', mode: 'mock', operations: ['list'] }], permissions: [], acceptanceScenarios: [], requirementCoverage: { 'req-safe': ['view:safe-list'] }
   })

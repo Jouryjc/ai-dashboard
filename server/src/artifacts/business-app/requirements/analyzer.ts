@@ -19,6 +19,7 @@ import type {
   BusinessAppRequirementDecision
 } from '../domain/model'
 import { validateRequirementContract } from '../domain/validation'
+import { loadBusinessAppEnterpriseDesign } from '../generation/enterprise-design'
 
 /** 一轮需求分析的结果：需求契约，以及至多一个待回答问题。 */
 export interface BusinessAppRequirementAnalysis {
@@ -215,7 +216,7 @@ function connectorQuestion(): BusinessAppClarificationTurn {
     allowCustomInput: true,
     options: [
       option('contract-instead', '改为接口契约交付', '保留完整交互和接口边界，本次不连接真实系统', true, '不会因缺少授权连接器阻塞业务验证'),
-      option('provide-connector', '提供已配置连接器', '在自定义回答中填写 connector:连接器ID，继续真实系统安全检查', false, null, 'high')
+      option('safe-mock-instead', '改用安全演示数据', '使用明确标识的虚构数据完成完整交互，本次不连接真实系统')
     ]
   }
 }
@@ -429,6 +430,9 @@ function normalizeModelContract(
       const title = typeof optionValue.title === 'string' ? optionValue.title.trim().slice(0, 40) : ''
       const consequence = typeof optionValue.consequence === 'string' ? optionValue.consequence.trim().slice(0, 140) : ''
       if (!title || !consequence) return []
+      // 选项必须直接回答当前问题；“描述/填写/选择模板”等下一步动作会被 UI
+      // 当成最终答案，造成用户点过确认后仍然缺少真正的业务语义。
+      if (/^(?:描述|填写|输入|提供|补充|说明)|模板|稍后|后续再/u.test(`${title} ${consequence}`)) return []
       return [option(
         typeof optionValue.id === 'string' ? normalizeModuleId(optionValue.id) : `option-${index + 1}`,
         title,
@@ -491,12 +495,16 @@ export async function analyzeBusinessAppRequirement(
     return deterministic
   }
   try {
+    const enterpriseDesign = loadBusinessAppEnterpriseDesign()
     const reply = await gw.chatCompletion(options.settings, {
       role: 'planner',
       temperature: 0,
       maxTokens: 1800,
       messages: [
-        { role: 'system', content: prompt('business-app-requirements.system') },
+        {
+          role: 'system',
+          content: `${prompt('business-app-requirements.system')}\n\n以下是 idux-enterprise-design 的需求阶段约束：\n${enterpriseDesign.requirementsGuidance}`
+        },
         {
           role: 'user',
           content: prompt('business-app-requirements.user', {

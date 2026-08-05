@@ -5,7 +5,7 @@ description: Design, generate, review, and repair complete IDux Vue business app
 
 # IDux Style for Business Applications
 
-Build one coherent business application, not a collection of decorative pages. Pair this skill with `idux-cli`: `idux-cli` is the versioned source of component API truth; this skill governs application composition, task flow, visual language, viewport behavior, experience, and safety.
+Build one coherent business application, not a collection of decorative pages. Pair this skill with `idux-enterprise-design` and `idux-cli`: the enterprise skill governs information architecture, page patterns, actions and task states; `idux-cli` is the versioned component API truth; this skill owns visual foundations, theme assets and shell CSS.
 
 ## Start from the application contract
 
@@ -27,9 +27,13 @@ Read [application-architecture.md](references/application-architecture.md) for s
 ## Preserve IDux identity
 
 - Use IDux controls and primary surfaces; do not imitate them with native controls.
+- Build the application shell with `IxProLayout`; treat `idux-setup` as a structural reference only and keep the target project's exact dependency versions.
+- Keep `App.vue` as a composition root. Put the shell, feedback, view renderers and state/actions in independent components or composables so modules can evolve without growing one monolith.
 - Load `@idux/components/index.full.css` plus exactly one complete official theme.
+- When Pro components are used, also load `@idux/pro/index.css` and the matching Pro full theme.
 - Use semantic `--ix-*` tokens and the 8px spacing rhythm.
 - Keep one dominant action per view. Use verbs, precise labels, visible loading/error/success states, and confirmation for destructive or externally visible operations.
+- Use `IxModal` with `type="confirm"` for destructive actions. Do not insert a confirmation card into the page content flow.
 - Keep navigation, breadcrumbs, titles, content surfaces, and feedback consistent across modules.
 
 ## Enforce the desktop viewport contract
@@ -38,6 +42,7 @@ Read [application-architecture.md](references/application-architecture.md) for s
 - Small profile: `1366×768`.
 - Both remain desktop business applications. Reduce whitespace and density deliberately at the small profile; do not collapse into a phone UI.
 - Never allow page-level horizontal overflow. Complex tables may scroll inside their own surface while identity, state, key fields, and operations remain available.
+- In embedded workbench previews, `html/body/#app` and ProLayout must stay within the iframe viewport. The ProLayout content region owns vertical scrolling; never let a growing page escape behind an `overflow: hidden` preview frame.
 
 ## Screenshot-driven applications
 

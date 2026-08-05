@@ -38,9 +38,11 @@ The controlled generated project uses pre-generated static variables. Import str
 ```ts
 import '@idux/components/index.full.css'
 import '@idux/components/default.full.css'
+import '@idux/pro/index.css'
+import '@idux/pro/default.full.css'
 ```
 
-For a reliably identified dark reference page, replace `default.full.css` with `dark.full.css`; never load both themes together.
+For a reliably identified dark reference page, replace both Components and Pro `default.full.css` imports with `dark.full.css`; never load both themes together.
 
 ## Page hierarchy
 

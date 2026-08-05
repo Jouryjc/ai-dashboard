@@ -24,6 +24,32 @@ export type BusinessAppViewKind =
   | 'detail'
   | 'custom'
 
+/** 通用 B 端页面模式；渲染器据此选择任务结构而不是套用固定列表模板。 */
+export type BusinessAppViewPattern =
+  | 'service-dashboard'
+  | 'collection-table'
+  | 'collection-cards'
+  | 'collection-split'
+  | 'object-details'
+  | 'object-details-tabs'
+  | 'object-details-hub'
+  | 'create-single-page'
+  | 'create-multi-step'
+  | 'edit-full-page'
+  | 'edit-inline'
+  | 'workflow-queue'
+  | 'settings'
+  | 'custom-task'
+
+/** 页面在不同数据和权限阶段需要显式呈现的状态。 */
+export type BusinessAppViewState =
+  | 'loading'
+  | 'ready'
+  | 'empty'
+  | 'no-results'
+  | 'error'
+  | 'permission-denied'
+
 /** 用户可执行操作的语义类型。 */
 export type BusinessAppActionKind =
   | 'navigate'
@@ -157,6 +183,23 @@ export interface BusinessAppActionDefinition {
   risk: 'low' | 'medium' | 'high'
   requiresConfirmation: boolean
   requiredPermission?: string
+  scope: 'global' | 'contextual' | 'bulk'
+  expectedResult: string
+}
+
+/** 页面模式、密度、滚动和状态策略，是生成与视觉验收共同消费的呈现契约。 */
+export interface BusinessAppViewExperience {
+  pattern: BusinessAppViewPattern
+  density: 'compact' | 'comfortable' | 'spacious'
+  contentWidth: 'full' | 'contained'
+  responsivePriority: string[]
+  states: BusinessAppViewState[]
+  collection?: {
+    selection: 'none' | 'single' | 'multiple'
+    filtering: 'none' | 'text' | 'property'
+    pagination: 'none' | 'pages' | 'progressive'
+    contextualDetail: boolean
+  }
 }
 
 /** 一个可导航、可验收的业务视图。 */
@@ -166,6 +209,7 @@ export interface BusinessAppViewDefinition {
   title: string
   description: string
   kind: BusinessAppViewKind
+  experience: BusinessAppViewExperience
   entityId?: string
   columns: string[]
   fields: string[]
@@ -257,7 +301,7 @@ export interface BusinessAppAcceptanceScenario {
 
 /** 完整业务应用的可执行蓝图，是生成、验证和增量开发的事实来源。 */
 export interface BusinessApplicationBlueprint {
-  schemaVersion: 2
+  schemaVersion: 3
   app: {
     id: string
     name: string
@@ -267,6 +311,7 @@ export interface BusinessApplicationBlueprint {
   shell: {
     navigation: 'side' | 'top'
     homeModuleId: string
+    density: 'compact' | 'comfortable'
   }
   modules: BusinessAppModuleDefinition[]
   entities: BusinessAppEntityDefinition[]

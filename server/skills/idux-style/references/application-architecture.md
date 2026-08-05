@@ -2,7 +2,9 @@
 
 ## Application shell
 
-The shell owns brand context, module navigation, current-module state, breadcrumbs, data-mode disclosure, and global feedback. Side navigation is the default for several modules; top navigation is appropriate for a small, shallow application. Navigation must always lead to a real module default view.
+The shell owns brand context, module navigation, current-module state, breadcrumbs, data-mode disclosure, and global feedback. Implement it with the version-pinned `IxProLayout`; side/mixin navigation is the default for several modules, while header navigation is appropriate for a small, shallow application. Navigation must always lead to a real module default view.
+
+`App.vue` is only the composition root and provider boundary. Generate the shell, view heading, overview/list/form/detail renderers, destructive-action modal, and runtime state controller as separate files. A valid blueprint is not permission to collapse the implementation into one SFC.
 
 ## Modules and views
 
@@ -16,7 +18,7 @@ A module groups one cohesive business responsibility. Each module declares its e
 
 ## Actions and workflows
 
-Actions must map to navigation, mutation, or a workflow transition. Destructive actions have high risk and explicit confirmation. State transitions declare valid source states, target state, permission, confirmation behavior, and an acceptance outcome.
+Actions must map to navigation, mutation, or a workflow transition. Destructive actions have high risk and explicit confirmation through an `IxModal` confirm dialog with object identity, impact text, cancel, and a danger-styled confirm action. Inline cards or banners do not satisfy this boundary. State transitions declare valid source states, target state, permission, confirmation behavior, and an acceptance outcome.
 
 ## Data modes
 

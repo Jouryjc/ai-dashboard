@@ -91,7 +91,7 @@ shots/<project>/...
   -> RequirementContract（clarifying | ready）
   -> Blueprint Planner
   -> ApplicationBlueprint + ChangePlan
-  -> idux-cli 组件证据 + idux-style 设计证据
+  -> idux-enterprise-design B 端模式 + idux-cli 组件证据 + idux-style 视觉资产
   -> Schema Renderer / 受控项目草稿
   -> 静态准入 + Vite 构建
   -> 双视口任务场景 + 视觉复核 + 网络审计
@@ -104,7 +104,7 @@ shots/<project>/...
 - `domain/`：可序列化领域模型和跨引用校验。
 - `requirements/`：确定性优先的逐问需求分析和敏感信息脱敏。
 - `planning/`：确定性安全基线、模型增强、目标模块边界检查。
-- `generation/`：IDux 设计系统证据与 Schema 驱动运行时。
+- `generation/`：B 端模式、IDux 组件/样式证据与 Schema 驱动运行时。
 - `adapter.ts`：文件、契约、依赖、证据和蓝图完整性门禁。
 - `builder.ts`：路径、体积、导入、API、URL、凭据检查及受控构建。
 - `validator.ts`：双视口浏览器审计和端到端场景执行。

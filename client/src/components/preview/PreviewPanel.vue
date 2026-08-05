@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 中区 · 大屏预览区（UX §4.2 中区）。
- * - 数据大屏与业务应用都按各自逻辑分辨率等比缩放。
+ * - 数据大屏按固定逻辑分辨率等比缩放；业务应用使用工作区真实尺寸响应式渲染。
  * - 三种状态（强制）：
  *   empty    无任何版本 → 占位引导「在左侧描述你想要的大屏」
  *   building 构建中 → 旧版本不清空 + 半透明遮罩「正在生成新版本…」
@@ -9,7 +9,7 @@
  * - 预览内容用 <iframe> 加载 session.previewUrl（public/preview/ 下的 mock 产物）。
  * 数据源：useSessionStore（previewState / previewUrl / resolution / setResolution）。
  */
-import { computed, onBeforeUnmount, ref, toRef, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, toRef, watch, type CSSProperties } from 'vue'
 import { useSessionStore } from '../../stores/session'
 import type { PreviewResolution } from '../../types'
 import { RESOLUTION_LABEL, useScaleFit } from './useScaleFit'
@@ -17,6 +17,15 @@ import AppIcon from '../common/AppIcon.vue'
 
 const session = useSessionStore()
 const { containerRef, frameStyle } = useScaleFit(toRef(session, 'resolution'))
+/**
+ * 大屏需要保留固定逻辑画布；业务应用则必须占满真实工作区，避免把桌面应用
+ * 等比压缩成不可交互的缩略图。目标分辨率由生成验收覆盖，不在交互预览里模拟。
+ */
+const previewFrameStyle = computed<CSSProperties>(() =>
+  session.artifactKind === 'business-app'
+    ? { width: '100%', height: '100%' }
+    : frameStyle.value
+)
 
 /* ---------- ⟳ 刷新：强制重载 iframe ---------- */
 const refreshKey = ref(0)
@@ -26,11 +35,7 @@ function refresh(): void {
 
 /* ---------- 分辨率切换器 ---------- */
 const resMenuOpen = ref(false)
-const resolutions = computed<PreviewResolution[]>(() =>
-  session.artifactKind === 'business-app'
-    ? ['1920x1080', '1366x768']
-    : ['1920x1080', '2560x1440']
-)
+const resolutions: PreviewResolution[] = ['1920x1080', '2560x1440']
 async function pickResolution(r: PreviewResolution): Promise<void> {
   resMenuOpen.value = false
   await session.setResolution(r)
@@ -93,10 +98,10 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
         </div>
       </div>
 
-      <!-- 状态一/二：有版本 → 等比缩放的逻辑画布 -->
+      <!-- 状态一/二：有版本 → 大屏缩放固定画布，业务应用填满真实工作区 -->
       <div
         v-else-if="session.previewUrl"
-        :style="frameStyle"
+        :style="previewFrameStyle"
         class="shrink-0 overflow-hidden rounded-card bg-ink shadow-card"
       >
         <!-- key 含地址与刷新计数：换版本 / 点刷新都会重载；fade 过渡实现淡入 -->
@@ -150,6 +155,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
       <div class="absolute left-1/2 top-4 z-20 flex -translate-x-1/2 items-center gap-1 rounded-card border border-line bg-card p-1 shadow-card">
         <div class="relative">
           <button
+            v-if="session.artifactKind === 'dashboard'"
             type="button"
             class="flex h-7 items-center gap-1 rounded-control px-2 text-xs text-ink-secondary hover:bg-panel hover:text-ink"
             :aria-expanded="resMenuOpen"
@@ -168,7 +174,7 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
             @click="resMenuOpen = false"
           ></button>
           <ul
-            v-if="resMenuOpen"
+            v-if="session.artifactKind === 'dashboard' && resMenuOpen"
             class="absolute left-1/2 z-20 mt-1 w-36 -translate-x-1/2 overflow-hidden rounded-card border border-line bg-card py-1 shadow-pop"
           >
             <li v-for="r in resolutions" :key="r">
@@ -183,6 +189,12 @@ onBeforeUnmount(() => window.clearTimeout(toastTimer))
               </button>
             </li>
           </ul>
+          <span
+            v-if="session.artifactKind === 'business-app'"
+            class="flex h-7 items-center px-2 text-xs text-ink-secondary"
+          >
+            响应式预览
+          </span>
         </div>
         <button
           type="button"

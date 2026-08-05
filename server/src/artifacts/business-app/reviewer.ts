@@ -6,16 +6,19 @@
 import * as gw from '../../gateway'
 import { prompt } from '../../prompts'
 import type { ModelSettings, ValidationGateResult } from '../../wire'
+import { loadBusinessAppEnterpriseDesign } from './generation/enterprise-design'
 
 /** 视觉问题的受控分类。 */
 export type BusinessAppVisualCategory =
   | 'idux-style'
+  | 'enterprise-pattern'
   | 'hierarchy'
   | 'readability'
   | 'density'
   | 'responsive'
   | 'content'
   | 'interaction'
+  | 'state-coverage'
 
 /** 单条视觉问题及其阻断级别。 */
 export interface BusinessAppVisualFinding {
@@ -33,12 +36,14 @@ export interface BusinessAppVisualReview {
 
 const CATEGORIES = new Set<BusinessAppVisualCategory>([
   'idux-style',
+  'enterprise-pattern',
   'hierarchy',
   'readability',
   'density',
   'responsive',
   'content',
-  'interaction'
+  'interaction',
+  'state-coverage'
 ])
 
 /** 解析并校验视觉模型结论，拒绝未知分类和自相矛盾的 verdict。 */
@@ -110,6 +115,7 @@ export async function reviewBusinessAppVisual(
     )
   }
   try {
+    const enterpriseDesign = loadBusinessAppEnterpriseDesign()
     const content: Array<
       { type: 'text'; text: string } |
       { type: 'image_url'; image_url: { url: string } }
@@ -153,7 +159,10 @@ export async function reviewBusinessAppVisual(
       temperature: 0,
       maxTokens: 1200,
       messages: [
-        { role: 'system', content: prompt('business-app-review.system') },
+        {
+          role: 'system',
+          content: `${prompt('business-app-review.system')}\n\n以下是 idux-enterprise-design 的视觉验收合同：\n${enterpriseDesign.reviewGuidance}`
+        },
         { role: 'user', content }
       ]
     })
