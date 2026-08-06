@@ -119,6 +119,7 @@ LoopEngine 只认识节点、边、guard、状态、输出引用、挂起标签�
 - `onCommit` 只在流程真正完成时触发。
 - `GraphCheckpoint` 不保存包含函数的 FlowDefinition；恢复时绑定服务端可信定义。
 - `flowVersion` 在拓扑或检查点语义变化时递增。
+- business-app 修复耗尽由 Loop 的显式终止状态持久化，不按已执行策略数量推断；同一 `flowVersion` 对相同需求最多重新生成一次，避免恢复卡片形成无限循环。
 - 恢复前校验节点集合、当前指针、状态、output、refs 和 awaiting。
 
 ## 状态与事件

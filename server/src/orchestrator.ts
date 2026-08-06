@@ -57,6 +57,15 @@ import type {
   BusinessAppReferenceEvidence
 } from './artifacts/business-app/reference'
 import { repairBusinessAppDraft } from './artifacts/business-app/repairer'
+import {
+  BUSINESS_APP_REPAIR_EXHAUSTED_REASON,
+  businessAppRecoveryMode,
+  normalizeBusinessAppRepairStatus,
+  normalizeBusinessAppRepairStrategies,
+  type BusinessAppRecoveryMode,
+  type BusinessAppRepairStatus,
+  type BusinessAppRepairStrategy
+} from './artifacts/business-app/repair-policy'
 import { reviewBusinessAppVisual } from './artifacts/business-app/reviewer'
 import { validateBuiltBusinessApp } from './artifacts/business-app/validator'
 import { skillRegistry } from './skills/registry'
@@ -214,8 +223,14 @@ interface BusinessAppProjectState {
   activeRequirement: string | null
   candidateRevisionId: string | null
   unresolved: boolean
-  strategiesTried: string[]
+  strategiesTried: BusinessAppRepairStrategy[]
+  /** Loop 明确报告是否还有自主修复路径，禁止再从策略数量推断。 */
+  repairStatus: BusinessAppRepairStatus
+  /** 同一 flowVersion 只允许一次全量重生成，避免相同输入无限随机重跑。 */
+  lastRegenerationFlowVersion: number | null
   lastFailure: string | null
+  /** 当前需求决策作用域起点，阻止旧需求的澄清回答在服务重启后串入新需求。 */
+  decisionScopeStartedAt: number
   decisions: BusinessAppRequirementDecision[]
   requirementContract: BusinessAppRequirementContract | null
   blueprint: BusinessApplicationBlueprint | null
@@ -3117,9 +3132,25 @@ function isBusinessAppStatusQuestion(text: string): boolean {
   return BUSINESS_APP_STATUS_QUESTION.test(text.trim())
 }
 
+/** business-app 流程语义变化时递增；同时作为重新生成资格的实现版本。 */
+const BUSINESS_APP_FLOW_VERSION = 3
+
 /** 动作式按钮不是问题答案；旧会话中的这类选择不能继续污染需求契约。 */
 function isSemanticBusinessAppAnswer(answer: string): boolean {
   return !/^(?:描述|填写|输入|提供|补充|说明)|^从.*模板/u.test(answer.trim())
+}
+
+/** 同一需求作用域内每个问题只保留最后一次有效决定，用户改答时以后者为准。 */
+function upsertBusinessAppDecision(
+  state: BusinessAppProjectState,
+  decision: BusinessAppRequirementDecision
+): void {
+  state.decisions = [
+    ...state.decisions.filter(item => item.questionId !== decision.questionId),
+    decision
+  ]
+    .sort((left, right) => left.createdAt - right.createdAt)
+    .slice(-30)
 }
 
 /** 获取并补齐旧会话中可能缺少字段的 business-app 状态。 */
@@ -3130,7 +3161,10 @@ function getBusinessAppState(rt: Runtime): BusinessAppProjectState {
     candidateRevisionId: null,
     unresolved: false,
     strategiesTried: [],
+    repairStatus: 'available',
+    lastRegenerationFlowVersion: null,
     lastFailure: null,
+    decisionScopeStartedAt: 0,
     decisions: [],
     requirementContract: null,
     blueprint: null,
@@ -3149,23 +3183,45 @@ function getBusinessAppState(rt: Runtime): BusinessAppProjectState {
   rt.s.businessAppState.pendingClarification ??= null
   rt.s.businessAppState.checkpoint ??= null
   const state = rt.s.businessAppState
+  state.strategiesTried = normalizeBusinessAppRepairStrategies(state.strategiesTried)
+  state.repairStatus = normalizeBusinessAppRepairStatus(state)
+  state.lastRegenerationFlowVersion = Number.isInteger(state.lastRegenerationFlowVersion)
+    ? state.lastRegenerationFlowVersion
+    : null
+  if (!Number.isFinite(state.decisionScopeStartedAt) || state.decisionScopeStartedAt < 0) {
+    state.decisionScopeStartedAt = 0
+  }
   // 兼容旧会话：过去会把“发生了什么”一类状态询问误写成当前需求。
   if (state.activeRequirement && isBusinessAppStatusQuestion(state.activeRequirement)) {
     state.activeRequirement = [...state.requirements]
       .reverse()
       .find(item => !isBusinessAppStatusQuestion(item)) ?? null
   }
+  if (state.decisionScopeStartedAt === 0 && state.activeRequirement) {
+    state.decisionScopeStartedAt = [...rt.s.messages]
+      .reverse()
+      .find(message => message.kind === 'user' && message.text.trim() === state.activeRequirement)?.createdAt ?? 0
+  }
   // 兼容旧会话：新一轮误路由曾清空结构化决策；已回答澄清卡片是可恢复事实源。
-  state.decisions = state.decisions.filter(item =>
-    item.source === 'custom' || isSemanticBusinessAppAnswer(item.answer)
-  )
+  const scopedDecisions = state.decisions
+    .filter(item =>
+      (item.source === 'custom' || isSemanticBusinessAppAnswer(item.answer)) &&
+      (state.decisionScopeStartedAt === 0 || item.createdAt >= state.decisionScopeStartedAt)
+    )
+    .sort((left, right) => left.createdAt - right.createdAt)
+  state.decisions = []
+  for (const decision of scopedDecisions) upsertBusinessAppDecision(state, decision)
   const decidedTopics = new Set(state.decisions.map(item => item.questionId))
   for (const message of rt.s.messages) {
-    if (message.kind !== 'clarification' || !message.answered) continue
+    if (
+      message.kind !== 'clarification' ||
+      !message.answered ||
+      (state.decisionScopeStartedAt > 0 && message.createdAt < state.decisionScopeStartedAt)
+    ) continue
     for (const question of message.questions) {
       const answer = question.answer?.trim()
       if (!answer || !isSemanticBusinessAppAnswer(answer) || decidedTopics.has(question.id)) continue
-      state.decisions.push({
+      upsertBusinessAppDecision(state, {
         id: `decision-${message.id}-${question.id}`,
         questionId: question.id,
         question: question.question,
@@ -3176,7 +3232,6 @@ function getBusinessAppState(rt: Runtime): BusinessAppProjectState {
       decidedTopics.add(question.id)
     }
   }
-  state.decisions = state.decisions.slice(-30)
   return state
 }
 
@@ -3200,6 +3255,7 @@ function effectiveBusinessAppRequest(rt: Runtime, request: string): string {
     if (!state.requirements.includes(requirement)) state.requirements.push(requirement)
     state.requirements = state.requirements.slice(-20)
     state.activeRequirement = requirement
+    state.decisionScopeStartedAt = Date.now()
   }
   if (!state.activeRequirement && state.requirements.length > 0) {
     state.activeRequirement = state.requirements[state.requirements.length - 1]
@@ -3258,10 +3314,10 @@ function emitBusinessAppClarification(
   save(rt)
 }
 
-/** 失败恢复选项按策略是否耗尽变化；全新生成仅在自动修复确实耗尽后出现。 */
-function businessAppFailureOptions(exhaustedStrategies: boolean): CardOption[] {
+/** 失败恢复选项只暴露当前真正可执行的下一步。 */
+function businessAppFailureOptions(mode: BusinessAppRecoveryMode): CardOption[] {
   return [
-    ...(!exhaustedStrategies ? [{
+    ...(mode === 'continue-repair' ? [{
       id: 'opt-idux-retry',
       title: '继续自主修复',
       consequence: '保留需求契约、失败候选和验收证据，执行剩余策略',
@@ -3269,15 +3325,15 @@ function businessAppFailureOptions(exhaustedStrategies: boolean): CardOption[] {
       recommendReason: '仍有尚未执行的自主策略',
       riskLevel: 'low' as const,
       autoExecuteAt: null
-    }] : [{
+    }] : mode === 'regenerate' ? [{
       id: 'opt-idux-regenerate',
       title: '按原需求重新生成',
       consequence: '保留已经确认的需求和决策，丢弃失败候选并用当前生成流程重新构建',
       recommended: true,
-      recommendReason: '需求本身已经确认，生成能力或门禁更新后不应要求用户重新回答',
+      recommendReason: '当前流程版本尚未重新生成过，不需要再次回答已经确认的业务边界',
       riskLevel: 'low' as const,
       autoExecuteAt: null
-    }]),
+    }] : []),
     {
       id: 'opt-idux-adjust',
       title: '调整需求',
@@ -3291,12 +3347,57 @@ function businessAppFailureOptions(exhaustedStrategies: boolean): CardOption[] {
       id: 'opt-assist',
       title: '人工协助',
       consequence: '把完整失败轨迹交给支持人员检查',
-      recommended: false,
-      recommendReason: null,
+      recommended: mode === 'terminal',
+      recommendReason: mode === 'terminal' ? '同一流程版本已经完整重生成并复检，继续执行相同输入不会产生新的修复路径' : null,
       riskLevel: 'medium' as const,
       autoExecuteAt: null
     }
   ]
+}
+
+function businessAppFailureTitle(mode: BusinessAppRecoveryMode): string {
+  if (mode === 'continue-repair') return '生成候选仍可继续修复'
+  if (mode === 'regenerate') return '自主修复策略已耗尽，可重新生成一次'
+  return '自主修复已停止，避免重复执行'
+}
+
+/**
+ * 统一呈现失败恢复入口；同一条未处理问题只更新选项，不重复追加确认卡。
+ */
+function presentBusinessAppFailureRecovery(rt: Runtime, state: BusinessAppProjectState): void {
+  const mode = businessAppRecoveryMode(state, BUSINESS_APP_FLOW_VERSION)
+  const options = businessAppFailureOptions(mode)
+  const title = businessAppFailureTitle(mode)
+  const description = state.lastFailure ?? '业务应用候选没有通过质量门禁。'
+  const existing = [...rt.s.messages].reverse().find(
+    (message): message is ProblemMessage => message.kind === 'problem' && message.chosenOptionId === null
+  )
+  const problem: ProblemMessage = existing ?? {
+    kind: 'problem',
+    id: nextId('m'),
+    createdAt: Date.now(),
+    title,
+    description,
+    options,
+    chosenOptionId: null,
+    relatedIssueId: rt.s.issues.at(-1)?.id ?? null
+  }
+  problem.title = title
+  problem.description = description
+  problem.options = options
+  if (existing) updateMessage(rt, problem)
+  else pushMessage(rt, problem)
+  setBlocker(rt, {
+    id: nextId('blk'),
+    type: 'failed',
+    title,
+    description,
+    options,
+    relatedMessageId: problem.id
+  })
+  setStatus(rt, 'blocked')
+  updateDashboard(rt, { status: 'needs_attention' })
+  save(rt)
 }
 
 /** 回答失败状态查询并重新给出可执行恢复入口，不把会话问题送入需求分析器。 */
@@ -3308,34 +3409,11 @@ function handleBusinessAppStatusQuestion(rt: Runtime, text: string): boolean {
     save(rt)
     return true
   }
-  const exhaustedStrategies = state.strategiesTried.length >= 3
-  const options = businessAppFailureOptions(exhaustedStrategies)
   pushAgent(
     rt,
     `上一次不是卡在需求确认，而是生成候选没有通过质量门禁：${state.lastFailure}。已确认的原需求仍然保留。`
   )
-  const problem: ProblemMessage = {
-    kind: 'problem',
-    id: nextId('m'),
-    createdAt: Date.now(),
-    title: exhaustedStrategies ? '生成候选未通过质量门禁' : '生成候选仍可继续修复',
-    description: state.lastFailure,
-    options,
-    chosenOptionId: null,
-    relatedIssueId: rt.s.issues.at(-1)?.id ?? null
-  }
-  pushMessage(rt, problem)
-  setBlocker(rt, {
-    id: nextId('blk'),
-    type: 'failed',
-    title: problem.title,
-    description: problem.description,
-    options,
-    relatedMessageId: problem.id
-  })
-  setStatus(rt, 'blocked')
-  updateDashboard(rt, { status: 'needs_attention' })
-  save(rt)
+  presentBusinessAppFailureRecovery(rt, state)
   return true
 }
 
@@ -3390,24 +3468,34 @@ async function runBusinessAppGeneration(
   attachments: string[]
 ): Promise<void> {
   if (rt.running) return
+  const businessAppState = getBusinessAppState(rt)
+  const resumeCandidate = BUSINESS_APP_CONTINUE_REQUEST.test(request.trim()) && businessAppState.unresolved
+  const regenerateCurrent = BUSINESS_APP_REGENERATE_REQUEST.test(request.trim())
+    && businessAppState.unresolved
+    && Boolean(businessAppState.activeRequirement)
+  if (
+    resumeCandidate &&
+    businessAppRecoveryMode(businessAppState, BUSINESS_APP_FLOW_VERSION) !== 'continue-repair'
+  ) {
+    pushAgent(rt, '这条自主修复路径已经耗尽，我已停止重复执行，并保留原需求、失败证据和候选记录。')
+    presentBusinessAppFailureRecovery(rt, businessAppState)
+    return
+  }
   rt.running = true
   setStatus(rt, 'generating')
   updateDashboard(rt, { status: 'generating' })
   emitPlan(rt, attachments.length > 0 ? BUSINESS_APP_IMAGE_STAGE_TITLES : BUSINESS_APP_STAGE_TITLES)
   emitBusinessAppGraphSkeleton(rt)
 
-  const businessAppState = getBusinessAppState(rt)
-  const resumeCandidate = BUSINESS_APP_CONTINUE_REQUEST.test(request.trim()) && businessAppState.unresolved
-  const regenerateCurrent = BUSINESS_APP_REGENERATE_REQUEST.test(request.trim())
-    && businessAppState.unresolved
-    && Boolean(businessAppState.activeRequirement)
-  if (!resumeCandidate && !regenerateCurrent) {
-    businessAppState.decisions = []
-    businessAppState.requirementContract = null
+  if (!resumeCandidate) {
     businessAppState.pendingClarification = null
     businessAppState.checkpoint = null
     businessAppState.candidateBlueprint = null
     businessAppState.candidateChangePlan = null
+    if (!regenerateCurrent) {
+      businessAppState.decisions = []
+      businessAppState.requirementContract = null
+    }
   }
   const baseRevisionId = resumeCandidate
     ? businessAppState.candidateRevisionId
@@ -3420,7 +3508,13 @@ async function runBusinessAppGeneration(
     ? businessAppState.candidateRevisionId
     : nextId('ver')
   businessAppState.candidateRevisionId = revisionId
-  if (!resumeCandidate) businessAppState.strategiesTried = []
+  if (!resumeCandidate) {
+    businessAppState.strategiesTried = []
+    businessAppState.repairStatus = 'available'
+    businessAppState.lastRegenerationFlowVersion = regenerateCurrent
+      ? BUSINESS_APP_FLOW_VERSION
+      : null
+  }
   businessAppState.lastFailure = null
   save(rt)
   const workspace = store.artifactWorkspaceDir(rt.s.dashboard.id, revisionId)
@@ -3751,12 +3845,13 @@ async function runBusinessAppGeneration(
         }
         if (repairCount >= 4) {
           latestError = `已依次尝试确定性修复、模型补丁、定向重生成和证据扩展，仍未通过：${latestError}`
+          businessAppState.repairStatus = 'exhausted'
           if (currentIssue) {
             currentIssue = { ...currentIssue, status: 'failed', detail: latestError }
             setIssue(rt, currentIssue)
           }
           finishStep(rt, step, latestError, 'failed')
-          return { kind: 'suspend', reason: 'idux-quality-strategies-exhausted' }
+          return { kind: 'suspend', reason: BUSINESS_APP_REPAIR_EXHAUSTED_REASON }
         }
         if (!currentIssue) {
           currentIssue = {
@@ -3779,7 +3874,7 @@ async function runBusinessAppGeneration(
           gate.id.startsWith('visual-state-coverage')
         )
         let repaired = repairBusinessAppDraft(draft, failedGates)
-        let strategy = 'deterministic-repair'
+        let strategy: BusinessAppRepairStrategy = 'deterministic-repair'
         if (attempted.has(strategy) || repaired.actions.length === 0) {
           repaired = { draft, actions: [] }
           strategy = requiresBlueprintReplan ? 'targeted-regeneration' : 'model-source-repair'
@@ -3806,8 +3901,9 @@ async function runBusinessAppGeneration(
           }
           if (attempted.has(strategy)) {
             latestError = `全部自主修复策略已经执行且复检失败：${latestError}`
+            businessAppState.repairStatus = 'exhausted'
             finishStep(rt, step, latestError, 'failed')
-            return { kind: 'suspend', reason: 'idux-quality-strategies-exhausted' }
+            return { kind: 'suspend', reason: BUSINESS_APP_REPAIR_EXHAUSTED_REASON }
           }
           if (!requirementContract) throw new Error('缺少可追踪的需求契约，不能重新规划')
           const repairContract: BusinessAppRequirementContract = {
@@ -3880,7 +3976,7 @@ async function runBusinessAppGeneration(
     let engine: ReturnType<typeof createLoop>
     engine = createLoop({
       flowId: 'business-app-generation',
-      flowVersion: 2,
+      flowVersion: BUSINESS_APP_FLOW_VERSION,
       definition: BUSINESS_APP_FLOW,
       resume: {
         resume: {
@@ -3933,6 +4029,8 @@ async function runBusinessAppGeneration(
         businessAppState.unresolved = false
         businessAppState.candidateRevisionId = null
         businessAppState.strategiesTried = []
+        businessAppState.repairStatus = 'available'
+        businessAppState.lastRegenerationFlowVersion = null
         businessAppState.lastFailure = null
         businessAppState.requirementContract = generated.contract
         businessAppState.blueprint = generated.blueprint
@@ -3983,29 +4081,7 @@ async function runBusinessAppGeneration(
     businessAppState.lastFailure = message
     save(rt)
     failActiveStage(rt, message)
-    const exhaustedStrategies = businessAppState.strategiesTried.length >= 3
-    const options = businessAppFailureOptions(exhaustedStrategies)
-    const problem: ProblemMessage = {
-      kind: 'problem',
-      id: nextId('m'),
-      createdAt: Date.now(),
-      title: exhaustedStrategies ? '自主修复策略已全部尝试' : '当前环境无法继续自主修复',
-      description: message,
-      options,
-      chosenOptionId: null,
-      relatedIssueId: currentIssue?.id ?? null
-    }
-    pushMessage(rt, problem)
-    setBlocker(rt, {
-      id: nextId('blk'),
-      type: 'failed',
-      title: problem.title,
-      description: problem.description,
-      options,
-      relatedMessageId: problem.id
-    })
-    setStatus(rt, 'blocked')
-    updateDashboard(rt, { status: 'needs_attention' })
+    presentBusinessAppFailureRecovery(rt, businessAppState)
   } finally {
     rt.running = false
     if (committed) setStatus(rt, 'idle')
@@ -4248,7 +4324,7 @@ function continueBusinessAppAfterClarification(
     pushAgent(rt, '这项回答还没有有效内容，请重新补充。')
     return
   }
-  state.decisions.push({
+  upsertBusinessAppDecision(state, {
     id: nextId('decision'),
     questionId: clarification.topic,
     question: clarification.question,
@@ -4256,7 +4332,6 @@ function continueBusinessAppAfterClarification(
     source: answer?.customText?.trim() ? 'custom' : 'option',
     createdAt: Date.now()
   })
-  state.decisions = state.decisions.slice(-30)
   setBlocker(rt, null)
   pushAgent(rt, '这项已确认。我会先继续检查剩余关键边界；只有需求契约就绪后才开始生成。')
   save(rt)
@@ -4293,6 +4368,22 @@ export function handleChooseOption(dashId: string, optionId: string, auto = fals
   )
   const opt = prob?.options.find((o) => o.id === optionId) ?? rt.s.blocker?.options.find((o) => o.id === optionId)
   if (!opt) return
+
+  if (
+    rt.s.dashboard.artifactKind === 'business-app' &&
+    (optionId === 'opt-idux-retry' || optionId === 'opt-idux-regenerate')
+  ) {
+    const state = getBusinessAppState(rt)
+    const mode = businessAppRecoveryMode(state, BUSINESS_APP_FLOW_VERSION)
+    const allowed = optionId === 'opt-idux-retry'
+      ? mode === 'continue-repair'
+      : mode === 'regenerate'
+    if (!allowed) {
+      pushAgent(rt, '这条历史恢复操作已经失效，我已按当前 Loop 状态更新可执行选项，不会重复运行相同路径。')
+      presentBusinessAppFailureRecovery(rt, state)
+      return
+    }
+  }
 
   clearAutoExec(rt)
   if (prob) {
@@ -4823,13 +4914,19 @@ function makeRuntime(s: SessionData): Runtime {
   s.assistSession = null
   s.steps ??= [] // 旧版会话文件没有执行轨迹字段
   s.graph ??= null // 旧版会话文件没有流程图快照字段
-  if (s.dashboard.artifactKind === 'business-app') getBusinessAppState({ s } as Runtime)
   s.preview.url = normalizePreviewUrl(s.preview.url)
   for (const [versionId, url] of Object.entries(s.versionUrls)) {
     s.versionUrls[versionId] = normalizePreviewUrl(url) ?? url
   }
   const rt: Runtime = { s, running: false, queue: [], activeRun: null, autoTimer: null, timers: new Set(), stepsResetPending: false }
   sessions.set(s.dashboard.id, rt)
+  if (s.dashboard.artifactKind === 'business-app') {
+    const state = getBusinessAppState(rt)
+    if (s.runStatus === 'blocked' && state.lastFailure) {
+      // 服务升级后立即纠正旧会话中已经失效的“继续修复”按钮，避免用户再次进入死循环。
+      presentBusinessAppFailureRecovery(rt, state)
+    }
+  }
   return rt
 }
 

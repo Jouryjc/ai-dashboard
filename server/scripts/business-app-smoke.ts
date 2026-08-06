@@ -13,6 +13,12 @@ import type {
 import { generateBusinessApp, type BusinessAppGenerationOptions } from '../src/artifacts/business-app/generator'
 import { renderBlueprintSource } from '../src/artifacts/business-app/generation/renderer'
 import { repairBusinessAppDraft } from '../src/artifacts/business-app/repairer'
+import {
+  BUSINESS_APP_REPAIR_EXHAUSTED_REASON,
+  businessAppRecoveryMode,
+  normalizeBusinessAppRepairStatus,
+  normalizeBusinessAppRepairStrategies
+} from '../src/artifacts/business-app/repair-policy'
 import { analyzeBusinessAppRequirement } from '../src/artifacts/business-app/requirements/analyzer'
 import { validateBuiltBusinessApp } from '../src/artifacts/business-app/validator'
 import { createPreviewApp } from '../src/preview'
@@ -68,6 +74,27 @@ async function main(): Promise<void> {
   const businessSkills = skillRegistry.forArtifact('business-app').map(skill => skill.id)
   if (!businessSkills.includes('idux-enterprise-design')) {
     throw new Error('Skill Registry 没有注册 idux-enterprise-design')
+  }
+
+  const legacyExhausted = {
+    strategiesTried: ['targeted-regeneration', 'evidence-expanded-replan'],
+    lastFailure: '全部自主修复策略已经执行且复检失败：集合工具缺失',
+    checkpoint: { awaiting: BUSINESS_APP_REPAIR_EXHAUSTED_REASON }
+  }
+  if (
+    normalizeBusinessAppRepairStatus(legacyExhausted) !== 'exhausted' ||
+    businessAppRecoveryMode(legacyExhausted, 3) !== 'regenerate' ||
+    businessAppRecoveryMode({ ...legacyExhausted, lastRegenerationFlowVersion: 3 }, 3) !== 'terminal'
+  ) {
+    throw new Error('修复策略耗尽后仍可能重复展示继续修复或重新生成')
+  }
+  const normalizedStrategies = normalizeBusinessAppRepairStrategies([
+    'targeted-regeneration',
+    'targeted-regeneration',
+    'unknown-strategy'
+  ])
+  if (normalizedStrategies.length !== 1 || normalizedStrategies[0] !== 'targeted-regeneration') {
+    throw new Error('旧会话修复策略没有完成枚举清理和去重')
   }
 
   const escaped = renderBlueprintSource({
@@ -205,7 +232,8 @@ async function main(): Promise<void> {
     clarificationTopics: [clarificationOne.clarification.topic, clarificationTwo.clarification.topic],
     moduleEvolution: [cloud.blueprint.modules.length, quota.blueprint.modules.length, users.blueprint.modules.length],
     runtime: runtimeResults,
-    repairActions: repaired.actions
+    repairActions: repaired.actions,
+    repairRecovery: ['regenerate-once', 'terminal-after-same-version']
   }, null, 2)}\n`)
 }
 
