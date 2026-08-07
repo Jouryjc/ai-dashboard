@@ -1,11 +1,11 @@
 <script setup lang="ts">
 /**
  * 全屏演示模式（UX §7.4）：纯大屏覆盖全窗口，供投屏汇报。
- * - 按当前预览分辨率等比缩放铺满窗口，隐藏三栏的一切界面元素。
+ * - 大屏按当前预览分辨率等比缩放；业务应用使用全窗口响应式渲染。
  * - 按 Esc 退出；进入时短暂提示「按 Esc 退出全屏」。
  * 由顶栏 ⛶全屏 打开：url 取自 session.previewUrl。
  */
-import { onBeforeUnmount, onMounted, ref, toRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, toRef, type CSSProperties } from 'vue'
 import { useSessionStore } from '../../stores/session'
 import { useScaleFit } from './useScaleFit'
 
@@ -13,6 +13,12 @@ const emit = defineEmits<{ (e: 'exit'): void }>()
 
 const session = useSessionStore()
 const { containerRef, frameStyle } = useScaleFit(toRef(session, 'resolution'))
+/** 业务应用使用真实窗口尺寸；固定画布缩放仅属于 dashboard 的展示语义。 */
+const previewFrameStyle = computed<CSSProperties>(() =>
+  session.artifactKind === 'business-app'
+    ? { width: '100%', height: '100%' }
+    : frameStyle.value
+)
 
 /* Esc 退出 */
 function onKeydown(e: KeyboardEvent): void {
@@ -35,15 +41,17 @@ onBeforeUnmount(() => window.clearTimeout(hintTimer))
 <template>
   <div class="fixed inset-0 z-50 bg-ink" role="dialog" aria-label="全屏演示模式">
     <div ref="containerRef" class="flex h-full w-full items-center justify-center overflow-hidden">
-      <div v-if="session.previewUrl" :style="frameStyle" class="shrink-0 overflow-hidden bg-ink">
+      <div v-if="session.previewUrl" :style="previewFrameStyle" class="shrink-0 overflow-hidden bg-ink">
         <iframe
           :src="session.previewUrl"
-          title="大屏全屏演示"
+          :title="session.artifactKind === 'business-app' ? '业务应用全屏预览' : '大屏全屏演示'"
           class="block h-full w-full border-0 bg-ink"
           sandbox="allow-scripts allow-same-origin"
         />
       </div>
-      <p v-else class="text-sm text-white/70">还没有可以演示的大屏</p>
+      <p v-else class="text-sm text-white/70">
+        还没有可以演示的{{ session.artifactKind === 'business-app' ? '业务应用' : '大屏' }}
+      </p>
     </div>
 
     <Transition name="hint-fade">

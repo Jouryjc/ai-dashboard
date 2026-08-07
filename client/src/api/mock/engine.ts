@@ -15,6 +15,7 @@
  */
 import type {
   AgentStep,
+  ArtifactKind,
   ClarificationAnswer,
   Dashboard,
   DataSourceProbeResult,
@@ -31,7 +32,7 @@ import type {
   ClientEventMap,
   WorkbenchSnapshot
 } from '../client'
-import { buildSeedSessions, nextId, type SessionState } from './data'
+import { buildSeedSessions, dashboardTargetProfile, nextId, type SessionState } from './data'
 import * as scripts from './scripts'
 import type { Ctx } from './scripts'
 
@@ -61,7 +62,7 @@ export class MockEmitter {
 const DEFAULT_SETTINGS: ModelSettings = {
   provider: '公司内置',
   apiBase: 'https://llm.internal.example.com',
-  apiKey: 'sk-demo-0000000000000000',
+  apiKey: 'demo-key-not-a-real-credential',
   model: 'qwen2.5-72b-instruct',
   planner: { model: '', apiBase: '', apiKey: '' },
   coder: { model: '', apiBase: '', apiKey: '' },
@@ -251,6 +252,7 @@ export function createMockClient(): ClientApi {
         state.versions.unshift(v)
         state.versionUrls.set(v.id, url)
         state.dashboard.currentVersionLabel = v.label
+        state.dashboard.currentRevisionId = v.id
         emit('versionAdded', { dashboardId: dashId, version: v })
       },
       upsertVersion(v) {
@@ -313,9 +315,12 @@ export function createMockClient(): ClientApi {
         dashboard: {
           id,
           name: '未命名大屏',
+          artifactKind: 'dashboard',
+          targetProfile: dashboardTargetProfile(),
           status: 'completed',
           coverUrl: '',
           currentVersionLabel: null,
+          currentRevisionId: null,
           updatedAt: Date.now()
         },
         runStatus: 'idle',
@@ -362,6 +367,22 @@ export function createMockClient(): ClientApi {
       const id = nextId('dash')
       const rt = getRuntime(id)
       rt.state.dashboard.name = name.trim() || '未命名大屏'
+      rt.state.dashboard.status = 'completed'
+      return { ...rt.state.dashboard }
+    },
+    async createProject(name: string, artifactKind: ArtifactKind): Promise<Dashboard> {
+      const id = nextId('dash')
+      const rt = getRuntime(id)
+      rt.state.dashboard.name = name.trim() || (artifactKind === 'dashboard' ? '未命名大屏' : '未命名页面')
+      rt.state.dashboard.artifactKind = artifactKind
+      rt.state.dashboard.targetProfile = artifactKind === 'dashboard'
+        ? dashboardTargetProfile()
+        : {
+            framework: 'vue3',
+            uiLibrary: 'idux',
+            uiLibraryVersion: '2.11.0',
+            viewportProfiles: ['1920x1080', '1366x768']
+          }
       rt.state.dashboard.status = 'completed'
       return { ...rt.state.dashboard }
     },

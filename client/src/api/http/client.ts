@@ -78,7 +78,10 @@ export function createHttpClient(baseUrl: string): ClientApi {
   async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await fetch(`${base}${path}`, {
       method,
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers: {
+        'X-AI-Dashboard-Client': '1',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {})
+      },
       body: body !== undefined ? JSON.stringify(body) : undefined
     })
     if (!res.ok) {
@@ -178,12 +181,16 @@ export function createHttpClient(baseUrl: string): ClientApi {
   return {
     // ---- 首页 ----
     async listDashboards(): Promise<Dashboard[]> {
-      const list = await request<Dashboard[]>('GET', '/api/v1/dashboards')
+      const list = await request<Dashboard[]>('GET', '/api/v1/projects')
       return list.map(fixDashboard)
     },
     async createDashboard(name: string): Promise<Dashboard> {
       const d = await request<Dashboard>('POST', '/api/v1/dashboards', { name })
       return fixDashboard(d)
+    },
+    async createProject(name, artifactKind): Promise<Dashboard> {
+      const project = await request<Dashboard>('POST', '/api/v1/projects', { name, artifactKind })
+      return fixDashboard(project)
     },
     async renameDashboard(id: string, name: string): Promise<void> {
       await request<Dashboard>('POST', `/api/v1/dashboards/${encodeURIComponent(id)}/rename`, { name })

@@ -4,7 +4,8 @@
  * 用 stub 节点执行器验证引擎核心机制：
  *   - 线性流程推进 + onCommit
  *   - 条件转移（guard 选边）
- *   - 挂起/恢复
+ *   - 挂起/恢复与纯 JSON 检查点跨引擎续跑
+ *   - 流程版本不匹配和检查点篡改拒绝
  *   - 失败 -> blocked
  *   - restore 载入历史快照
  *   - createLoop 创建时校验
@@ -184,6 +185,86 @@ describe('挂起与恢复', () => {
     assert.ok(committed, '恢复后应 commit')
     const gs2 = engine.getGraphState()!
     assert.equal(gs2.awaiting, null, '恢复后 awaiting 应清空')
+  })
+
+  test('JSON 检查点跨引擎恢复并保留挂起节点产出', async () => {
+    const definition: FlowDefinition = {
+      nodes: [{ id: 'ask', name: '提问' }, { id: 'work', name: '干活' }],
+      edges: [{ from: 'ask', to: 'work' }]
+    }
+    const first = createLoop({
+      flowId: 'requirement-flow',
+      flowVersion: 2,
+      definition,
+      resume: { resume: { clarification: { node: 'ask' } } },
+      executors: {
+        ask: stubExecutor([{ kind: 'suspend', reason: 'clarification', output: { topic: 'scope' }, refs: { contract: 'contract-1' } }]),
+        work: noopExecutor
+      }
+    })
+    await first.handleEvent({ kind: 'start', initialNode: 'ask' })
+    const checkpoint = first.getCheckpoint()
+    assert.ok(checkpoint)
+    assert.equal(checkpoint!.nodes.ask.output?.topic, 'scope')
+    assert.equal(checkpoint!.nodes.ask.refs?.contract, 'contract-1')
+    assert.equal('definition' in checkpoint!, false, '检查点不能序列化 guard 函数或流程定义')
+    const persisted = JSON.parse(JSON.stringify(checkpoint))
+
+    let committed = false
+    const restored = createLoop({
+      flowId: 'requirement-flow',
+      flowVersion: 2,
+      definition,
+      resume: { resume: { clarification: { node: 'ask' } } },
+      executors: {
+        ask: stubExecutor([{ kind: 'done', output: { answered: true } }]),
+        work: noopExecutor
+      },
+      onCommit: async () => { committed = true }
+    })
+    await restored.handleEvent({ kind: 'restore-checkpoint', checkpoint: persisted })
+    assert.equal(restored.getState(), 'suspended')
+    await restored.handleEvent({ kind: 'resume' })
+    assert.equal(restored.getState(), 'idle')
+    assert.ok(committed)
+  })
+
+  test('拒绝恢复其他流程版本的检查点', async () => {
+    const engine = createLoop({
+      flowId: 'current-flow', flowVersion: 3,
+      definition: { nodes: [{ id: 'a', name: 'A' }], edges: [] },
+      resume: emptyResume,
+      executors: { a: noopExecutor }
+    })
+    await assert.rejects(
+      engine.handleEvent({
+        kind: 'restore-checkpoint',
+        checkpoint: {
+          flowId: 'old-flow', flowVersion: 1,
+          nodes: { a: { status: 'pending' } }, current: 'a', awaiting: null
+        }
+      }),
+      /检查点流程版本不匹配|checkpoint 流程版本不匹配/
+    )
+  })
+
+  test('拒绝恢复被篡改的节点状态', async () => {
+    const engine = createLoop({
+      flowId: 'safe-flow', flowVersion: 1,
+      definition: { nodes: [{ id: 'a', name: 'A' }], edges: [] },
+      resume: emptyResume,
+      executors: { a: noopExecutor }
+    })
+    await assert.rejects(
+      engine.handleEvent({
+        kind: 'restore-checkpoint',
+        checkpoint: {
+          flowId: 'safe-flow', flowVersion: 1,
+          nodes: { a: { status: 'executing' as never } }, current: 'a', awaiting: null
+        }
+      }),
+      /节点状态不合法/
+    )
   })
 })
 

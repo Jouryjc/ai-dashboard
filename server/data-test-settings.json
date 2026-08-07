@@ -1,7 +1,7 @@
 {
   "provider": "自定义",
   "apiBase": "https://api.kimi.com/coding/v1",
-  "apiKey": "sk-kimi-UBKQ70XKv4UqfzKMGOnU3olKMp4x11uMsTDI2PFvS1cbj1JplXxhQTD6dyXFNAlh",
+  "apiKey": "",
   "model": "kimi-k3",
   "planner": {
     "model": "",

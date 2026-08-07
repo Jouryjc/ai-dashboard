@@ -1,7 +1,7 @@
 {
   "name": "ai-dashboard",
   "version": "0.1.0",
-  "description": "AI 大屏工作台：自然语言描述需求，AI 自动生成 1920×1080 数据可视化大屏并实时预览",
+  "description": "Loop Engineer 工作台：通过自然语言生成数据大屏或完整的 IDux 业务应用，并以可恢复循环完成验证与修复",
   "private": true,
   "license": "MIT",
   "repository": {

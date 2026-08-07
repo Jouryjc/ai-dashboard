@@ -9,7 +9,7 @@
  *   - 用户答题/选卡后发 resume
  *   - 回退发 restore（载入目标版本记忆）
  */
-import type { GraphState, NodeId } from './types'
+import type { GraphCheckpoint, GraphState, NodeId } from './types'
 
 export type LoopEvent =
   /** 启动新流程：设 initialNode 为 current，进入主循环 */
@@ -18,3 +18,5 @@ export type LoopEvent =
   | { kind: 'resume' }
   /** 载入历史快照：回退/重启恢复时，从外部载入 graphState 继续 */
   | { kind: 'restore'; graphState: GraphState }
+  /** 从纯 JSON checkpoint 恢复，并重新绑定可信流程定义。 */
+  | { kind: 'restore-checkpoint'; checkpoint: GraphCheckpoint }

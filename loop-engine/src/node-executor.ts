@@ -36,5 +36,14 @@ export interface NodeContext {
  */
 export type NodeResult =
   | { kind: 'done'; output?: NodeOutput; refs?: Record<string, string> }
-  | { kind: 'suspend'; reason: string; payload?: Record<string, unknown> }
+  | {
+      kind: 'suspend'
+      reason: string
+      /** 引擎挂起前持久化的节点记忆。 */
+      output?: NodeOutput
+      /** 引擎挂起前持久化的产物引用。 */
+      refs?: Record<string, string>
+      /** 仅通过 onNodeComplete 发送、不进入检查点的临时界面数据。 */
+      payload?: Record<string, unknown>
+    }
   | { kind: 'failed'; error: Error }

@@ -88,6 +88,9 @@ function cancelRename(): void {
       <div class="absolute top-3 left-3">
         <StatusBadge :status="dashboard.status" />
       </div>
+      <span class="absolute right-3 top-3 rounded-full bg-card/90 px-2 py-1 text-[11px] font-medium text-ink-secondary shadow-card">
+        {{ dashboard.artifactKind === 'business-app' ? '业务应用' : '数据大屏' }}
+      </span>
     </div>
 
     <!-- 名称 + 时间 + 操作 -->

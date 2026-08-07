@@ -13,7 +13,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDashboardsStore } from '../stores/dashboards'
-import type { Dashboard } from '../types'
+import type { ArtifactKind, Dashboard } from '../types'
 import HomeTopbar from '../components/home/HomeTopbar.vue'
 import HomeSidebar from '../components/home/HomeSidebar.vue'
 import DashboardCard from '../components/home/DashboardCard.vue'
@@ -50,13 +50,18 @@ const filtered = computed<Dashboard[]>(() => {
 
 const showSkeleton = computed(() => store.loading && !store.loaded)
 
-/* ---- 新建大屏：建完直接进工作台（预览占位引导态由工作台负责） ---- */
+/* ---- 新建项目：先明确产物类型，创建后锁定，避免意图路由把表格误生成成大屏 ---- */
 const creating = ref(false)
-async function onCreate(): Promise<void> {
+const createChooserOpen = ref(false)
+async function onCreate(artifactKind: ArtifactKind): Promise<void> {
   if (creating.value) return
   creating.value = true
   try {
-    const d = await store.create('新大屏')
+    const d = await store.create(
+      artifactKind === 'dashboard' ? '新大屏' : '新业务应用',
+      artifactKind
+    )
+    createChooserOpen.value = false
     router.push(`/workbench/${d.id}`)
   } finally {
     creating.value = false
@@ -106,8 +111,8 @@ async function confirmDelete(): Promise<void> {
     >
       <div class="p-8">
         <header class="mb-10">
-          <h1 class="text-3xl font-bold text-ink mb-2">首页 · 我的大屏</h1>
-          <p class="text-ink-secondary text-lg">你的大屏都在这儿，随时可以打开、修改和发布。</p>
+          <h1 class="text-3xl font-bold text-ink mb-2">首页 · 我的项目</h1>
+          <p class="text-ink-secondary text-lg">数据大屏和业务应用都在这里，类型清晰、版本独立。</p>
         </header>
 
         <!-- 首次加载骨架 -->
@@ -127,7 +132,7 @@ async function confirmDelete(): Promise<void> {
           v-else
           class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
         >
-          <NewDashboardCard :creating="creating" @create="onCreate" />
+          <NewDashboardCard :creating="creating" @create="createChooserOpen = true" />
           <DashboardCard
             v-for="d in filtered"
             :key="d.id"
@@ -145,7 +150,7 @@ async function confirmDelete(): Promise<void> {
           v-if="!showSkeleton && keyword.trim() && filtered.length === 0"
           class="mt-8 text-sm text-ink-secondary"
         >
-          没有找到名字里带「{{ keyword.trim() }}」的大屏，换个词试试。
+          没有找到名字里带「{{ keyword.trim() }}」的项目，换个词试试。
         </p>
       </div>
     </main>
@@ -181,5 +186,57 @@ async function confirmDelete(): Promise<void> {
       @cancel="deleting = null"
       @confirm="confirmDelete"
     />
+
+    <div
+      v-if="createChooserOpen"
+      class="fixed inset-0 z-[80] flex items-center justify-center bg-ink/45 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="create-project-title"
+      @click.self="createChooserOpen = false"
+    >
+      <section class="w-full max-w-2xl rounded-card border border-line bg-card p-6 shadow-pop">
+        <div class="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h2 id="create-project-title" class="text-xl font-bold text-ink">这次要生成什么？</h2>
+            <p class="mt-1 text-sm text-ink-secondary">类型创建后锁定，避免普通表格被误路由成大屏。</p>
+          </div>
+          <button
+            type="button"
+            class="rounded-control p-1 text-ink-secondary hover:bg-panel"
+            aria-label="关闭"
+            @click="createChooserOpen = false"
+          >
+            <AppIcon name="close" :size="20" />
+          </button>
+        </div>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <button
+            type="button"
+            class="rounded-card border border-line p-5 text-left transition hover:border-primary hover:bg-primary-soft/40 focus:outline-none focus:ring-2 focus:ring-primary"
+            :disabled="creating"
+            @click="onCreate('dashboard')"
+          >
+            <span class="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-primary-soft text-primary">
+              <AppIcon name="monitor" :size="22" />
+            </span>
+            <strong class="block text-base text-ink">数据大屏</strong>
+            <span class="mt-1 block text-sm leading-6 text-ink-secondary">固定画布、指标卡和可视化，适合展示与汇报。</span>
+          </button>
+          <button
+            type="button"
+            class="rounded-card border border-line p-5 text-left transition hover:border-primary hover:bg-primary-soft/40 focus:outline-none focus:ring-2 focus:ring-primary"
+            :disabled="creating"
+            @click="onCreate('business-app')"
+          >
+            <span class="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-primary-soft text-primary">
+              <AppIcon name="database" :size="22" />
+            </span>
+            <strong class="block text-base text-ink">业务应用</strong>
+            <span class="mt-1 block text-sm leading-6 text-ink-secondary">可持续增加模块、视图、表单和业务流程，并导出可复现的 Vue 源码。</span>
+          </button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>

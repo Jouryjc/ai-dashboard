@@ -1,0 +1,3 @@
+# Runtime planner guidance
+
+Choose shell, navigation, page pattern, density, actions, states, and responsive priorities from the confirmed user task and data shape. Use dashboard only for monitor/investigate/inform goals; table for comparable collections; cards for small heterogeneous collections; split collection for repeated contextual comparison; details/tabs/hub from information relationships; modal/single-page/multi-step create from field count and dependency complexity. Keep one dominant action, distinguish global/contextual/bulk actions, and plan loading, empty, no-results, error, permission, and recovery states. Translate patterns to IDux and preserve arbitrary domains.

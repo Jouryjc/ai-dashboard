@@ -10,6 +10,7 @@
  */
 import type {
   AgentStep,
+  ArtifactKind,
   AssistSession,
   Blocker,
   ChatMessage,
@@ -74,6 +75,8 @@ export interface ClientApi {
   listDashboards(): Promise<Dashboard[]>
   /** 新建大屏（进入工作台后用户在对话区描述需求） */
   createDashboard(name: string): Promise<Dashboard>
+  /** 新建指定产物类型的项目；类型创建后锁定。 */
+  createProject(name: string, artifactKind: ArtifactKind): Promise<Dashboard>
   /** 改名（顶栏标题点击改名） */
   renameDashboard(id: string, name: string): Promise<void>
   /** 删除大屏 */
@@ -112,7 +115,7 @@ export interface ClientApi {
   rollback(dashboardId: string, versionId: string): Promise<void>
 
   /* ---------- 预览 ---------- */
-  /** 切换预览分辨率（仅缩放展示，基准恒为 1920×1080） */
+  /** 切换固定画布大屏的预览分辨率；业务应用使用工作区的真实响应式视口。 */
   setPreviewResolution(dashboardId: string, resolution: PreviewResolution): Promise<void>
 
   /* ---------- 封面 / 导出 ---------- */

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "idux-style",
+  "artifactKinds": ["business-app"],
+  "executionAdapter": null,
+  "allowedCommands": [],
+  "permissions": {
+    "filesystem": "skill-read",
+    "network": "deny",
+    "process": "deny"
+  }
+}
